@@ -1,13 +1,27 @@
-from pathlib import Path
+import os
+
+import pytest
 
 from app.database import db_session, init_db, upsert_text, upsert_tenant
 from app.scheduler import build_scheduler
 
 
-def test_scheduler_registers_minute_tick(tmp_path: Path):
-    db_path = tmp_path / "bot.db"
-    init_db(db_path)
-    with db_session(db_path) as conn:
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+pytestmark = pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
+
+
+def reset_db() -> str:
+    assert TEST_DATABASE_URL is not None
+    init_db(TEST_DATABASE_URL)
+    with db_session(TEST_DATABASE_URL) as conn:
+        conn.execute("TRUNCATE poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
+    init_db(TEST_DATABASE_URL)
+    return TEST_DATABASE_URL
+
+
+def test_scheduler_registers_minute_tick():
+    database_url = reset_db()
+    with db_session(database_url) as conn:
         tenant_id = upsert_tenant(
             conn,
             tenant_id=1,
@@ -38,8 +52,8 @@ def test_scheduler_registers_minute_tick(tmp_path: Path):
             enabled=True,
         )
 
-    scheduler = build_scheduler(db_path)
+    scheduler = build_scheduler(database_url)
     jobs = {job.id: job for job in scheduler.get_jobs()}
 
     assert "due_jobs" in jobs
-    assert jobs["due_jobs"].kwargs["db_path"] == db_path
+    assert jobs["due_jobs"].kwargs["database_url"] == database_url

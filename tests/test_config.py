@@ -1,19 +1,33 @@
-from pathlib import Path
+import os
+
+import pytest
 
 from app.database import db_session, get_active_tenant, init_db, list_texts, upsert_text, upsert_tenant
 from app.services import load_runtime_config
 
 
-def test_init_db_seeds_default_tenant_and_text(tmp_path: Path):
-    db_path = tmp_path / "bot.db"
-    init_db(db_path)
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+pytestmark = pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
 
-    runtime = load_runtime_config(db_path)
+
+def reset_db() -> str:
+    assert TEST_DATABASE_URL is not None
+    init_db(TEST_DATABASE_URL)
+    with db_session(TEST_DATABASE_URL) as conn:
+        conn.execute("TRUNCATE poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
+    init_db(TEST_DATABASE_URL)
+    return TEST_DATABASE_URL
+
+
+def test_init_db_seeds_default_tenant_and_text():
+    database_url = reset_db()
+
+    runtime = load_runtime_config(database_url)
 
     assert runtime.tenant_id == 1
     assert runtime.timezone == "Asia/Jerusalem"
 
-    with db_session(db_path) as conn:
+    with db_session(database_url) as conn:
         tenant = get_active_tenant(conn)
         texts = list_texts(conn, int(tenant["id"]))
 
@@ -21,10 +35,9 @@ def test_init_db_seeds_default_tenant_and_text(tmp_path: Path):
     assert len(texts) == 1
 
 
-def test_tenant_and_text_can_be_updated_in_db(tmp_path: Path):
-    db_path = tmp_path / "bot.db"
-    init_db(db_path)
-    with db_session(db_path) as conn:
+def test_tenant_and_text_can_be_updated_in_db():
+    database_url = reset_db()
+    with db_session(database_url) as conn:
         tenant_id = upsert_tenant(
             conn,
             tenant_id=1,
@@ -55,10 +68,10 @@ def test_tenant_and_text_can_be_updated_in_db(tmp_path: Path):
             enabled=True,
         )
 
-    runtime = load_runtime_config(db_path, tenant_id)
+    runtime = load_runtime_config(database_url, tenant_id)
 
     assert runtime.tenant_name == "Tenant A"
     assert runtime.gemini_ready is True
-    with db_session(db_path) as conn:
-        text = conn.execute("SELECT * FROM texts WHERE id = ?", (text_id,)).fetchone()
+    with db_session(database_url) as conn:
+        text = conn.execute("SELECT * FROM texts WHERE id = %s", (text_id,)).fetchone()
     assert text["title"] == "Text A"

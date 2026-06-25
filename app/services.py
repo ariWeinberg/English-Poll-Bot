@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from app.database import (
@@ -62,8 +61,8 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def load_runtime_config(db_path: Path, tenant_id: int | None = None) -> RuntimeConfig:
-    with db_session(db_path) as conn:
+def load_runtime_config(database_url: str, tenant_id: int | None = None) -> RuntimeConfig:
+    with db_session(database_url) as conn:
         tenant = get_tenant(conn, tenant_id) if tenant_id is not None else None
         if tenant is None:
             from app.database import get_active_tenant
@@ -109,19 +108,19 @@ async def generate_question(settings: RuntimeConfig, source_text: str) -> Genera
 async def generate_and_send_poll(
     *,
     settings: RuntimeConfig,
-    db_path: Path,
+    database_url: str,
     text_id: int,
     scheduled_slot: str | None = None,
 ) -> int:
     if not settings.greenapi_ready:
         raise ValueError("GreenAPI configuration is incomplete.")
-    with db_session(db_path) as conn:
+    with db_session(database_url) as conn:
         text = get_text(conn, text_id)
         if text is None:
             raise ValueError("Text not found.")
         source_text = get_source_text(conn, text_id)
     generated = await generate_question(settings, source_text)
-    with db_session(db_path) as conn:
+    with db_session(database_url) as conn:
         poll_id = create_poll(
             conn,
             tenant_id=settings.tenant_id,
@@ -141,10 +140,10 @@ async def generate_and_send_poll(
             options=generated.options,
         )
     except Exception as exc:
-        with db_session(db_path) as conn:
+        with db_session(database_url) as conn:
             mark_poll_failed(conn, poll_id, str(exc))
         raise
-    with db_session(db_path) as conn:
+    with db_session(database_url) as conn:
         mark_poll_sent(conn, poll_id, message_id)
     return poll_id
 
@@ -172,12 +171,12 @@ def parse_poll_update(payload: dict[str, Any]) -> tuple[str, dict[str, list[str]
     return str(stanza_id), option_voters
 
 
-def handle_greenapi_webhook(*, db_path: Path, payload: dict[str, Any]) -> bool:
+def handle_greenapi_webhook(*, database_url: str, payload: dict[str, Any]) -> bool:
     parsed = parse_poll_update(payload)
     if parsed is None:
         return False
     message_id, option_voters = parsed
-    with db_session(db_path) as conn:
+    with db_session(database_url) as conn:
         poll = get_poll_by_message_id(conn, message_id)
         if poll is None:
             return False
@@ -205,31 +204,31 @@ def build_summary_text(stats: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-async def send_pending_summaries(*, settings: RuntimeConfig, db_path: Path, text_id: int | None = None) -> int:
+async def send_pending_summaries(*, settings: RuntimeConfig, database_url: str, text_id: int | None = None) -> int:
     if not settings.summary_enabled or not settings.greenapi_ready:
         return 0
     sent = 0
     client = create_greenapi_client(settings)
-    with db_session(db_path) as conn:
+    with db_session(database_url) as conn:
         polls = list_unsummarized_polls(conn, tenant_id=settings.tenant_id)
         if text_id is not None:
             polls = [poll for poll in polls if poll["text_id"] == text_id]
     for poll in polls:
-        with db_session(db_path) as conn:
+        with db_session(database_url) as conn:
             stats = poll_stats(conn, poll)
         await client.send_message(chat_id=poll["chat_id"], message=build_summary_text(stats))
-        with db_session(db_path) as conn:
+        with db_session(database_url) as conn:
             mark_summary_sent(conn, poll["id"])
         sent += 1
     return sent
 
 
-def texts_due_now(db_path: Path, minute_key: str) -> list[tuple[RuntimeConfig, Any]]:
+def texts_due_now(database_url: str, minute_key: str) -> list[tuple[RuntimeConfig, Any]]:
     due: list[tuple[RuntimeConfig, Any]] = []
-    with db_session(db_path) as conn:
+    with db_session(database_url) as conn:
         texts = list_pending_texts(conn)
         for text in texts:
-            runtime = load_runtime_config(db_path, int(text["tenant_id"]))
+            runtime = load_runtime_config(database_url, int(text["tenant_id"]))
             if not runtime.scheduler_enabled or not runtime.greenapi_ready or not runtime.gemini_ready:
                 continue
             if text["enabled"] and minute_key in {text["morning_time"], text["evening_time"], text["summary_time_morning"], text["summary_time_evening"]}:

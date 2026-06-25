@@ -43,11 +43,11 @@ UPLOAD_DIR = Path("uploads")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db(settings.database_path)
+    init_db(settings.database_url)
     scheduler = None
-    runtime = load_runtime_config(settings.database_path)
+    runtime = load_runtime_config(settings.database_url)
     if runtime.scheduler_enabled and runtime.greenapi_ready and runtime.gemini_ready:
-        scheduler = build_scheduler(settings.database_path)
+        scheduler = build_scheduler(settings.database_url)
         scheduler.start()
     app.state.scheduler = scheduler
     try:
@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="English WhatsApp Poll Bot", lifespan=lifespan)
-app.add_middleware(SessionMiddleware, secret_key="english-whatsapp-bot-dev-secret")
+app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
@@ -110,16 +110,16 @@ async def landing(request: Request):
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_form(request: Request, error: str | None = None):
-    with db_session(settings.database_path) as conn:
+    with db_session(settings.database_url) as conn:
         tenants = list_tenants(conn)
     return render(request, "login.html", {"request": request, "tenants": tenants, "error": error})
 
 
 @app.post("/login")
 async def login(request: Request, username: str = Form(...), password: str = Form(...)):
-    with db_session(settings.database_path) as conn:
+    with db_session(settings.database_url) as conn:
         tenant = conn.execute(
-            "SELECT * FROM tenants WHERE username = ? AND password = ? LIMIT 1",
+            "SELECT * FROM tenants WHERE username = %s AND password = %s LIMIT 1",
             (username.strip(), password.strip()),
         ).fetchone()
     if tenant is None:
@@ -140,7 +140,7 @@ async def dashboard(request: Request, message: str | None = None, error: str | N
     if isinstance(login_gate, RedirectResponse):
         return login_gate
     tenant_id = int(login_gate)
-    with db_session(settings.database_path) as conn:
+    with db_session(settings.database_url) as conn:
         tenant = get_tenant(conn, tenant_id)
         tenants = list_tenants(conn)
         texts = list_texts(conn, tenant_id)
@@ -181,7 +181,7 @@ async def save_tenant(
     login_gate = require_login(request)
     if isinstance(login_gate, RedirectResponse):
         return login_gate
-    with db_session(settings.database_path) as conn:
+    with db_session(settings.database_url) as conn:
         saved_id = upsert_tenant(
             conn,
             tenant_id=tenant_id,
@@ -200,12 +200,12 @@ async def save_tenant(
         )
         if is_active == "true":
             set_active_tenant(conn, saved_id)
-    runtime = load_runtime_config(settings.database_path, saved_id)
+    runtime = load_runtime_config(settings.database_url, saved_id)
     scheduler = getattr(app.state, "scheduler", None)
     if scheduler:
         scheduler.shutdown(wait=False)
     if runtime.scheduler_enabled and runtime.greenapi_ready and runtime.gemini_ready:
-        app.state.scheduler = build_scheduler(settings.database_path)
+        app.state.scheduler = build_scheduler(settings.database_url)
         app.state.scheduler.start()
     else:
         app.state.scheduler = None
@@ -218,7 +218,7 @@ async def activate_tenant(request: Request, tenant_id: int):
     login_gate = require_login(request)
     if isinstance(login_gate, RedirectResponse):
         return login_gate
-    with db_session(settings.database_path) as conn:
+    with db_session(settings.database_url) as conn:
         set_active_tenant(conn, tenant_id)
     request.session["tenant_id"] = tenant_id
     return redirect("/dashboard", message="Tenant activated")
@@ -230,7 +230,7 @@ async def texts_page(request: Request, message: str | None = None, error: str | 
     if isinstance(login_gate, RedirectResponse):
         return login_gate
     tenant_id = int(login_gate)
-    with db_session(settings.database_path) as conn:
+    with db_session(settings.database_url) as conn:
         tenant = get_tenant(conn, tenant_id)
         texts = list_texts(conn, tenant_id)
     return render(
@@ -274,7 +274,7 @@ async def save_text(
         stored_path.write_bytes(await attachment.read())
         attachment_name = attachment.filename
         attachment_path = str(stored_path)
-    with db_session(settings.database_path) as conn:
+    with db_session(settings.database_url) as conn:
         upsert_text(
             conn,
             text_id=text_id,
@@ -298,7 +298,7 @@ async def remove_text(request: Request, text_id: int):
     login_gate = require_login(request)
     if isinstance(login_gate, RedirectResponse):
         return login_gate
-    with db_session(settings.database_path) as conn:
+    with db_session(settings.database_url) as conn:
         delete_text(conn, text_id)
     return redirect("/texts", message="Text deleted")
 
@@ -309,13 +309,13 @@ async def preview_question(request: Request, text_id: int = Form(...)):
     if isinstance(login_gate, RedirectResponse):
         return login_gate
     tenant_id = int(login_gate)
-    with db_session(settings.database_path) as conn:
+    with db_session(settings.database_url) as conn:
         text = get_text(conn, text_id)
         if text is None:
             return redirect("/texts", error="Text not found")
-    runtime = load_runtime_config(settings.database_path, tenant_id)
+    runtime = load_runtime_config(settings.database_url, tenant_id)
     question = await generate_question(runtime, text["body"])
-    with db_session(settings.database_path) as conn:
+    with db_session(settings.database_url) as conn:
         tenant = get_tenant(conn, tenant_id)
         texts = list_texts(conn, tenant_id)
         polls = all_poll_stats(conn, tenant_id=tenant_id)
@@ -338,10 +338,10 @@ async def send_now(request: Request, text_id: int = Form(...)):
         return login_gate
     tenant_id = int(login_gate)
     try:
-        runtime = load_runtime_config(settings.database_path, tenant_id)
+        runtime = load_runtime_config(settings.database_url, tenant_id)
         await generate_and_send_poll(
             settings=runtime,
-            db_path=settings.database_path,
+            database_url=settings.database_url,
             text_id=text_id,
             scheduled_slot="manual",
         )
@@ -357,8 +357,8 @@ async def summary_now(request: Request, text_id: int = Form(...)):
         return login_gate
     tenant_id = int(login_gate)
     try:
-        runtime = load_runtime_config(settings.database_path, tenant_id)
-        count = await send_pending_summaries(settings=runtime, db_path=settings.database_path, text_id=text_id)
+        runtime = load_runtime_config(settings.database_url, tenant_id)
+        count = await send_pending_summaries(settings=runtime, database_url=settings.database_url, text_id=text_id)
     except Exception as exc:
         return redirect("/texts", error=str(exc))
     return redirect("/texts", message=f"Sent {count} summaries")
@@ -366,7 +366,7 @@ async def summary_now(request: Request, text_id: int = Form(...)):
 
 @app.post("/webhooks/greenapi")
 async def greenapi_webhook(payload: dict):
-    handled = handle_greenapi_webhook(db_path=settings.database_path, payload=payload)
+    handled = handle_greenapi_webhook(database_url=settings.database_url, payload=payload)
     return {"ok": True, "handled": handled}
 
 
@@ -376,7 +376,7 @@ async def export_csv(request: Request, tenant_id: int | None = None):
     if isinstance(login_gate, RedirectResponse):
         return login_gate
     tenant_id = int(login_gate)
-    with db_session(settings.database_path) as conn:
+    with db_session(settings.database_url) as conn:
         csv_text = export_stats_csv(conn, tenant_id=tenant_id)
     return Response(
         content=csv_text,

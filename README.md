@@ -2,30 +2,40 @@
 
 A Python FastAPI app for multi-tenant WhatsApp learning polls. Each tenant can manage its own GreenAPI and Gemini settings, and each tenant can create multiple texts with their own WhatsApp chat, schedule, and attachment.
 
-## Setup
+## Run With Docker
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+docker compose up --build
 ```
 
-Run the app and configure everything from the UI.
-
-## Run
-
-```bash
-uvicorn app.main:app --reload
-```
-
-Open `http://127.0.0.1:8000`.
+Open `http://127.0.0.1:8988`.
 
 Default tenant login on first run:
 
 - username: `admin`
 - password: `admin`
 
-Change these in the dashboard after logging in.
+Change these in the dashboard after logging in. Passwords are stored as plaintext for the V1 MVP.
+
+The Compose stack starts:
+
+- `web`: FastAPI app on port `8988`
+- `db`: PostgreSQL 16
+- `postgres_data`: persistent database volume
+- `uploads_data`: persistent uploaded text attachments
+
+## Local Development
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env
+export DATABASE_URL=postgresql://postgres:postgres@localhost:5433/english_bot
+uvicorn app.main:app --reload
+```
+
+For local development, run your own PostgreSQL database or use the Compose database service.
 
 ## What You Can Configure
 
@@ -54,4 +64,10 @@ Enable these GreenAPI settings:
 
 ```bash
 pytest
+```
+
+Database integration tests require PostgreSQL:
+
+```bash
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/english_bot pytest
 ```

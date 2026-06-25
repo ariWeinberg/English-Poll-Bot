@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+import os
 
 
 @dataclass(frozen=True)
 class Settings:
-    database_path: Path = Path("bot.db")
+    database_url: str = os.getenv(
+        "DATABASE_URL",
+        "postgresql://postgres:postgres@localhost:5432/english_bot",
+    )
+    session_secret: str = os.getenv("SESSION_SECRET", "english-whatsapp-bot-dev-secret")
 
 
 settings = Settings()
