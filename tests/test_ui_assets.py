@@ -9,6 +9,11 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert 'const API_BASE = "/api/v1"' in app
     assert "localStorage" in app
     assert "Authorization" in app
+    assert 'type View = "dashboard" | "texts" | "polls" | "settings"' in app
+    assert "Poll Stats" in app
+    assert "Edit Text" in app
+    assert "Edit Poll" in app
+    assert "Edit Tenant" in app
     assert "proxy_pass http://api:8000/api/" in nginx
     assert "proxy_pass http://api:8000/webhooks/" in nginx
     assert '"build": "tsc && vite build"' in package

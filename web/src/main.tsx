@@ -1,18 +1,24 @@
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  BarChart3,
   Download,
+  Edit3,
   LogOut,
   Play,
+  Plus,
   RefreshCw,
   Save,
   Send,
+  Settings,
   Trash2,
 } from "lucide-react";
 import "./styles.css";
 
 const API_BASE = "/api/v1";
 const TOKEN_KEY = "english_bot_token";
+
+type View = "dashboard" | "texts" | "polls" | "settings";
 
 type Tenant = {
   id: number;
@@ -45,15 +51,30 @@ type Text = {
   attachment_name?: string | null;
 };
 
+type Poll = {
+  id: number;
+  tenant_id: number;
+  text_id: number;
+  question: string;
+  options: string[];
+  correct_option: string;
+  explanation: string;
+  greenapi_message_id?: string | null;
+  chat_id: string;
+  generated_from_text: string;
+  status: string;
+  scheduled_slot?: string | null;
+  sent_at?: string | null;
+  summary_sent_at?: string | null;
+  created_at: string;
+};
+
 type PollStats = {
-  poll: {
-    id: number;
-    question: string;
-    status: string;
-    sent_at?: string | null;
-    created_at: string;
-  };
+  poll: Poll;
+  options: string[];
+  counts: Record<string, number>;
   total: number;
+  correct_count: number;
   correct_rate: number;
 };
 
@@ -74,7 +95,11 @@ type GeneratedQuestion = {
 
 type Toast = { kind: "success" | "error"; message: string } | null;
 
-const blankTenant: Omit<Tenant, "id"> = {
+type TextFormState = Omit<Text, "id" | "tenant_name" | "attachment_name">;
+type PollFormState = Omit<Poll, "id" | "created_at">;
+type TenantFormState = Omit<Tenant, "id">;
+
+const defaultTenantForm: TenantFormState = {
   name: "Tenant",
   username: "",
   password: "",
@@ -134,6 +159,75 @@ async function downloadCsv() {
   URL.revokeObjectURL(url);
 }
 
+function blankText(tenantId: number): TextFormState {
+  return {
+    tenant_id: tenantId,
+    title: "",
+    body: "",
+    chat_id: "",
+    morning_time: "08:30",
+    evening_time: "18:00",
+    summary_time_morning: "08:25",
+    summary_time_evening: "17:55",
+    enabled: true,
+  };
+}
+
+function blankPoll(tenantId: number, text?: Text): PollFormState {
+  return {
+    tenant_id: tenantId,
+    text_id: text?.id || 0,
+    question: "",
+    options: ["A", "B", "C", "D"],
+    correct_option: "A",
+    explanation: "",
+    greenapi_message_id: "",
+    chat_id: text?.chat_id || "",
+    generated_from_text: text?.body || "",
+    status: "draft",
+    scheduled_slot: "",
+    sent_at: "",
+    summary_sent_at: "",
+  };
+}
+
+function tenantToForm(tenant: Tenant): TenantFormState {
+  const { id: _id, ...form } = tenant;
+  return form;
+}
+
+function textToForm(text: Text): TextFormState {
+  return {
+    tenant_id: text.tenant_id,
+    title: text.title,
+    body: text.body,
+    chat_id: text.chat_id,
+    morning_time: text.morning_time,
+    evening_time: text.evening_time,
+    summary_time_morning: text.summary_time_morning,
+    summary_time_evening: text.summary_time_evening,
+    enabled: text.enabled,
+  };
+}
+
+function pollToForm(poll: Poll): PollFormState {
+  return {
+    tenant_id: poll.tenant_id,
+    text_id: poll.text_id,
+    question: poll.question,
+    options: poll.options,
+    correct_option: poll.correct_option,
+    explanation: poll.explanation,
+    greenapi_message_id: poll.greenapi_message_id || "",
+    chat_id: poll.chat_id,
+    generated_from_text: poll.generated_from_text,
+    status: poll.status,
+    scheduled_slot: poll.scheduled_slot || "",
+    sent_at: poll.sent_at || "",
+    summary_sent_at: poll.summary_sent_at || "",
+  };
+}
+
 function App() {
   const [token, setToken] = useState(getToken());
 
@@ -143,10 +237,7 @@ function App() {
     return () => window.removeEventListener("auth-expired", onExpired);
   }, []);
 
-  if (!token) {
-    return <Login onLogin={(nextToken) => setToken(nextToken)} />;
-  }
-
+  if (!token) return <Login onLogin={(nextToken) => setToken(nextToken)} />;
   return <Shell onLogout={() => setToken(null)} />;
 }
 
@@ -178,14 +269,8 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
           <h1>Admin login</h1>
         </div>
         {error && <div className="alert error">{error}</div>}
-        <label>
-          Username
-          <input value={username} onChange={(event) => setUsername(event.target.value)} />
-        </label>
-        <label>
-          Password
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
-        </label>
+        <TextInput label="Username" value={username} onChange={setUsername} />
+        <TextInput label="Password" type="password" value={password} onChange={setPassword} />
         <button className="button" type="submit">
           Login
         </button>
@@ -195,10 +280,11 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
 }
 
 function Shell({ onLogout }: { onLogout: () => void }) {
-  const [view, setView] = useState<"dashboard" | "texts">("dashboard");
+  const [view, setView] = useState<View>("dashboard");
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [texts, setTexts] = useState<Text[]>([]);
+  const [polls, setPolls] = useState<Poll[]>([]);
   const [pollStats, setPollStats] = useState<PollStats[]>([]);
   const [preview, setPreview] = useState<GeneratedQuestion | null>(null);
   const [toast, setToast] = useState<Toast>(null);
@@ -208,14 +294,16 @@ function Shell({ onLogout }: { onLogout: () => void }) {
     setLoading(true);
     try {
       const me = await api<Tenant>("/auth/me");
-      const [tenantPage, textPage, stats] = await Promise.all([
+      const [tenantPage, textPage, pollPage, stats] = await Promise.all([
         api<Page<Tenant>>("/tenants?page_size=100"),
         api<Page<Text>>(`/texts?tenant_id=${me.id}&page_size=100`),
-        api<PollStats[]>(`/polls/stats?tenant_id=${me.id}&limit=25`),
+        api<Page<Poll>>(`/polls?tenant_id=${me.id}&page_size=100`),
+        api<PollStats[]>(`/polls/stats?tenant_id=${me.id}&limit=50`),
       ]);
       setTenant(me);
       setTenants(tenantPage.items);
       setTexts(textPage.items);
+      setPolls(pollPage.items);
       setPollStats(stats);
     } catch (err) {
       setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to load data" });
@@ -244,25 +332,37 @@ function Shell({ onLogout }: { onLogout: () => void }) {
     onLogout();
   }
 
+  function handleSuccess(message: string) {
+    setToast({ kind: "success", message });
+    void loadData();
+  }
+
+  function handleError(message: string) {
+    setToast({ kind: "error", message });
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
         <div>
           <p className="eyebrow">English WhatsApp Poll Bot</p>
-          <h1>{view === "dashboard" ? "Dashboard" : "Texts"}</h1>
+          <h1>{viewTitle(view)}</h1>
           <p>{tenant?.name || "Loading tenant"}</p>
         </div>
         <nav className="nav">
-          <button className={view === "dashboard" ? "button" : "button secondary"} onClick={() => setView("dashboard")}>
+          <NavButton active={view === "dashboard"} onClick={() => setView("dashboard")}>
             Dashboard
-          </button>
-          <button className={view === "texts" ? "button" : "button secondary"} onClick={() => setView("texts")}>
+          </NavButton>
+          <NavButton active={view === "texts"} onClick={() => setView("texts")}>
             Texts
-          </button>
-          <button
-            className="button secondary"
-            onClick={() => downloadCsv().catch((err) => setToast({ kind: "error", message: err.message }))}
-          >
+          </NavButton>
+          <NavButton active={view === "polls"} onClick={() => setView("polls")}>
+            Polls
+          </NavButton>
+          <NavButton active={view === "settings"} onClick={() => setView("settings")}>
+            <Settings size={16} /> Settings
+          </NavButton>
+          <button className="button secondary" onClick={() => downloadCsv().catch((err) => handleError(err.message))}>
             <Download size={16} /> CSV
           </button>
           <button className="icon-button" onClick={() => void loadData()} title="Refresh">
@@ -278,165 +378,112 @@ function Shell({ onLogout }: { onLogout: () => void }) {
       {!configured && !loading && <div className="alert warning">This tenant still needs GreenAPI and Gemini settings.</div>}
 
       {view === "dashboard" && tenant && (
-        <Dashboard
-          tenant={tenant}
-          tenants={tenants}
-          pollStats={pollStats}
-          preview={preview}
-          onTenantChanged={(message) => {
-            setToast({ kind: "success", message });
-            void loadData();
-          }}
-        />
+        <Dashboard tenant={tenant} texts={texts} polls={polls} pollStats={pollStats} preview={preview} />
       )}
 
       {view === "texts" && tenant && (
         <Texts
           tenant={tenant}
           texts={texts}
-          onChanged={(message) => {
-            setToast({ kind: "success", message });
-            void loadData();
-          }}
+          onChanged={handleSuccess}
           onPreview={(nextPreview) => {
             setPreview(nextPreview);
             setView("dashboard");
           }}
-          onError={(message) => setToast({ kind: "error", message })}
+          onError={handleError}
+        />
+      )}
+
+      {view === "polls" && tenant && (
+        <Polls tenant={tenant} texts={texts} polls={polls} onChanged={handleSuccess} onError={handleError} />
+      )}
+
+      {view === "settings" && tenant && (
+        <SettingsPage
+          tenant={tenant}
+          tenants={tenants}
+          onChanged={handleSuccess}
+          onActivated={(token) => {
+            localStorage.setItem(TOKEN_KEY, token);
+            handleSuccess("Tenant activated");
+          }}
         />
       )}
     </div>
   );
 }
 
+function viewTitle(view: View) {
+  if (view === "texts") return "Texts";
+  if (view === "polls") return "Polls";
+  if (view === "settings") return "Settings";
+  return "Dashboard";
+}
+
+function NavButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button className={active ? "button" : "button secondary"} onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
 function Dashboard({
   tenant,
-  tenants,
+  texts,
+  polls,
   pollStats,
   preview,
-  onTenantChanged,
 }: {
   tenant: Tenant;
-  tenants: Tenant[];
+  texts: Text[];
+  polls: Poll[];
   pollStats: PollStats[];
   preview: GeneratedQuestion | null;
-  onTenantChanged: (message: string) => void;
 }) {
-  const [form, setForm] = useState<Tenant>(tenant);
-
-  useEffect(() => setForm(tenant), [tenant]);
-
-  async function saveTenant(event: FormEvent) {
-    event.preventDefault();
-    await api<Tenant>(`/tenants/${form.id}`, {
-      method: "PATCH",
-      body: JSON.stringify(form),
-    });
-    onTenantChanged("Tenant saved");
-  }
-
-  async function activate(tenantId: number) {
-    const result = await api<{ access_token: string }>(`/tenants/${tenantId}/activate`, { method: "POST" });
-    localStorage.setItem(TOKEN_KEY, result.access_token);
-    onTenantChanged("Tenant activated");
-  }
+  const totalVotes = pollStats.reduce((sum, item) => sum + item.total, 0);
+  const averageCorrect =
+    pollStats.length === 0 ? 0 : pollStats.reduce((sum, item) => sum + item.correct_rate, 0) / pollStats.length;
+  const sentPolls = polls.filter((poll) => poll.status === "sent").length;
 
   return (
-    <main className="page-grid">
+    <main className="dashboard-grid">
+      <section className="metric-card">
+        <span>Texts</span>
+        <strong>{texts.length}</strong>
+      </section>
+      <section className="metric-card">
+        <span>Polls</span>
+        <strong>{polls.length}</strong>
+      </section>
+      <section className="metric-card">
+        <span>Sent polls</span>
+        <strong>{sentPolls}</strong>
+      </section>
+      <section className="metric-card">
+        <span>Total votes</span>
+        <strong>{totalVotes}</strong>
+      </section>
+      <section className="metric-card">
+        <span>Avg correct</span>
+        <strong>{averageCorrect.toFixed(1)}%</strong>
+      </section>
+
       <section className="panel span-2">
         <div className="panel-header">
-          <h2>Tenant</h2>
+          <h2>
+            <BarChart3 size={18} /> Poll Stats
+          </h2>
         </div>
-        <form className="config-form" onSubmit={(event) => void saveTenant(event)}>
-          <TextInput label="Tenant name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} />
-          <TextInput label="Username" value={form.username} onChange={(value) => setForm({ ...form, username: value })} />
-          <TextInput
-            label="Password"
-            type="password"
-            value={form.password}
-            onChange={(value) => setForm({ ...form, password: value })}
-          />
-          <TextInput
-            label="GreenAPI URL"
-            value={form.greenapi_api_url}
-            onChange={(value) => setForm({ ...form, greenapi_api_url: value })}
-          />
-          <TextInput
-            label="GreenAPI instance ID"
-            value={form.greenapi_id_instance}
-            onChange={(value) => setForm({ ...form, greenapi_id_instance: value })}
-          />
-          <TextInput
-            label="GreenAPI token"
-            type="password"
-            value={form.greenapi_api_token_instance}
-            onChange={(value) => setForm({ ...form, greenapi_api_token_instance: value })}
-          />
-          <TextInput
-            label="Gemini API key"
-            type="password"
-            value={form.gemini_api_key}
-            onChange={(value) => setForm({ ...form, gemini_api_key: value })}
-          />
-          <TextInput
-            label="Gemini model"
-            value={form.gemini_model}
-            onChange={(value) => setForm({ ...form, gemini_model: value })}
-          />
-          <TextInput label="Timezone" value={form.timezone} onChange={(value) => setForm({ ...form, timezone: value })} />
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={form.summary_enabled}
-              onChange={(event) => setForm({ ...form, summary_enabled: event.target.checked })}
-            />
-            Send summaries
-          </label>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={form.scheduler_enabled}
-              onChange={(event) => setForm({ ...form, scheduler_enabled: event.target.checked })}
-            />
-            Enable scheduler
-          </label>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={form.is_active}
-              onChange={(event) => setForm({ ...form, is_active: event.target.checked })}
-            />
-            Set active tenant
-          </label>
-          <button className="button form-action" type="submit">
-            <Save size={16} /> Save
-          </button>
-        </form>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Tenants</h2>
-        </div>
-        <div className="tenant-list">
-          {tenants.map((item) => (
-            <div className={item.id === tenant.id ? "tenant-pill active" : "tenant-pill"} key={item.id}>
-              <span>{item.name}</span>
-              {item.id !== tenant.id && (
-                <button className="button secondary" onClick={() => void activate(item.id)}>
-                  Use
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Latest Polls</h2>
-        </div>
-        <div className="list">
+        <div className="stats-list">
           {pollStats.map((item) => (
             <article className="poll-card" key={item.poll.id}>
               <div className="poll-meta">
@@ -445,18 +492,41 @@ function Dashboard({
                 <span>{item.poll.sent_at || item.poll.created_at}</span>
               </div>
               <h3>{item.poll.question}</h3>
-              <p>
-                <strong>{item.total}</strong> votes <strong>{item.correct_rate.toFixed(1)}%</strong> correct
-              </p>
+              <div className="stat-row">
+                <strong>{item.total}</strong> votes
+                <strong>{item.correct_count}</strong> correct
+                <strong>{item.correct_rate.toFixed(1)}%</strong> correct rate
+              </div>
+              <div className="option-stats">
+                {item.options.map((option) => (
+                  <div className={option === item.poll.correct_option ? "option-stat correct-option" : "option-stat"} key={option}>
+                    <span>{option}</span>
+                    <strong>{item.counts[option] || 0}</strong>
+                  </div>
+                ))}
+              </div>
             </article>
           ))}
+          {pollStats.length === 0 && <p className="empty">No poll stats yet.</p>}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Tenant Status</h2>
+        </div>
+        <div className="status-list">
+          <Status label="Tenant" value={tenant.name} />
+          <Status label="Scheduler" value={tenant.scheduler_enabled ? "Enabled" : "Disabled"} />
+          <Status label="Summaries" value={tenant.summary_enabled ? "Enabled" : "Disabled"} />
+          <Status label="Timezone" value={tenant.timezone} />
         </div>
       </section>
 
       {preview && (
         <section className="panel span-2">
           <div className="panel-header">
-            <h2>Preview</h2>
+            <h2>Question Preview</h2>
           </div>
           <p className="question">{preview.question}</p>
           <ol>
@@ -473,6 +543,15 @@ function Dashboard({
   );
 }
 
+function Status({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="status-row">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
 function Texts({
   tenant,
   texts,
@@ -486,33 +565,33 @@ function Texts({
   onPreview: (preview: GeneratedQuestion) => void;
   onError: (message: string) => void;
 }) {
-  const [form, setForm] = useState({
-    title: "",
-    body: "",
-    chat_id: "",
-    morning_time: "08:30",
-    evening_time: "18:00",
-    summary_time_morning: "08:25",
-    summary_time_evening: "17:55",
-    enabled: true,
-  });
+  const [editing, setEditing] = useState<Text | null>(null);
+  const [form, setForm] = useState<TextFormState>(blankText(tenant.id));
+
+  useEffect(() => {
+    if (!editing) setForm(blankText(tenant.id));
+  }, [tenant.id, editing]);
+
+  function edit(text: Text) {
+    setEditing(text);
+    setForm(textToForm(text));
+  }
 
   async function saveText(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (editing) {
+      await api<Text>(`/texts/${editing.id}`, { method: "PATCH", body: JSON.stringify(form) });
+      setEditing(null);
+      setForm(blankText(tenant.id));
+      onChanged("Text updated");
+      return;
+    }
+
     const data = new FormData(event.currentTarget);
     data.set("tenant_id", String(tenant.id));
     data.set("enabled", String(form.enabled));
     await api<Text>("/texts", { method: "POST", body: data });
-    setForm({
-      title: "",
-      body: "",
-      chat_id: "",
-      morning_time: "08:30",
-      evening_time: "18:00",
-      summary_time_morning: "08:25",
-      summary_time_evening: "17:55",
-      enabled: true,
-    });
+    setForm(blankText(tenant.id));
     event.currentTarget.reset();
     onChanged("Text saved");
   }
@@ -538,18 +617,6 @@ function Texts({
     }
   }
 
-  async function sendSummary(textId: number) {
-    try {
-      const result = await api<{ sent: number }>("/summaries/send-now", {
-        method: "POST",
-        body: JSON.stringify({ text_id: textId }),
-      });
-      onChanged(`Sent ${result.sent} summaries`);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : "Summary send failed");
-    }
-  }
-
   async function remove(textId: number) {
     await api(`/texts/${textId}`, { method: "DELETE" });
     onChanged("Text deleted");
@@ -559,7 +626,12 @@ function Texts({
     <main className="page-grid">
       <section className="panel">
         <div className="panel-header">
-          <h2>New Text</h2>
+          <h2>{editing ? "Edit Text" : "New Text"}</h2>
+          {editing && (
+            <button className="button secondary" onClick={() => setEditing(null)}>
+              <Plus size={16} /> New
+            </button>
+          )}
         </div>
         <form className="config-form single" onSubmit={(event) => void saveText(event)}>
           <TextInput label="Title" name="title" value={form.title} onChange={(value) => setForm({ ...form, title: value })} />
@@ -574,18 +646,8 @@ function Texts({
             onChange={(value) => setForm({ ...form, chat_id: value })}
           />
           <div className="time-grid">
-            <TextInput
-              label="Morning"
-              name="morning_time"
-              value={form.morning_time}
-              onChange={(value) => setForm({ ...form, morning_time: value })}
-            />
-            <TextInput
-              label="Evening"
-              name="evening_time"
-              value={form.evening_time}
-              onChange={(value) => setForm({ ...form, evening_time: value })}
-            />
+            <TextInput label="Morning" name="morning_time" value={form.morning_time} onChange={(value) => setForm({ ...form, morning_time: value })} />
+            <TextInput label="Evening" name="evening_time" value={form.evening_time} onChange={(value) => setForm({ ...form, evening_time: value })} />
             <TextInput
               label="AM summary"
               name="summary_time_morning"
@@ -600,26 +662,24 @@ function Texts({
             />
           </div>
           <label className="check">
-            <input
-              type="checkbox"
-              checked={form.enabled}
-              onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
-            />
+            <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
             Enable text
           </label>
-          <label>
-            Attachment
-            <input name="attachment" type="file" />
-          </label>
+          {!editing && (
+            <label>
+              Attachment
+              <input name="attachment" type="file" />
+            </label>
+          )}
           <button className="button form-action" type="submit">
-            <Save size={16} /> Save
+            <Save size={16} /> {editing ? "Update" : "Save"}
           </button>
         </form>
       </section>
 
       <section className="panel span-2">
         <div className="panel-header">
-          <h2>All Texts</h2>
+          <h2>Texts</h2>
         </div>
         <div className="list">
           {texts.map((text) => (
@@ -627,18 +687,22 @@ function Texts({
               <div className="poll-meta">
                 <span>#{text.id}</span>
                 <span>{text.title}</span>
+                <span>{text.enabled ? "enabled" : "disabled"}</span>
                 <span>{text.chat_id || "no chat"}</span>
               </div>
-              <p className="text-body">{text.body.slice(0, 220)}{text.body.length > 220 ? "..." : ""}</p>
+              <p className="text-body">
+                {text.body.slice(0, 220)}
+                {text.body.length > 220 ? "..." : ""}
+              </p>
               <div className="actions">
+                <button className="button secondary" onClick={() => edit(text)}>
+                  <Edit3 size={16} /> Edit
+                </button>
                 <button className="button secondary" onClick={() => void preview(text.id)}>
                   <Play size={16} /> Preview
                 </button>
                 <button className="button" onClick={() => void sendPoll(text.id)}>
                   <Send size={16} /> Poll
-                </button>
-                <button className="button secondary" onClick={() => void sendSummary(text.id)}>
-                  Summary
                 </button>
                 <button className="icon-button danger" onClick={() => void remove(text.id)} title="Delete">
                   <Trash2 size={18} />
@@ -649,6 +713,327 @@ function Texts({
         </div>
       </section>
     </main>
+  );
+}
+
+function Polls({
+  tenant,
+  texts,
+  polls,
+  onChanged,
+  onError,
+}: {
+  tenant: Tenant;
+  texts: Text[];
+  polls: Poll[];
+  onChanged: (message: string) => void;
+  onError: (message: string) => void;
+}) {
+  const [editing, setEditing] = useState<Poll | null>(null);
+  const [form, setForm] = useState<PollFormState>(blankPoll(tenant.id, texts[0]));
+
+  useEffect(() => {
+    if (!editing) setForm(blankPoll(tenant.id, texts[0]));
+  }, [tenant.id, texts, editing]);
+
+  function setText(textId: number) {
+    const text = texts.find((item) => item.id === textId);
+    setForm({
+      ...form,
+      text_id: textId,
+      chat_id: text?.chat_id || form.chat_id,
+      generated_from_text: text?.body || form.generated_from_text,
+    });
+  }
+
+  function edit(poll: Poll) {
+    setEditing(poll);
+    setForm(pollToForm(poll));
+  }
+
+  async function savePoll(event: FormEvent) {
+    event.preventDefault();
+    if (!form.text_id) {
+      onError("Select a text before saving a poll.");
+      return;
+    }
+    const payload = {
+      ...form,
+      scheduled_slot: form.scheduled_slot || null,
+      sent_at: form.sent_at || null,
+      summary_sent_at: form.summary_sent_at || null,
+      greenapi_message_id: form.greenapi_message_id || null,
+    };
+    if (editing) {
+      await api<Poll>(`/polls/${editing.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+      setEditing(null);
+      onChanged("Poll updated");
+      return;
+    }
+    await api<Poll>("/polls", { method: "POST", body: JSON.stringify(payload) });
+    setForm(blankPoll(tenant.id, texts[0]));
+    onChanged("Poll created");
+  }
+
+  async function remove(pollId: number) {
+    await api(`/polls/${pollId}`, { method: "DELETE" });
+    onChanged("Poll deleted");
+  }
+
+  return (
+    <main className="page-grid">
+      <section className="panel">
+        <div className="panel-header">
+          <h2>{editing ? "Edit Poll" : "New Poll"}</h2>
+          {editing && (
+            <button className="button secondary" onClick={() => setEditing(null)}>
+              <Plus size={16} /> New
+            </button>
+          )}
+        </div>
+        <form className="config-form single" onSubmit={(event) => void savePoll(event)}>
+          <label>
+            Text
+            <select value={form.text_id} onChange={(event) => setText(Number(event.target.value))}>
+              <option value={0}>Select text</option>
+              {texts.map((text) => (
+                <option value={text.id} key={text.id}>
+                  {text.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          <TextInput label="Question" value={form.question} onChange={(value) => setForm({ ...form, question: value })} />
+          <div className="time-grid">
+            {form.options.map((option, index) => (
+              <TextInput
+                label={`Option ${index + 1}`}
+                value={option}
+                onChange={(value) => {
+                  const options = [...form.options];
+                  options[index] = value;
+                  setForm({ ...form, options });
+                }}
+                key={index}
+              />
+            ))}
+          </div>
+          <TextInput label="Correct option" value={form.correct_option} onChange={(value) => setForm({ ...form, correct_option: value })} />
+          <TextInput label="Status" value={form.status} onChange={(value) => setForm({ ...form, status: value })} />
+          <TextInput label="Chat ID" value={form.chat_id} onChange={(value) => setForm({ ...form, chat_id: value })} />
+          <TextInput
+            label="Scheduled slot"
+            value={form.scheduled_slot || ""}
+            onChange={(value) => setForm({ ...form, scheduled_slot: value })}
+          />
+          <label>
+            Explanation
+            <textarea rows={4} value={form.explanation} onChange={(event) => setForm({ ...form, explanation: event.target.value })} />
+          </label>
+          <label>
+            Generated from text
+            <textarea
+              rows={6}
+              value={form.generated_from_text}
+              onChange={(event) => setForm({ ...form, generated_from_text: event.target.value })}
+            />
+          </label>
+          <button className="button form-action" type="submit">
+            <Save size={16} /> {editing ? "Update" : "Save"}
+          </button>
+        </form>
+      </section>
+
+      <section className="panel span-2">
+        <div className="panel-header">
+          <h2>Polls</h2>
+        </div>
+        <div className="list">
+          {polls.map((poll) => (
+            <article className="poll-card" key={poll.id}>
+              <div className="poll-meta">
+                <span>#{poll.id}</span>
+                <span>{poll.status}</span>
+                <span>text #{poll.text_id}</span>
+                <span>{poll.sent_at || poll.created_at}</span>
+              </div>
+              <h3>{poll.question}</h3>
+              <div className="option-stats">
+                {poll.options.map((option) => (
+                  <div className={option === poll.correct_option ? "option-stat correct-option" : "option-stat"} key={option}>
+                    <span>{option}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="actions">
+                <button className="button secondary" onClick={() => edit(poll)}>
+                  <Edit3 size={16} /> Edit
+                </button>
+                <button className="icon-button danger" onClick={() => void remove(poll.id)} title="Delete">
+                  <Trash2 size={18} />
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function SettingsPage({
+  tenant,
+  tenants,
+  onChanged,
+  onActivated,
+}: {
+  tenant: Tenant;
+  tenants: Tenant[];
+  onChanged: (message: string) => void;
+  onActivated: (token: string) => void;
+}) {
+  const [editing, setEditing] = useState<Tenant | null>(tenant);
+  const [form, setForm] = useState<TenantFormState>(tenantToForm(tenant));
+
+  useEffect(() => {
+    setEditing(tenant);
+    setForm(tenantToForm(tenant));
+  }, [tenant]);
+
+  function newTenant() {
+    setEditing(null);
+    setForm(defaultTenantForm);
+  }
+
+  function editTenant(nextTenant: Tenant) {
+    setEditing(nextTenant);
+    setForm(tenantToForm(nextTenant));
+  }
+
+  async function saveTenant(event: FormEvent) {
+    event.preventDefault();
+    if (editing) {
+      await api<Tenant>(`/tenants/${editing.id}`, { method: "PATCH", body: JSON.stringify(form) });
+      onChanged("Tenant updated");
+      return;
+    }
+    await api<Tenant>("/tenants", { method: "POST", body: JSON.stringify(form) });
+    onChanged("Tenant created");
+  }
+
+  async function activate(tenantId: number) {
+    const result = await api<{ access_token: string }>(`/tenants/${tenantId}/activate`, { method: "POST" });
+    onActivated(result.access_token);
+  }
+
+  async function removeTenant(tenantId: number) {
+    await api(`/tenants/${tenantId}`, { method: "DELETE" });
+    onChanged("Tenant deleted");
+  }
+
+  return (
+    <main className="page-grid">
+      <section className="panel span-2">
+        <div className="panel-header">
+          <h2>{editing ? "Edit Tenant" : "New Tenant"}</h2>
+          <button className="button secondary" onClick={newTenant}>
+            <Plus size={16} /> New
+          </button>
+        </div>
+        <TenantForm form={form} setForm={setForm} onSubmit={saveTenant} submitLabel={editing ? "Update" : "Create"} />
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Tenants</h2>
+        </div>
+        <div className="tenant-list">
+          {tenants.map((item) => (
+            <div className={item.id === tenant.id ? "tenant-pill active" : "tenant-pill"} key={item.id}>
+              <span>{item.name}</span>
+              <div className="actions">
+                <button className="button secondary" onClick={() => editTenant(item)}>
+                  <Edit3 size={16} /> Edit
+                </button>
+                {item.id !== tenant.id && (
+                  <>
+                    <button className="button secondary" onClick={() => void activate(item.id)}>
+                      Use
+                    </button>
+                    <button className="icon-button danger" onClick={() => void removeTenant(item.id)} title="Delete">
+                      <Trash2 size={18} />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function TenantForm({
+  form,
+  setForm,
+  onSubmit,
+  submitLabel,
+}: {
+  form: TenantFormState;
+  setForm: (form: TenantFormState) => void;
+  onSubmit: (event: FormEvent) => void;
+  submitLabel: string;
+}) {
+  return (
+    <form className="config-form" onSubmit={onSubmit}>
+      <TextInput label="Tenant name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} />
+      <TextInput label="Username" value={form.username} onChange={(value) => setForm({ ...form, username: value })} />
+      <TextInput label="Password" type="password" value={form.password} onChange={(value) => setForm({ ...form, password: value })} />
+      <TextInput
+        label="GreenAPI URL"
+        value={form.greenapi_api_url}
+        onChange={(value) => setForm({ ...form, greenapi_api_url: value })}
+      />
+      <TextInput
+        label="GreenAPI instance ID"
+        value={form.greenapi_id_instance}
+        onChange={(value) => setForm({ ...form, greenapi_id_instance: value })}
+      />
+      <TextInput
+        label="GreenAPI token"
+        type="password"
+        value={form.greenapi_api_token_instance}
+        onChange={(value) => setForm({ ...form, greenapi_api_token_instance: value })}
+      />
+      <TextInput
+        label="Gemini API key"
+        type="password"
+        value={form.gemini_api_key}
+        onChange={(value) => setForm({ ...form, gemini_api_key: value })}
+      />
+      <TextInput label="Gemini model" value={form.gemini_model} onChange={(value) => setForm({ ...form, gemini_model: value })} />
+      <TextInput label="Timezone" value={form.timezone} onChange={(value) => setForm({ ...form, timezone: value })} />
+      <label className="check">
+        <input type="checkbox" checked={form.summary_enabled} onChange={(event) => setForm({ ...form, summary_enabled: event.target.checked })} />
+        Send summaries
+      </label>
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={form.scheduler_enabled}
+          onChange={(event) => setForm({ ...form, scheduler_enabled: event.target.checked })}
+        />
+        Enable scheduler
+      </label>
+      <label className="check">
+        <input type="checkbox" checked={form.is_active} onChange={(event) => setForm({ ...form, is_active: event.target.checked })} />
+        Set active tenant
+      </label>
+      <button className="button form-action" type="submit">
+        <Save size={16} /> {submitLabel}
+      </button>
+    </form>
   );
 }
 

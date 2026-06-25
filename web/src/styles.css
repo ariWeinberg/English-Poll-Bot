@@ -18,7 +18,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -77,6 +78,9 @@ h1 {
 h2 {
   margin: 0;
   font-size: 1.15rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 h3 {
@@ -175,7 +179,8 @@ label {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   border: 1px solid #cbd7da;
   border-radius: 8px;
@@ -206,6 +211,34 @@ textarea {
 .list {
   display: grid;
   gap: 12px;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(140px, 1fr));
+  gap: 18px;
+}
+
+.metric-card {
+  display: grid;
+  gap: 8px;
+  min-height: 112px;
+  align-content: center;
+  padding: 18px;
+  background: #ffffff;
+  border: 1px solid #dde5e7;
+  border-radius: 8px;
+  box-shadow: 0 12px 30px rgba(23, 33, 38, 0.07);
+}
+
+.metric-card span {
+  color: #5f6f73;
+  font-weight: 700;
+}
+
+.metric-card strong {
+  font-size: 2rem;
+  line-height: 1;
 }
 
 .tenant-pill,
@@ -244,6 +277,56 @@ textarea {
   flex-wrap: wrap;
   margin-bottom: 10px;
   font-size: 0.84rem;
+}
+
+.stats-list,
+.status-list {
+  display: grid;
+  gap: 12px;
+}
+
+.stat-row,
+.status-row,
+.option-stats {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.stat-row {
+  color: #5f6f73;
+}
+
+.status-row {
+  justify-content: space-between;
+  border-bottom: 1px solid #e8eef0;
+  padding: 10px 0;
+}
+
+.option-stats {
+  margin-top: 12px;
+}
+
+.option-stat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 92px;
+  border: 1px solid #d8e2e5;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 8px 10px;
+}
+
+.correct-option {
+  border-color: #62a17b;
+  background: #e6f4ea;
+}
+
+.empty {
+  color: #5f6f73;
 }
 
 .alert {
@@ -290,7 +373,8 @@ textarea {
   }
 
   .topbar,
-  .page-grid {
+  .page-grid,
+  .dashboard-grid {
     display: grid;
     grid-template-columns: 1fr;
   }
