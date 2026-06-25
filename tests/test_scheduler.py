@@ -12,6 +12,8 @@ def test_scheduler_registers_minute_tick(tmp_path: Path):
             conn,
             tenant_id=1,
             name="Tenant A",
+            username="tenant-a",
+            password="secret",
             greenapi_api_url="https://api.green-api.com",
             greenapi_id_instance="7103000000",
             greenapi_api_token_instance="abc123",

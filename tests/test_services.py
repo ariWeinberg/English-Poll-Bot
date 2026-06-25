@@ -13,8 +13,8 @@ def test_handle_greenapi_webhook_replaces_vote_state(tmp_path: Path):
     init_db(db_path)
     with db_session(db_path) as conn:
         conn.execute(
-            "UPDATE tenants SET greenapi_id_instance = ?, greenapi_api_token_instance = ?, gemini_api_key = ? WHERE id = 1",
-            ("id", "token", "gemini-key"),
+            "UPDATE tenants SET username = ?, password = ?, greenapi_id_instance = ?, greenapi_api_token_instance = ?, gemini_api_key = ? WHERE id = 1",
+            ("tenant-a", "secret", "id", "token", "gemini-key"),
         )
         poll_id = create_poll(
             conn,

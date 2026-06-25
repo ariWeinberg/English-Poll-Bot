@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · English WhatsApp Poll Bot{% endblock %}
+{% block body %}
+<header class="topbar">
+  <div>
+    <h1>Dashboard</h1>
+    <p>{{ tenant.name }}</p>
+  </div>
+  <nav class="nav">
+    <a class="button secondary" href="/texts">Texts</a>
+    <a class="button secondary" href="/export.csv">Export CSV</a>
+    <form method="post" action="/logout">
+      <button class="button" type="submit">Logout</button>
+    </form>
+  </nav>
+</header>
+<main>
+  {% if message %}<div class="alert success">{{ message }}</div>{% endif %}
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  {% if not configured %}
+    <div class="alert warning">This tenant still needs GreenAPI and Gemini settings.</div>
+  {% endif %}
+
+  <section class="panel">
+    <div class="panel-header"><h2>Tenant</h2></div>
+    <form method="post" action="/tenants/save" class="config-form">
+      <input type="hidden" name="tenant_id" value="{{ tenant.id }}">
+      <label>Tenant name<input type="text" name="name" value="{{ tenant.name }}"></label>
+      <label>Username<input type="text" name="username" value="{{ tenant.username }}"></label>
+      <label>Password<input type="password" name="password" value="{{ tenant.password }}"></label>
+      <label>GreenAPI URL<input type="text" name="greenapi_api_url" value="{{ tenant.greenapi_api_url }}"></label>
+      <label>GreenAPI instance ID<input type="text" name="greenapi_id_instance" value="{{ tenant.greenapi_id_instance }}"></label>
+      <label>GreenAPI token<input type="password" name="greenapi_api_token_instance" value="{{ tenant.greenapi_api_token_instance }}"></label>
+      <label>Gemini API key<input type="password" name="gemini_api_key" value="{{ tenant.gemini_api_key }}"></label>
+      <label>Gemini model<input type="text" name="gemini_model" value="{{ tenant.gemini_model }}"></label>
+      <label>Timezone<input type="text" name="timezone" value="{{ tenant.timezone }}"></label>
+      <label class="check"><input type="hidden" name="summary_enabled" value="false"><input type="checkbox" name="summary_enabled" value="true" {% if tenant.summary_enabled %}checked{% endif %}>Send summaries</label>
+      <label class="check"><input type="hidden" name="scheduler_enabled" value="false"><input type="checkbox" name="scheduler_enabled" value="true" {% if tenant.scheduler_enabled %}checked{% endif %}>Enable scheduler</label>
+      <label class="check"><input type="hidden" name="is_active" value="false"><input type="checkbox" name="is_active" value="true" {% if tenant.is_active %}checked{% endif %}>Set active tenant</label>
+      <div class="actions"><button class="button" type="submit">Save Tenant</button></div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header"><h2>Other Tenants</h2></div>
+    <div class="tenant-list">
+      {% for item in tenants %}
+        <div class="tenant-pill {% if item.id == tenant.id %}active{% endif %}">
+          <span>{{ item.name }}</span>
+          {% if item.id != tenant.id %}
+            <form method="post" action="/tenants/{{ item.id }}/activate">
+              <button class="button secondary" type="submit">Use</button>
+            </form>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header"><h2>Latest Polls</h2></div>
+    <div class="poll-list">
+      {% for item in poll_stats %}
+        {% set poll = item.poll %}
+        <article class="poll-card">
+          <div class="poll-meta">
+            <span>#{{ poll.id }}</span><span>{{ poll.status }}</span><span>{{ poll.sent_at or poll.created_at }}</span>
+          </div>
+          <h3>{{ poll.question }}</h3>
+          <div class="metric-row"><strong>{{ item.total }}</strong> votes <strong>{{ "%.1f"|format(item.correct_rate) }}%</strong> correct</div>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  {% if preview %}
+    <section class="panel">
+      <div class="panel-header"><h2>Preview</h2></div>
+      <p class="question">{{ preview.question }}</p>
+      <ol>
+        {% for option in preview.options %}
+          <li class="{% if option == preview.correct_option %}correct{% endif %}">{{ option }}</li>
+        {% endfor %}
+      </ol>
+      <p>{{ preview.explanation }}</p>
+    </section>
+  {% endif %}
+</main>
+{% endblock %}

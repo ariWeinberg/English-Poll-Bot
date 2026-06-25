@@ -29,6 +29,8 @@ def test_tenant_and_text_can_be_updated_in_db(tmp_path: Path):
             conn,
             tenant_id=1,
             name="Tenant A",
+            username="tenant-a",
+            password="secret",
             greenapi_api_url="https://api.green-api.com",
             greenapi_id_instance="7103000000",
             greenapi_api_token_instance="abc123",

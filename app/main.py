@@ -8,6 +8,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings
 from app.database import (
@@ -17,14 +18,12 @@ from app.database import (
     delete_tenant,
     export_stats_csv,
     get_active_tenant,
-    get_source_text,
     get_tenant,
     get_text,
     init_db,
     list_tenants,
     list_texts,
     set_active_tenant,
-    set_source_text,
     upsert_text,
     upsert_tenant,
 )
@@ -59,65 +58,107 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="English WhatsApp Poll Bot", lifespan=lifespan)
+app.add_middleware(SessionMiddleware, secret_key="english-whatsapp-bot-dev-secret")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
-def redirect_home(message: str | None = None, error: str | None = None, tenant_id: int | None = None) -> RedirectResponse:
-    parts = []
-    if tenant_id is not None:
-        parts.append(f"tenant_id={tenant_id}")
+def redirect(url: str, *, message: str | None = None, error: str | None = None) -> RedirectResponse:
+    parts: list[str] = []
     if message:
         parts.append(f"message={message}")
     if error:
         parts.append(f"error={error}")
-    suffix = f"?{'&'.join(parts)}" if parts else ""
-    return RedirectResponse(f"/{suffix}", status_code=303)
+    if parts:
+        url = f"{url}?{'&'.join(parts)}"
+    return RedirectResponse(url, status_code=303)
 
 
-def is_configured(config: dict[str, str]) -> bool:
+def get_session_tenant_id(request: Request) -> int | None:
+    value = request.session.get("tenant_id")
+    return int(value) if isinstance(value, int | str) and str(value).isdigit() else None
+
+
+def require_login(request: Request) -> int | RedirectResponse:
+    tenant_id = get_session_tenant_id(request)
+    if tenant_id is None:
+        return redirect("/login")
+    return tenant_id
+
+
+def render(request: Request, template: str, context: dict, status_code: int = 200):
+    return templates.TemplateResponse(request=request, name=template, context=context, status_code=status_code)
+
+
+def is_configured(tenant: dict[str, str]) -> bool:
     return all(
         (
-            bool(config.get("greenapi_api_url", "").strip()),
-            bool(config.get("greenapi_id_instance", "").strip()),
-            bool(config.get("greenapi_api_token_instance", "").strip()),
-            bool(config.get("gemini_api_key", "").strip()),
+            bool(tenant.get("greenapi_api_url", "").strip()),
+            bool(tenant.get("greenapi_id_instance", "").strip()),
+            bool(tenant.get("greenapi_api_token_instance", "").strip()),
+            bool(tenant.get("gemini_api_key", "").strip()),
         )
     )
 
 
-def resolve_tenant_id(request: Request) -> int | None:
-    tenant_id = request.query_params.get("tenant_id")
-    return int(tenant_id) if tenant_id and tenant_id.isdigit() else None
+@app.get("/", response_class=HTMLResponse)
+async def landing(request: Request):
+    tenant_id = get_session_tenant_id(request)
+    if tenant_id is not None:
+        return redirect("/dashboard")
+    return render(request, "landing.html", {"request": request})
 
 
-def render_index(request: Request, *, message: str | None = None, error: str | None = None):
-    tenant_id = resolve_tenant_id(request)
+@app.get("/login", response_class=HTMLResponse)
+async def login_form(request: Request, error: str | None = None):
     with db_session(settings.database_path) as conn:
         tenants = list_tenants(conn)
-        tenant = get_tenant(conn, tenant_id) if tenant_id else get_active_tenant(conn)
-        texts = list_texts(conn, int(tenant["id"]))
-        polls = all_poll_stats(conn, tenant_id=int(tenant["id"]))
-        config = dict(tenant)
-    return templates.TemplateResponse(
-        request=request,
-        name="index.html",
-        context={
+    return render(request, "login.html", {"request": request, "tenants": tenants, "error": error})
+
+
+@app.post("/login")
+async def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    with db_session(settings.database_path) as conn:
+        tenant = conn.execute(
+            "SELECT * FROM tenants WHERE username = ? AND password = ? LIMIT 1",
+            (username.strip(), password.strip()),
+        ).fetchone()
+    if tenant is None:
+        return redirect("/login", error="Invalid username or password")
+    request.session["tenant_id"] = int(tenant["id"])
+    return redirect("/dashboard")
+
+
+@app.post("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return redirect("/")
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard(request: Request, message: str | None = None, error: str | None = None):
+    login_gate = require_login(request)
+    if isinstance(login_gate, RedirectResponse):
+        return login_gate
+    tenant_id = int(login_gate)
+    with db_session(settings.database_path) as conn:
+        tenant = get_tenant(conn, tenant_id)
+        tenants = list_tenants(conn)
+        texts = list_texts(conn, tenant_id)
+        polls = all_poll_stats(conn, tenant_id=tenant_id)
+    return render(
+        request,
+        "dashboard.html",
+        {
             "request": request,
-            "tenants": tenants,
             "tenant": tenant,
+            "tenants": tenants,
             "texts": texts,
             "poll_stats": polls,
-            "config": config,
+            "configured": is_configured(dict(tenant)),
             "message": message,
             "error": error,
-            "configured": is_configured(config),
         },
     )
-
-
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request, message: str | None = None, error: str | None = None):
-    return render_index(request, message=message, error=error)
 
 
 @app.post("/tenants/save")
@@ -125,6 +166,8 @@ async def save_tenant(
     request: Request,
     tenant_id: int | None = Form(None),
     name: str = Form(...),
+    username: str = Form(...),
+    password: str = Form(...),
     greenapi_api_url: str = Form(...),
     greenapi_id_instance: str = Form(...),
     greenapi_api_token_instance: str = Form(...),
@@ -135,11 +178,16 @@ async def save_tenant(
     scheduler_enabled: str = Form("false"),
     is_active: str = Form("true"),
 ):
+    login_gate = require_login(request)
+    if isinstance(login_gate, RedirectResponse):
+        return login_gate
     with db_session(settings.database_path) as conn:
         saved_id = upsert_tenant(
             conn,
             tenant_id=tenant_id,
             name=name,
+            username=username,
+            password=password,
             greenapi_api_url=greenapi_api_url,
             greenapi_id_instance=greenapi_id_instance,
             greenapi_api_token_instance=greenapi_api_token_instance,
@@ -152,29 +200,55 @@ async def save_tenant(
         )
         if is_active == "true":
             set_active_tenant(conn, saved_id)
-
-    scheduler = getattr(app.state, "scheduler", None)
     runtime = load_runtime_config(settings.database_path, saved_id)
+    scheduler = getattr(app.state, "scheduler", None)
     if scheduler:
         scheduler.shutdown(wait=False)
     if runtime.scheduler_enabled and runtime.greenapi_ready and runtime.gemini_ready:
-        new_scheduler = build_scheduler(settings.database_path)
-        new_scheduler.start()
-        app.state.scheduler = new_scheduler
+        app.state.scheduler = build_scheduler(settings.database_path)
+        app.state.scheduler.start()
     else:
         app.state.scheduler = None
-    return redirect_home(message="Tenant saved", tenant_id=saved_id)
+    request.session["tenant_id"] = saved_id
+    return redirect("/dashboard", message="Tenant saved")
 
 
 @app.post("/tenants/{tenant_id}/activate")
-async def activate_tenant(tenant_id: int):
+async def activate_tenant(request: Request, tenant_id: int):
+    login_gate = require_login(request)
+    if isinstance(login_gate, RedirectResponse):
+        return login_gate
     with db_session(settings.database_path) as conn:
         set_active_tenant(conn, tenant_id)
-    return redirect_home(message="Tenant activated", tenant_id=tenant_id)
+    request.session["tenant_id"] = tenant_id
+    return redirect("/dashboard", message="Tenant activated")
+
+
+@app.get("/texts", response_class=HTMLResponse)
+async def texts_page(request: Request, message: str | None = None, error: str | None = None):
+    login_gate = require_login(request)
+    if isinstance(login_gate, RedirectResponse):
+        return login_gate
+    tenant_id = int(login_gate)
+    with db_session(settings.database_path) as conn:
+        tenant = get_tenant(conn, tenant_id)
+        texts = list_texts(conn, tenant_id)
+    return render(
+        request,
+        "texts.html",
+        {
+            "request": request,
+            "tenant": tenant,
+            "texts": texts,
+            "message": message,
+            "error": error,
+        },
+    )
 
 
 @app.post("/texts/save")
 async def save_text(
+    request: Request,
     tenant_id: int = Form(...),
     text_id: int | None = Form(None),
     title: str = Form(...),
@@ -187,6 +261,9 @@ async def save_text(
     enabled: str = Form("true"),
     attachment: UploadFile | None = File(None),
 ):
+    login_gate = require_login(request)
+    if isinstance(login_gate, RedirectResponse):
+        return login_gate
     attachment_name = None
     attachment_path = None
     if attachment and attachment.filename:
@@ -198,7 +275,7 @@ async def save_text(
         attachment_name = attachment.filename
         attachment_path = str(stored_path)
     with db_session(settings.database_path) as conn:
-        saved_id = upsert_text(
+        upsert_text(
             conn,
             text_id=text_id,
             tenant_id=tenant_id,
@@ -213,84 +290,55 @@ async def save_text(
             attachment_name=attachment_name,
             attachment_path=attachment_path,
         )
-    return redirect_home(message="Text saved", tenant_id=tenant_id)
+    return redirect("/texts", message="Text saved")
 
 
 @app.post("/texts/{text_id}/delete")
-async def remove_text(text_id: int):
+async def remove_text(request: Request, text_id: int):
+    login_gate = require_login(request)
+    if isinstance(login_gate, RedirectResponse):
+        return login_gate
     with db_session(settings.database_path) as conn:
-        text = get_text(conn, text_id)
-        tenant_id = int(text["tenant_id"]) if text else None
         delete_text(conn, text_id)
-    return redirect_home(message="Text deleted", tenant_id=tenant_id)
+    return redirect("/texts", message="Text deleted")
 
 
-@app.post("/tenants/{tenant_id}/delete")
-async def remove_tenant(tenant_id: int):
-    with db_session(settings.database_path) as conn:
-        delete_tenant(conn, tenant_id)
-    return redirect_home(message="Tenant deleted")
-
-
-@app.post("/preview", response_class=HTMLResponse)
+@app.post("/preview")
 async def preview_question(request: Request, text_id: int = Form(...)):
-    tenant_id = resolve_tenant_id(request)
+    login_gate = require_login(request)
+    if isinstance(login_gate, RedirectResponse):
+        return login_gate
+    tenant_id = int(login_gate)
     with db_session(settings.database_path) as conn:
         text = get_text(conn, text_id)
         if text is None:
-            return render_index(request, error="Text not found")
-        tenant = get_tenant(conn, int(text["tenant_id"])) if tenant_id is None else get_tenant(conn, tenant_id)
-        config = dict(tenant)
-        polls = all_poll_stats(conn, tenant_id=int(text["tenant_id"]))
+            return redirect("/texts", error="Text not found")
+    runtime = load_runtime_config(settings.database_path, tenant_id)
+    question = await generate_question(runtime, text["body"])
+    with db_session(settings.database_path) as conn:
+        tenant = get_tenant(conn, tenant_id)
+        texts = list_texts(conn, tenant_id)
+        polls = all_poll_stats(conn, tenant_id=tenant_id)
         tenants = list_tenants(conn)
-        texts = list_texts(conn, int(text["tenant_id"]))
-    runtime = load_runtime_config(settings.database_path, int(text["tenant_id"]))
-    try:
-        question = await generate_question(runtime, text["body"])
-    except Exception as exc:
-        return templates.TemplateResponse(
-            request=request,
-            name="index.html",
-            context={
-                "request": request,
-                "tenants": tenants,
-                "tenant": tenant,
-                "texts": texts,
-                "poll_stats": polls,
-                "config": config,
-                "message": None,
-                "error": str(exc),
-                "configured": is_configured(config),
-            },
-            status_code=400,
-        )
-    return templates.TemplateResponse(
-        request=request,
-        name="index.html",
-        context={
-            "request": request,
-            "tenants": tenants,
-            "tenant": tenant,
-            "texts": texts,
-            "poll_stats": polls,
-            "config": config,
-            "message": "Preview generated",
-            "error": None,
-            "configured": is_configured(config),
-            "preview": question,
-            "preview_text_id": text_id,
-        },
-    )
+    return render(request, "dashboard.html", {
+        "request": request,
+        "tenant": tenant,
+        "tenants": tenants,
+        "texts": texts,
+        "poll_stats": polls,
+        "configured": is_configured(dict(tenant)),
+        "preview": question,
+    })
 
 
 @app.post("/polls/send-now")
-async def send_now(text_id: int = Form(...)):
+async def send_now(request: Request, text_id: int = Form(...)):
+    login_gate = require_login(request)
+    if isinstance(login_gate, RedirectResponse):
+        return login_gate
+    tenant_id = int(login_gate)
     try:
-        with db_session(settings.database_path) as conn:
-            text = get_text(conn, text_id)
-            if text is None:
-                raise ValueError("Text not found.")
-        runtime = load_runtime_config(settings.database_path, int(text["tenant_id"]))
+        runtime = load_runtime_config(settings.database_path, tenant_id)
         await generate_and_send_poll(
             settings=runtime,
             db_path=settings.database_path,
@@ -298,22 +346,22 @@ async def send_now(text_id: int = Form(...)):
             scheduled_slot="manual",
         )
     except Exception as exc:
-        return redirect_home(error=str(exc), tenant_id=int(text["tenant_id"]) if "text" in locals() and text else None)
-    return redirect_home(message="Poll sent", tenant_id=int(text["tenant_id"]))
+        return redirect("/texts", error=str(exc))
+    return redirect("/texts", message="Poll sent")
 
 
 @app.post("/summaries/send-now")
-async def summary_now(text_id: int = Form(...)):
+async def summary_now(request: Request, text_id: int = Form(...)):
+    login_gate = require_login(request)
+    if isinstance(login_gate, RedirectResponse):
+        return login_gate
+    tenant_id = int(login_gate)
     try:
-        with db_session(settings.database_path) as conn:
-            text = get_text(conn, text_id)
-            if text is None:
-                raise ValueError("Text not found.")
-        runtime = load_runtime_config(settings.database_path, int(text["tenant_id"]))
+        runtime = load_runtime_config(settings.database_path, tenant_id)
         count = await send_pending_summaries(settings=runtime, db_path=settings.database_path, text_id=text_id)
     except Exception as exc:
-        return redirect_home(error=str(exc), tenant_id=int(text["tenant_id"]) if "text" in locals() and text else None)
-    return redirect_home(message=f"Sent {count} summaries", tenant_id=int(text["tenant_id"]))
+        return redirect("/texts", error=str(exc))
+    return redirect("/texts", message=f"Sent {count} summaries")
 
 
 @app.post("/webhooks/greenapi")
@@ -323,7 +371,11 @@ async def greenapi_webhook(payload: dict):
 
 
 @app.get("/export.csv")
-async def export_csv(tenant_id: int | None = None):
+async def export_csv(request: Request, tenant_id: int | None = None):
+    login_gate = require_login(request)
+    if isinstance(login_gate, RedirectResponse):
+        return login_gate
+    tenant_id = int(login_gate)
     with db_session(settings.database_path) as conn:
         csv_text = export_stats_csv(conn, tenant_id=tenant_id)
     return Response(

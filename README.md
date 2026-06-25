@@ -20,6 +20,13 @@ uvicorn app.main:app --reload
 
 Open `http://127.0.0.1:8000`.
 
+Default tenant login on first run:
+
+- username: `admin`
+- password: `admin`
+
+Change these in the dashboard after logging in.
+
 ## What You Can Configure
 
 - Tenants with their own GreenAPI and Gemini settings
@@ -28,6 +35,7 @@ Open `http://127.0.0.1:8000`.
 - Per-text morning/evening poll times
 - Per-text morning/evening summary times
 - Optional file attachment for each text
+- Separate landing, login, dashboard, and texts pages
 
 ## Webhooks
 
