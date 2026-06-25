@@ -15,18 +15,24 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  web:
+  api:
     build: .
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/english_bot
       SESSION_SECRET: change-this-before-production
+      JWT_SECRET: change-this-before-production
     depends_on:
       db:
         condition: service_healthy
-    ports:
-      - "8988:8988"
     volumes:
       - uploads_data:/app/uploads
+
+  ui:
+    build: ./web
+    depends_on:
+      - api
+    ports:
+      - "8988:80"
 
 volumes:
   postgres_data:

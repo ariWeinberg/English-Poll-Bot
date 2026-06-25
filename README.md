@@ -1,6 +1,6 @@
 # English WhatsApp Poll Bot
 
-A Python FastAPI app for multi-tenant WhatsApp learning polls. Each tenant can manage its own GreenAPI and Gemini settings, and each tenant can create multiple texts with their own WhatsApp chat, schedule, and attachment.
+A split FastAPI + React app for multi-tenant WhatsApp learning polls. Each tenant can manage its own GreenAPI and Gemini settings, and each tenant can create multiple texts with their own WhatsApp chat, schedule, and attachment.
 
 ## Run With Docker
 
@@ -19,7 +19,8 @@ Change these in the dashboard after logging in. Passwords are stored as plaintex
 
 The Compose stack starts:
 
-- `web`: FastAPI app on port `8988`
+- `ui`: React app served by nginx on port `8988`
+- `api`: FastAPI REST API on the internal Compose network
 - `db`: PostgreSQL 16
 - `postgres_data`: persistent database volume
 - `uploads_data`: persistent uploaded text attachments
@@ -32,10 +33,24 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
 export DATABASE_URL=postgresql://postgres:postgres@localhost:5433/english_bot
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 8000
+cd web
+npm install
+npm run dev
 ```
 
-For local development, run your own PostgreSQL database or use the Compose database service.
+For local development, run your own PostgreSQL database or use the Compose database service. Vite proxies `/api` and `/webhooks` to `http://localhost:8000`.
+
+## REST API
+
+Authenticated API routes live under `/api/v1` and use `Authorization: Bearer <token>`.
+
+- `POST /api/v1/auth/login`
+- CRUD: `/api/v1/tenants`, `/api/v1/texts`, `/api/v1/polls`, `/api/v1/poll-votes`
+- Actions: `/api/v1/questions/preview`, `/api/v1/polls/send-now`, `/api/v1/summaries/send-now`
+- CSV export: `/api/v1/polls/export.csv`
+
+List endpoints support `page` and `page_size`. Resource-specific filters include tenant/text IDs, active/enabled/status fields, search fields, and poll sent date bounds.
 
 ## What You Can Configure
 
@@ -52,7 +67,7 @@ For local development, run your own PostgreSQL database or use the Compose datab
 GreenAPI must send incoming poll updates to:
 
 ```text
-https://your-public-domain.example/webhooks/greenapi
+https://your-public-domain.example/webhooks/greenapi/{tenant_id}
 ```
 
 Enable these GreenAPI settings:
