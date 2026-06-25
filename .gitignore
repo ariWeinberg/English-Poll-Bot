@@ -6,3 +6,5 @@ __pycache__/
 bot.db
 .env
 uploads/
+web/dist/
+web/node_modules/
