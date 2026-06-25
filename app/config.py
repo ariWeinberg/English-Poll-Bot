@@ -11,6 +11,8 @@ class Settings:
         "postgresql://postgres:postgres@localhost:5432/english_bot",
     )
     session_secret: str = os.getenv("SESSION_SECRET", "english-whatsapp-bot-dev-secret")
+    jwt_secret: str = os.getenv("JWT_SECRET", os.getenv("SESSION_SECRET", "english-whatsapp-bot-dev-secret"))
+    jwt_ttl_minutes: int = int(os.getenv("JWT_TTL_MINUTES", "1440"))
 
 
 settings = Settings()

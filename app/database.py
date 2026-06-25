@@ -14,6 +14,26 @@ from psycopg.rows import dict_row
 DbRow = dict[str, Any]
 
 
+def _page_bounds(page: int = 1, page_size: int = 25) -> tuple[int, int, int]:
+    safe_page = max(page, 1)
+    safe_page_size = min(max(page_size, 1), 100)
+    return safe_page, safe_page_size, (safe_page - 1) * safe_page_size
+
+
+def _like(value: str) -> str:
+    return f"%{value.strip()}%"
+
+
+def paginated_response(items: list[DbRow], total: int, page: int, page_size: int) -> dict[str, Any]:
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_next": page * page_size < total,
+    }
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -111,8 +131,12 @@ def init_db(database_url: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_texts_tenant ON texts(tenant_id);
             CREATE INDEX IF NOT EXISTS idx_polls_tenant ON polls(tenant_id);
             CREATE INDEX IF NOT EXISTS idx_polls_text ON polls(text_id);
+            CREATE INDEX IF NOT EXISTS idx_polls_status ON polls(status);
+            CREATE INDEX IF NOT EXISTS idx_polls_sent_at ON polls(sent_at);
             CREATE INDEX IF NOT EXISTS idx_polls_greenapi_message_id ON polls(greenapi_message_id);
             CREATE INDEX IF NOT EXISTS idx_votes_poll_id ON poll_votes(poll_id);
+            CREATE INDEX IF NOT EXISTS idx_votes_option_name ON poll_votes(option_name);
+            CREATE INDEX IF NOT EXISTS idx_votes_voter_wid ON poll_votes(voter_wid);
             """
         )
         timestamp = now_iso()
@@ -149,6 +173,32 @@ def list_tenants(conn: psycopg.Connection[DbRow]) -> list[DbRow]:
     return conn.execute("SELECT * FROM tenants ORDER BY is_active DESC, id ASC").fetchall()
 
 
+def list_tenants_page(
+    conn: psycopg.Connection[DbRow],
+    *,
+    page: int = 1,
+    page_size: int = 25,
+    is_active: bool | None = None,
+    search: str | None = None,
+) -> dict[str, Any]:
+    page, page_size, offset = _page_bounds(page, page_size)
+    where: list[str] = []
+    params: list[Any] = []
+    if is_active is not None:
+        where.append("is_active = %s")
+        params.append(is_active)
+    if search:
+        where.append("(name ILIKE %s OR username ILIKE %s)")
+        params.extend([_like(search), _like(search)])
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    total = conn.execute(f"SELECT COUNT(*) AS count FROM tenants {where_sql}", params).fetchone()["count"]
+    items = conn.execute(
+        f"SELECT * FROM tenants {where_sql} ORDER BY is_active DESC, id ASC LIMIT %s OFFSET %s",
+        [*params, page_size, offset],
+    ).fetchall()
+    return paginated_response(items, int(total), page, page_size)
+
+
 def get_active_tenant(conn: psycopg.Connection[DbRow]) -> DbRow:
     row = conn.execute("SELECT * FROM tenants WHERE is_active = TRUE ORDER BY id LIMIT 1").fetchone()
     if row is None:
@@ -182,6 +232,46 @@ def list_texts(conn: psycopg.Connection[DbRow], tenant_id: int | None = None) ->
         """,
         (tenant_id,),
     ).fetchall()
+
+
+def list_texts_page(
+    conn: psycopg.Connection[DbRow],
+    *,
+    page: int = 1,
+    page_size: int = 25,
+    tenant_id: int | None = None,
+    enabled: bool | None = None,
+    search: str | None = None,
+) -> dict[str, Any]:
+    page, page_size, offset = _page_bounds(page, page_size)
+    where: list[str] = []
+    params: list[Any] = []
+    if tenant_id is not None:
+        where.append("texts.tenant_id = %s")
+        params.append(tenant_id)
+    if enabled is not None:
+        where.append("texts.enabled = %s")
+        params.append(enabled)
+    if search:
+        where.append("(texts.title ILIKE %s OR texts.body ILIKE %s OR texts.chat_id ILIKE %s)")
+        params.extend([_like(search), _like(search), _like(search)])
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    total = conn.execute(
+        f"SELECT COUNT(*) AS count FROM texts JOIN tenants ON tenants.id = texts.tenant_id {where_sql}",
+        params,
+    ).fetchone()["count"]
+    items = conn.execute(
+        f"""
+        SELECT texts.*, tenants.name AS tenant_name
+        FROM texts
+        JOIN tenants ON tenants.id = texts.tenant_id
+        {where_sql}
+        ORDER BY texts.updated_at DESC
+        LIMIT %s OFFSET %s
+        """,
+        [*params, page_size, offset],
+    ).fetchall()
+    return paginated_response(items, int(total), page, page_size)
 
 
 def get_text(conn: psycopg.Connection[DbRow], text_id: int) -> DbRow | None:
@@ -428,6 +518,22 @@ def get_poll_by_message_id(conn: psycopg.Connection[DbRow], message_id: str) -> 
     return conn.execute("SELECT * FROM polls WHERE greenapi_message_id = %s", (message_id,)).fetchone()
 
 
+def get_poll_by_message_id_for_tenant(
+    conn: psycopg.Connection[DbRow],
+    *,
+    message_id: str,
+    tenant_id: int,
+) -> DbRow | None:
+    return conn.execute(
+        "SELECT * FROM polls WHERE greenapi_message_id = %s AND tenant_id = %s",
+        (message_id, tenant_id),
+    ).fetchone()
+
+
+def get_poll(conn: psycopg.Connection[DbRow], poll_id: int) -> DbRow | None:
+    return conn.execute("SELECT * FROM polls WHERE id = %s", (poll_id,)).fetchone()
+
+
 def list_polls(conn: psycopg.Connection[DbRow], limit: int = 25, tenant_id: int | None = None) -> list[DbRow]:
     if tenant_id is None:
         return conn.execute("SELECT * FROM polls ORDER BY created_at DESC LIMIT %s", (limit,)).fetchall()
@@ -435,6 +541,95 @@ def list_polls(conn: psycopg.Connection[DbRow], limit: int = 25, tenant_id: int 
         "SELECT * FROM polls WHERE tenant_id = %s ORDER BY created_at DESC LIMIT %s",
         (tenant_id, limit),
     ).fetchall()
+
+
+def list_polls_page(
+    conn: psycopg.Connection[DbRow],
+    *,
+    page: int = 1,
+    page_size: int = 25,
+    tenant_id: int | None = None,
+    text_id: int | None = None,
+    status: str | None = None,
+    scheduled_slot: str | None = None,
+    sent_from: str | None = None,
+    sent_to: str | None = None,
+) -> dict[str, Any]:
+    page, page_size, offset = _page_bounds(page, page_size)
+    where: list[str] = []
+    params: list[Any] = []
+    for column, value in (
+        ("tenant_id", tenant_id),
+        ("text_id", text_id),
+        ("status", status),
+        ("scheduled_slot", scheduled_slot),
+    ):
+        if value is not None:
+            where.append(f"{column} = %s")
+            params.append(value)
+    if sent_from:
+        where.append("sent_at >= %s")
+        params.append(sent_from)
+    if sent_to:
+        where.append("sent_at <= %s")
+        params.append(sent_to)
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    total = conn.execute(f"SELECT COUNT(*) AS count FROM polls {where_sql}", params).fetchone()["count"]
+    items = conn.execute(
+        f"SELECT * FROM polls {where_sql} ORDER BY created_at DESC LIMIT %s OFFSET %s",
+        [*params, page_size, offset],
+    ).fetchall()
+    return paginated_response(items, int(total), page, page_size)
+
+
+def update_poll(
+    conn: psycopg.Connection[DbRow],
+    *,
+    poll_id: int,
+    tenant_id: int,
+    text_id: int,
+    question: str,
+    options: list[str],
+    correct_option: str,
+    explanation: str,
+    greenapi_message_id: str | None,
+    chat_id: str,
+    generated_from_text: str,
+    status: str,
+    scheduled_slot: str | None,
+    sent_at: str | None,
+    summary_sent_at: str | None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE polls
+        SET tenant_id = %s, text_id = %s, question = %s, options_json = %s,
+            correct_option = %s, explanation = %s, greenapi_message_id = %s,
+            chat_id = %s, generated_from_text = %s, status = %s, scheduled_slot = %s,
+            sent_at = %s, summary_sent_at = %s
+        WHERE id = %s
+        """,
+        (
+            tenant_id,
+            text_id,
+            question,
+            json.dumps(options, ensure_ascii=False),
+            correct_option,
+            explanation,
+            greenapi_message_id,
+            chat_id,
+            generated_from_text,
+            status,
+            scheduled_slot,
+            sent_at,
+            summary_sent_at,
+            poll_id,
+        ),
+    )
+
+
+def delete_poll(conn: psycopg.Connection[DbRow], poll_id: int) -> None:
+    conn.execute("DELETE FROM polls WHERE id = %s", (poll_id,))
 
 
 def list_pending_texts(conn: psycopg.Connection[DbRow], tenant_id: int | None = None) -> list[DbRow]:
@@ -494,6 +689,70 @@ def replace_poll_votes(
             """,
             rows,
         )
+
+
+def list_poll_votes_page(
+    conn: psycopg.Connection[DbRow],
+    *,
+    page: int = 1,
+    page_size: int = 25,
+    poll_id: int | None = None,
+    option_name: str | None = None,
+    voter_wid: str | None = None,
+) -> dict[str, Any]:
+    page, page_size, offset = _page_bounds(page, page_size)
+    where: list[str] = []
+    params: list[Any] = []
+    if poll_id is not None:
+        where.append("poll_id = %s")
+        params.append(poll_id)
+    if option_name:
+        where.append("option_name = %s")
+        params.append(option_name)
+    if voter_wid:
+        where.append("voter_wid ILIKE %s")
+        params.append(_like(voter_wid))
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    total = conn.execute(f"SELECT COUNT(*) AS count FROM poll_votes {where_sql}", params).fetchone()["count"]
+    items = conn.execute(
+        f"SELECT * FROM poll_votes {where_sql} ORDER BY updated_at DESC, id DESC LIMIT %s OFFSET %s",
+        [*params, page_size, offset],
+    ).fetchall()
+    return paginated_response(items, int(total), page, page_size)
+
+
+def get_poll_vote(conn: psycopg.Connection[DbRow], vote_id: int) -> DbRow | None:
+    return conn.execute("SELECT * FROM poll_votes WHERE id = %s", (vote_id,)).fetchone()
+
+
+def create_poll_vote(conn: psycopg.Connection[DbRow], *, poll_id: int, option_name: str, voter_wid: str) -> int:
+    row = conn.execute(
+        """
+        INSERT INTO poll_votes (poll_id, option_name, voter_wid, updated_at)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (poll_id, voter_wid) DO UPDATE SET
+            option_name = EXCLUDED.option_name,
+            updated_at = EXCLUDED.updated_at
+        RETURNING id
+        """,
+        (poll_id, option_name.strip(), voter_wid.strip(), now_iso()),
+    ).fetchone()
+    return int(row["id"])
+
+
+def update_poll_vote(conn: psycopg.Connection[DbRow], *, vote_id: int, poll_id: int, option_name: str, voter_wid: str) -> None:
+    conn.execute(
+        """
+        UPDATE poll_votes
+        SET poll_id = %s, option_name = %s, voter_wid = %s, updated_at = %s
+        WHERE id = %s
+        """,
+        (poll_id, option_name.strip(), voter_wid.strip(), now_iso(), vote_id),
+    )
+
+
+def delete_poll_vote(conn: psycopg.Connection[DbRow], vote_id: int) -> None:
+    conn.execute("DELETE FROM poll_votes WHERE id = %s", (vote_id,))
 
 
 def poll_stats(conn: psycopg.Connection[DbRow], poll: DbRow) -> dict[str, Any]:

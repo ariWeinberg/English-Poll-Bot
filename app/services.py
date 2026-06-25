@@ -8,6 +8,7 @@ from app.database import (
     create_poll,
     db_session,
     get_poll_by_message_id,
+    get_poll_by_message_id_for_tenant,
     get_source_text,
     get_tenant,
     get_text,
@@ -171,13 +172,17 @@ def parse_poll_update(payload: dict[str, Any]) -> tuple[str, dict[str, list[str]
     return str(stanza_id), option_voters
 
 
-def handle_greenapi_webhook(*, database_url: str, payload: dict[str, Any]) -> bool:
+def handle_greenapi_webhook(*, database_url: str, payload: dict[str, Any], tenant_id: int | None = None) -> bool:
     parsed = parse_poll_update(payload)
     if parsed is None:
         return False
     message_id, option_voters = parsed
     with db_session(database_url) as conn:
-        poll = get_poll_by_message_id(conn, message_id)
+        poll = (
+            get_poll_by_message_id_for_tenant(conn, message_id=message_id, tenant_id=tenant_id)
+            if tenant_id is not None
+            else get_poll_by_message_id(conn, message_id)
+        )
         if poll is None:
             return False
         replace_poll_votes(conn, poll_id=poll["id"], option_voters=option_voters)
