@@ -131,6 +131,8 @@ class PollVotePayload(BaseModel):
     poll_id: int
     option_name: str
     voter_wid: str
+    voter_name: str | None = None
+    phone_number: str | None = None
 
 
 class PreviewRequest(BaseModel):

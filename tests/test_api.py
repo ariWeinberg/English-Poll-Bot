@@ -138,6 +138,8 @@ def test_greenapi_webhook_is_tenant_scoped():
                 "poll_id": poll_b,
                 "option_name": "B",
                 "voter_wid": "222@c.us",
+                "voter_name": None,
+                "phone_number": "222",
                 "event_type": "vote",
                 "previous_option_name": None,
                 "recorded_at": events[0]["recorded_at"],
