@@ -523,16 +523,19 @@ async def poll_votes(
 async def poll_vote_events(
     page: int = 1,
     page_size: int = 25,
+    tenant_id: int | None = None,
     poll_id: int | None = None,
     option_name: str | None = None,
     voter_wid: str | None = None,
     _: dict[str, Any] = Depends(current_user),
 ):
+    scoped_tenant = tenant_id if tenant_id is not None else int(_["id"])
     with db_session(settings.database_url) as conn:
         return list_poll_vote_events_page(
             conn,
             page=page,
             page_size=page_size,
+            tenant_id=scoped_tenant,
             poll_id=poll_id,
             option_name=option_name,
             voter_wid=voter_wid,

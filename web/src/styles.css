@@ -213,6 +213,30 @@ textarea {
   gap: 12px;
 }
 
+.vote-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.vote-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: #7a2200;
+  background: #ffe2d2;
+}
+
+.vote-pill.correct {
+  color: #8f1748;
+  background: #ffd2e4;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(140px, 1fr));
