@@ -1,18 +1,19 @@
 from __future__ import annotations
 
+from datetime import timezone
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.services import generate_and_send_poll, load_runtime_config, send_pending_summaries
+from app.services import generate_and_send_poll, send_pending_summaries
 
 
 def build_scheduler(database_url: str) -> AsyncIOScheduler:
-    runtime = load_runtime_config(database_url)
-    scheduler = AsyncIOScheduler(timezone=runtime.timezone)
+    scheduler = AsyncIOScheduler(timezone=timezone.utc)
 
     scheduler.add_job(
         run_due_jobs,
-        CronTrigger(minute="*", timezone=runtime.timezone),
+        CronTrigger(minute="*", timezone=timezone.utc),
         kwargs={"database_url": database_url},
         id="due_jobs",
         replace_existing=True,

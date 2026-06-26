@@ -60,11 +60,8 @@ security = HTTPBearer()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db(settings.database_url)
-    scheduler = None
-    runtime = load_runtime_config(settings.database_url)
-    if runtime.scheduler_enabled and runtime.greenapi_ready and runtime.gemini_ready:
-        scheduler = build_scheduler(settings.database_url)
-        scheduler.start()
+    scheduler = build_scheduler(settings.database_url)
+    scheduler.start()
     app.state.scheduler = scheduler
     try:
         yield
@@ -212,15 +209,13 @@ def parse_bool(value: bool | None) -> bool | None:
 
 
 def restart_scheduler_for_tenant(tenant_id: int) -> None:
-    runtime = load_runtime_config(settings.database_url, tenant_id)
     scheduler = getattr(app.state, "scheduler", None)
+    if scheduler and getattr(scheduler, "running", False):
+        return
     if scheduler:
         scheduler.shutdown(wait=False)
-    if runtime.scheduler_enabled and runtime.greenapi_ready and runtime.gemini_ready:
-        app.state.scheduler = build_scheduler(settings.database_url)
-        app.state.scheduler.start()
-    else:
-        app.state.scheduler = None
+    app.state.scheduler = build_scheduler(settings.database_url)
+    app.state.scheduler.start()
 
 
 def serialize_poll(row: dict[str, Any]) -> dict[str, Any]:
