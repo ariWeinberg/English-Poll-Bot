@@ -86,3 +86,23 @@ Database integration tests require PostgreSQL:
 ```bash
 TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/english_bot pytest
 ```
+
+## CI/CD
+
+Pushes and pull requests run:
+
+- backend tests
+- frontend builds
+- compose config validation
+
+Pushes to the `release` branch deploy to the production server by SSH. The deploy job reads `secrets.SSH_PRIVATE_KEY` from the GitHub `release` environment, writes it to a temporary key file on the runner, and SSHes into the server to run `docker compose up -d --build --remove-orphans` in the checked-out repo.
+
+Required GitHub environment variables for deploy:
+
+- `DEPLOY_HOST`
+- `DEPLOY_USER`
+- `DEPLOY_PATH`
+- optional `DEPLOY_PORT`
+- optional `DEPLOY_BASE_URL` for the post-deploy smoke test
+
+The server keeps production credentials in its local Compose environment file. The repository does not store production secrets.
