@@ -4,10 +4,10 @@ import pytest
 
 from app.database import db_session, init_db, upsert_text, upsert_tenant
 from app.scheduler import build_scheduler
+from app.main import app, restart_scheduler_for_tenant
 
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
-pytestmark = pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
 
 
 def reset_db() -> str:
@@ -19,6 +19,7 @@ def reset_db() -> str:
     return TEST_DATABASE_URL
 
 
+@pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
 def test_scheduler_registers_minute_tick():
     database_url = reset_db()
     with db_session(database_url) as conn:
@@ -57,3 +58,26 @@ def test_scheduler_registers_minute_tick():
 
     assert "due_jobs" in jobs
     assert jobs["due_jobs"].kwargs["database_url"] == database_url
+
+
+def test_restart_scheduler_keeps_existing_running_scheduler(monkeypatch):
+    class DummyScheduler:
+        def __init__(self):
+            self.running = True
+            self.shutdown_called = False
+
+        def shutdown(self, wait=False):
+            self.shutdown_called = True
+
+    dummy = DummyScheduler()
+    app.state.scheduler = dummy
+
+    def fail_build_scheduler(_database_url: str):
+        raise AssertionError("build_scheduler should not be called for a running scheduler")
+
+    monkeypatch.setattr("app.main.build_scheduler", fail_build_scheduler)
+
+    restart_scheduler_for_tenant(1)
+
+    assert app.state.scheduler is dummy
+    assert dummy.shutdown_called is False
