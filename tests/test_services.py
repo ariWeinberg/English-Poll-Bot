@@ -14,7 +14,7 @@ def test_parse_poll_update_ignores_non_poll_payload():
 
 
 @pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
-def test_handle_greenapi_webhook_replaces_vote_state():
+def test_handle_greenapi_webhook_accumulates_votes_across_delta_updates():
     assert TEST_DATABASE_URL is not None
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
@@ -42,21 +42,29 @@ def test_handle_greenapi_webhook_replaces_vote_state():
             ("poll-message-id", poll_id),
         )
 
-    payload = {
+    first_payload = {
         "typeWebhook": "incomingMessageReceived",
         "messageData": {
             "typeMessage": "pollUpdateMessage",
             "pollMessageData": {
                 "stanzaId": "poll-message-id",
-                "votes": [
-                    {"optionName": "A", "optionVoters": ["111@c.us"]},
-                    {"optionName": "B", "optionVoters": ["222@c.us"]},
-                ],
+                "votes": [{"optionName": "A", "optionVoters": ["111@c.us"]}],
+            },
+        },
+    }
+    second_payload = {
+        "typeWebhook": "incomingMessageReceived",
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "poll-message-id",
+                "votes": [{"optionName": "B", "optionVoters": ["222@c.us"]}],
             },
         },
     }
 
-    assert handle_greenapi_webhook(database_url=TEST_DATABASE_URL, payload=payload) is True
+    assert handle_greenapi_webhook(database_url=TEST_DATABASE_URL, payload=first_payload) is True
+    assert handle_greenapi_webhook(database_url=TEST_DATABASE_URL, payload=second_payload) is True
     with db_session(TEST_DATABASE_URL) as conn:
         poll = conn.execute("SELECT * FROM polls WHERE id = %s", (poll_id,)).fetchone()
         stats = poll_stats(conn, poll)
