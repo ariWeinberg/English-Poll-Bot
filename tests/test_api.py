@@ -29,6 +29,37 @@ def auth_headers(client: TestClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_register_creates_tenant_and_allows_login():
+    reset_db()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/auth/register",
+            json={
+                "name": "Acme Learning",
+                "username": "acme",
+                "password": "secret123",
+                "timezone": "Asia/Jerusalem",
+            },
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["access_token"]
+
+        me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {body['access_token']}"})
+        assert me.status_code == 200
+        assert me.json()["name"] == "Acme Learning"
+        assert me.json()["username"] == "acme"
+
+        duplicate = client.post(
+            "/api/v1/auth/register",
+            json={"name": "Second", "username": "acme", "password": "another", "timezone": "Asia/Jerusalem"},
+        )
+        assert duplicate.status_code == 409
+
+        login = client.post("/api/v1/auth/login", json={"username": "acme", "password": "secret123"})
+        assert login.status_code == 200
+
+
 def test_auth_and_text_pagination_filtering():
     reset_db()
     with TestClient(app) as client:

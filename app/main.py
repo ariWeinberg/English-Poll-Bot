@@ -29,6 +29,7 @@ from app.database import (
     get_poll,
     get_poll_vote_event,
     get_poll_vote,
+    get_tenant_by_username,
     get_tenant,
     get_text,
     init_db,
@@ -82,6 +83,13 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_at: str
+
+
+class RegisterRequest(BaseModel):
+    name: str = "Tenant"
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+    timezone: str = "Asia/Jerusalem"
 
 
 class TenantPayload(BaseModel):
@@ -206,6 +214,15 @@ def current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) 
     return dict(tenant)
 
 
+def ensure_unique_username(conn, username: str, current_tenant_id: int | None = None) -> None:
+    existing = get_tenant_by_username(conn, username)
+    if existing is None:
+        return
+    if current_tenant_id is not None and int(existing["id"]) == current_tenant_id:
+        return
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
+
+
 def parse_bool(value: bool | None) -> bool | None:
     return value
 
@@ -252,6 +269,33 @@ async def me(user: dict[str, Any] = Depends(current_user)):
     return user
 
 
+@app.post("/api/v1/auth/register", response_model=TokenResponse, status_code=201)
+async def register(payload: RegisterRequest):
+    with db_session(settings.database_url) as conn:
+        ensure_unique_username(conn, payload.username)
+        tenant_id = upsert_tenant(
+            conn,
+            tenant_id=None,
+            name=payload.name,
+            username=payload.username,
+            password=payload.password,
+            greenapi_api_url="https://api.green-api.com",
+            greenapi_id_instance="",
+            greenapi_api_token_instance="",
+            gemini_api_key="",
+            gemini_model="gemini-3.5-flash",
+            timezone=payload.timezone,
+            summary_enabled=True,
+            scheduler_enabled=True,
+            is_active=True,
+        )
+        set_active_tenant(conn, tenant_id)
+        tenant = get_tenant(conn, tenant_id)
+    restart_scheduler_for_tenant(tenant_id)
+    token, expires_at = create_token(dict(tenant))
+    return TokenResponse(access_token=token, expires_at=expires_at)
+
+
 @app.get("/api/v1/tenants")
 async def tenants(
     page: int = 1,
@@ -267,6 +311,7 @@ async def tenants(
 @app.post("/api/v1/tenants", status_code=201)
 async def create_tenant(payload: TenantPayload, _: dict[str, Any] = Depends(current_user)):
     with db_session(settings.database_url) as conn:
+        ensure_unique_username(conn, payload.username)
         tenant_id = upsert_tenant(conn, tenant_id=None, **payload.model_dump())
         if payload.is_active:
             set_active_tenant(conn, tenant_id)
@@ -289,6 +334,7 @@ async def update_tenant_route(tenant_id: int, payload: TenantPayload, _: dict[st
     with db_session(settings.database_url) as conn:
         if get_tenant(conn, tenant_id) is None:
             raise HTTPException(status_code=404, detail="Tenant not found")
+        ensure_unique_username(conn, payload.username, tenant_id)
         saved_id = upsert_tenant(conn, tenant_id=tenant_id, **payload.model_dump())
         if payload.is_active:
             set_active_tenant(conn, saved_id)
