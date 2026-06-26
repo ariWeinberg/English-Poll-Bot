@@ -27,11 +27,13 @@ from app.database import (
     delete_text,
     export_stats_csv,
     get_poll,
+    get_poll_vote_event,
     get_poll_vote,
     get_tenant,
     get_text,
     init_db,
     list_poll_votes_page,
+    list_poll_vote_events_page,
     list_polls_page,
     list_tenants_page,
     list_texts_page,
@@ -522,6 +524,26 @@ async def poll_votes(
         )
 
 
+@app.get("/api/v1/poll-vote-events")
+async def poll_vote_events(
+    page: int = 1,
+    page_size: int = 25,
+    poll_id: int | None = None,
+    option_name: str | None = None,
+    voter_wid: str | None = None,
+    _: dict[str, Any] = Depends(current_user),
+):
+    with db_session(settings.database_url) as conn:
+        return list_poll_vote_events_page(
+            conn,
+            page=page,
+            page_size=page_size,
+            poll_id=poll_id,
+            option_name=option_name,
+            voter_wid=voter_wid,
+        )
+
+
 @app.post("/api/v1/poll-votes", status_code=201)
 async def create_vote(payload: PollVotePayload, _: dict[str, Any] = Depends(current_user)):
     with db_session(settings.database_url) as conn:
@@ -535,6 +557,15 @@ async def poll_vote(vote_id: int, _: dict[str, Any] = Depends(current_user)):
         row = get_poll_vote(conn, vote_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Poll vote not found")
+    return row
+
+
+@app.get("/api/v1/poll-vote-events/{event_id}")
+async def poll_vote_event(event_id: int, _: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        row = get_poll_vote_event(conn, event_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Poll vote event not found")
     return row
 
 
