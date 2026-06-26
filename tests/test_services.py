@@ -18,7 +18,7 @@ def test_handle_greenapi_webhook_replaces_vote_state():
     assert TEST_DATABASE_URL is not None
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
-        conn.execute("TRUNCATE poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
+        conn.execute("TRUNCATE poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
@@ -63,3 +63,68 @@ def test_handle_greenapi_webhook_replaces_vote_state():
 
     assert stats["counts"] == {"A": 1, "B": 1}
     assert stats["correct_rate"] == 50.0
+
+
+@pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
+def test_handle_greenapi_webhook_records_vote_history_when_vote_changes():
+    assert TEST_DATABASE_URL is not None
+    init_db(TEST_DATABASE_URL)
+    with db_session(TEST_DATABASE_URL) as conn:
+        conn.execute("TRUNCATE poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
+    init_db(TEST_DATABASE_URL)
+    with db_session(TEST_DATABASE_URL) as conn:
+        conn.execute(
+            "UPDATE tenants SET username = %s, password = %s, greenapi_id_instance = %s, greenapi_api_token_instance = %s, gemini_api_key = %s WHERE id = 1",
+            ("tenant-a", "secret", "id", "token", "gemini-key"),
+        )
+        poll_id = create_poll(
+            conn,
+            tenant_id=1,
+            text_id=1,
+            question="Choose",
+            options=["A", "B"],
+            correct_option="A",
+            explanation="",
+            chat_id="120@g.us",
+            generated_from_text="text",
+            scheduled_slot="manual",
+        )
+        conn.execute(
+            "UPDATE polls SET greenapi_message_id = %s, status = 'sent' WHERE id = %s",
+            ("poll-message-id", poll_id),
+        )
+
+    first_payload = {
+        "typeWebhook": "incomingMessageReceived",
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "poll-message-id",
+                "votes": [{"optionName": "A", "optionVoters": ["111@c.us"]}],
+            },
+        },
+    }
+    second_payload = {
+        "typeWebhook": "incomingMessageReceived",
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "poll-message-id",
+                "votes": [{"optionName": "B", "optionVoters": ["111@c.us"]}],
+            },
+        },
+    }
+
+    assert handle_greenapi_webhook(database_url=TEST_DATABASE_URL, payload=first_payload) is True
+    assert handle_greenapi_webhook(database_url=TEST_DATABASE_URL, payload=second_payload) is True
+
+    with db_session(TEST_DATABASE_URL) as conn:
+        rows = conn.execute(
+            "SELECT option_name, voter_wid FROM poll_vote_events WHERE poll_id = %s ORDER BY id",
+            (poll_id,),
+        ).fetchall()
+
+    assert rows == [
+        {"option_name": "A", "voter_wid": "111@c.us"},
+        {"option_name": "B", "voter_wid": "111@c.us"},
+    ]

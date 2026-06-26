@@ -126,6 +126,14 @@ def init_db(database_url: str) -> None:
                 UNIQUE (poll_id, voter_wid)
             );
 
+            CREATE TABLE IF NOT EXISTS poll_vote_events (
+                id SERIAL PRIMARY KEY,
+                poll_id INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+                option_name TEXT NOT NULL,
+                voter_wid TEXT NOT NULL,
+                recorded_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_tenants_active ON tenants(is_active);
             CREATE INDEX IF NOT EXISTS idx_tenants_username ON tenants(username);
             CREATE INDEX IF NOT EXISTS idx_texts_tenant ON texts(tenant_id);
@@ -137,6 +145,9 @@ def init_db(database_url: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_votes_poll_id ON poll_votes(poll_id);
             CREATE INDEX IF NOT EXISTS idx_votes_option_name ON poll_votes(option_name);
             CREATE INDEX IF NOT EXISTS idx_votes_voter_wid ON poll_votes(voter_wid);
+            CREATE INDEX IF NOT EXISTS idx_vote_events_poll_id ON poll_vote_events(poll_id);
+            CREATE INDEX IF NOT EXISTS idx_vote_events_voter_wid ON poll_vote_events(voter_wid);
+            CREATE INDEX IF NOT EXISTS idx_vote_events_recorded_at ON poll_vote_events(recorded_at);
             """
         )
         timestamp = now_iso()
@@ -671,13 +682,20 @@ def replace_poll_votes(
     poll_id: int,
     option_voters: dict[str, list[str]],
 ) -> None:
-    conn.execute("DELETE FROM poll_votes WHERE poll_id = %s", (poll_id,))
-    rows: list[tuple[int, str, str, str]] = []
+    existing_rows = conn.execute("SELECT option_name, voter_wid FROM poll_votes WHERE poll_id = %s", (poll_id,)).fetchall()
+    current_by_voter = {str(row["voter_wid"]): str(row["option_name"]) for row in existing_rows}
+    target_by_voter: dict[str, str] = {}
+    event_rows: list[tuple[int, str, str, str]] = []
+    timestamp = now_iso()
     for option_name, voters in option_voters.items():
         for voter in voters:
-            rows.append((poll_id, option_name, voter, now_iso()))
-    if not rows:
-        return
+            voter_id = voter.strip()
+            option = option_name.strip()
+            if not voter_id or not option:
+                continue
+            target_by_voter[voter_id] = option
+            if current_by_voter.get(voter_id) != option:
+                event_rows.append((poll_id, option, voter_id, timestamp))
     with conn.cursor() as cursor:
         cursor.executemany(
             """
@@ -687,8 +705,24 @@ def replace_poll_votes(
                 option_name = EXCLUDED.option_name,
                 updated_at = EXCLUDED.updated_at
             """,
-            rows,
+            [(poll_id, option_name, voter_wid, timestamp) for voter_wid, option_name in target_by_voter.items()],
         )
+    if target_by_voter:
+        conn.execute(
+            "DELETE FROM poll_votes WHERE poll_id = %s AND voter_wid <> ALL(%s)",
+            (poll_id, list(target_by_voter.keys())),
+        )
+    else:
+        conn.execute("DELETE FROM poll_votes WHERE poll_id = %s", (poll_id,))
+    if event_rows:
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO poll_vote_events (poll_id, option_name, voter_wid, recorded_at)
+                VALUES (%s, %s, %s, %s)
+                """,
+                event_rows,
+            )
 
 
 def list_poll_votes_page(
@@ -721,11 +755,65 @@ def list_poll_votes_page(
     return paginated_response(items, int(total), page, page_size)
 
 
+def list_poll_vote_events_page(
+    conn: psycopg.Connection[DbRow],
+    *,
+    page: int = 1,
+    page_size: int = 25,
+    poll_id: int | None = None,
+    option_name: str | None = None,
+    voter_wid: str | None = None,
+) -> dict[str, Any]:
+    page, page_size, offset = _page_bounds(page, page_size)
+    where: list[str] = []
+    params: list[Any] = []
+    if poll_id is not None:
+        where.append("poll_id = %s")
+        params.append(poll_id)
+    if option_name:
+        where.append("option_name = %s")
+        params.append(option_name)
+    if voter_wid:
+        where.append("voter_wid ILIKE %s")
+        params.append(_like(voter_wid))
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    total = conn.execute(f"SELECT COUNT(*) AS count FROM poll_vote_events {where_sql}", params).fetchone()["count"]
+    items = conn.execute(
+        f"SELECT * FROM poll_vote_events {where_sql} ORDER BY recorded_at DESC, id DESC LIMIT %s OFFSET %s",
+        [*params, page_size, offset],
+    ).fetchall()
+    return paginated_response(items, int(total), page, page_size)
+
+
 def get_poll_vote(conn: psycopg.Connection[DbRow], vote_id: int) -> DbRow | None:
     return conn.execute("SELECT * FROM poll_votes WHERE id = %s", (vote_id,)).fetchone()
 
 
+def get_poll_vote_event(conn: psycopg.Connection[DbRow], event_id: int) -> DbRow | None:
+    return conn.execute("SELECT * FROM poll_vote_events WHERE id = %s", (event_id,)).fetchone()
+
+
+def record_poll_vote_event(
+    conn: psycopg.Connection[DbRow],
+    *,
+    poll_id: int,
+    option_name: str,
+    voter_wid: str,
+    recorded_at: str | None = None,
+) -> int:
+    row = conn.execute(
+        """
+        INSERT INTO poll_vote_events (poll_id, option_name, voter_wid, recorded_at)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id
+        """,
+        (poll_id, option_name.strip(), voter_wid.strip(), recorded_at or now_iso()),
+    ).fetchone()
+    return int(row["id"])
+
+
 def create_poll_vote(conn: psycopg.Connection[DbRow], *, poll_id: int, option_name: str, voter_wid: str) -> int:
+    timestamp = now_iso()
     row = conn.execute(
         """
         INSERT INTO poll_votes (poll_id, option_name, voter_wid, updated_at)
@@ -735,19 +823,34 @@ def create_poll_vote(conn: psycopg.Connection[DbRow], *, poll_id: int, option_na
             updated_at = EXCLUDED.updated_at
         RETURNING id
         """,
-        (poll_id, option_name.strip(), voter_wid.strip(), now_iso()),
+        (poll_id, option_name.strip(), voter_wid.strip(), timestamp),
     ).fetchone()
+    record_poll_vote_event(
+        conn,
+        poll_id=poll_id,
+        option_name=option_name,
+        voter_wid=voter_wid,
+        recorded_at=timestamp,
+    )
     return int(row["id"])
 
 
 def update_poll_vote(conn: psycopg.Connection[DbRow], *, vote_id: int, poll_id: int, option_name: str, voter_wid: str) -> None:
+    timestamp = now_iso()
     conn.execute(
         """
         UPDATE poll_votes
         SET poll_id = %s, option_name = %s, voter_wid = %s, updated_at = %s
         WHERE id = %s
         """,
-        (poll_id, option_name.strip(), voter_wid.strip(), now_iso(), vote_id),
+        (poll_id, option_name.strip(), voter_wid.strip(), timestamp, vote_id),
+    )
+    record_poll_vote_event(
+        conn,
+        poll_id=poll_id,
+        option_name=option_name,
+        voter_wid=voter_wid,
+        recorded_at=timestamp,
     )
 
 
