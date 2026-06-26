@@ -245,6 +245,10 @@ def get_tenant(conn: psycopg.Connection[DbRow], tenant_id: int) -> DbRow | None:
     return conn.execute("SELECT * FROM tenants WHERE id = %s", (tenant_id,)).fetchone()
 
 
+def get_tenant_by_username(conn: psycopg.Connection[DbRow], username: str) -> DbRow | None:
+    return conn.execute("SELECT * FROM tenants WHERE username = %s", (username.strip(),)).fetchone()
+
+
 def list_texts(conn: psycopg.Connection[DbRow], tenant_id: int | None = None) -> list[DbRow]:
     if tenant_id is None:
         return conn.execute(

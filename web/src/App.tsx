@@ -1,0 +1,1762 @@
+import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  ArrowLeft,
+  BarChart3,
+  BellRing,
+  Building2,
+  CheckCircle2,
+  Download,
+  FilePenLine,
+  FileText,
+  LogOut,
+  Menu,
+  Pencil,
+  Play,
+  Plus,
+  RefreshCw,
+  Save,
+  Send,
+  Settings,
+  Sparkles,
+  Trash2,
+  Vote,
+  X,
+} from "lucide-react";
+
+const API_BASE = "/api/v1";
+const TOKEN_KEY = "english_bot_token";
+
+type Tenant = {
+  id: number;
+  name: string;
+  username: string;
+  password: string;
+  greenapi_api_url: string;
+  greenapi_id_instance: string;
+  greenapi_api_token_instance: string;
+  gemini_api_key: string;
+  gemini_model: string;
+  timezone: string;
+  summary_enabled: boolean;
+  scheduler_enabled: boolean;
+  is_active: boolean;
+};
+
+type Text = {
+  id: number;
+  tenant_id: number;
+  tenant_name: string;
+  title: string;
+  body: string;
+  chat_id: string;
+  morning_time: string;
+  evening_time: string;
+  summary_time_morning: string;
+  summary_time_evening: string;
+  enabled: boolean;
+  attachment_name?: string | null;
+};
+
+type Poll = {
+  id: number;
+  tenant_id: number;
+  text_id: number;
+  question: string;
+  options: string[];
+  correct_option: string;
+  explanation: string;
+  greenapi_message_id?: string | null;
+  chat_id: string;
+  generated_from_text: string;
+  status: string;
+  scheduled_slot?: string | null;
+  sent_at?: string | null;
+  summary_sent_at?: string | null;
+  created_at: string;
+};
+
+type PollStats = {
+  poll: Poll;
+  options: string[];
+  counts: Record<string, number>;
+  total: number;
+  correct_count: number;
+  correct_rate: number;
+};
+
+type VoteEvent = {
+  id: number;
+  poll_id: number;
+  option_name: string;
+  voter_wid: string;
+  voter_name?: string | null;
+  phone_number?: string | null;
+  event_type: "vote" | "change" | "unvote";
+  previous_option_name?: string | null;
+  recorded_at: string;
+};
+
+type Page<T> = {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_next: boolean;
+};
+
+type GeneratedQuestion = {
+  question: string;
+  options: string[];
+  correct_option: string;
+  explanation: string;
+};
+
+type Toast = { kind: "success" | "error"; message: string } | null;
+
+type TextFormState = Omit<Text, "id" | "tenant_name" | "attachment_name">;
+type PollFormState = Omit<Poll, "id" | "created_at">;
+type TenantFormState = Omit<Tenant, "id">;
+type RegisterFormState = { name: string; username: string; password: string; confirmPassword: string; timezone: string };
+type Route =
+  | { name: "login" }
+  | { name: "register" }
+  | { name: "dashboard" }
+  | { name: "texts" }
+  | { name: "text-detail"; id: number }
+  | { name: "polls" }
+  | { name: "poll-detail"; id: number }
+  | { name: "settings" };
+
+const defaultTenantForm: TenantFormState = {
+  name: "Tenant",
+  username: "",
+  password: "",
+  greenapi_api_url: "https://api.green-api.com",
+  greenapi_id_instance: "",
+  greenapi_api_token_instance: "",
+  gemini_api_key: "",
+  gemini_model: "gemini-3.5-flash",
+  timezone: "Asia/Jerusalem",
+  summary_enabled: true,
+  scheduler_enabled: true,
+  is_active: true,
+};
+
+function getToken() {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+function setToken(token: string | null) {
+  if (token) {
+    localStorage.setItem(TOKEN_KEY, token);
+    return;
+  }
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (options.body && !(options.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json");
+  }
+  const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (response.status === 401) {
+    setToken(null);
+    window.dispatchEvent(new Event("auth-expired"));
+  }
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      detail = body.detail || detail;
+    } catch {
+      // Keep status text when body is not JSON.
+    }
+    throw new Error(detail);
+  }
+  if (response.status === 204) return undefined as T;
+  return response.json() as Promise<T>;
+}
+
+async function downloadCsv() {
+  const headers = new Headers();
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(`${API_BASE}/polls/export.csv`, { headers });
+  if (!response.ok) throw new Error("CSV export failed");
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "poll-stats.csv";
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function blankText(tenantId: number): TextFormState {
+  return {
+    tenant_id: tenantId,
+    title: "",
+    body: "",
+    chat_id: "",
+    morning_time: "08:30",
+    evening_time: "18:00",
+    summary_time_morning: "08:25",
+    summary_time_evening: "17:55",
+    enabled: true,
+  };
+}
+
+function blankPoll(tenantId: number, text?: Text): PollFormState {
+  return {
+    tenant_id: tenantId,
+    text_id: text?.id || 0,
+    question: "",
+    options: ["A", "B", "C", "D"],
+    correct_option: "A",
+    explanation: "",
+    greenapi_message_id: "",
+    chat_id: text?.chat_id || "",
+    generated_from_text: text?.body || "",
+    status: "draft",
+    scheduled_slot: "",
+    sent_at: "",
+    summary_sent_at: "",
+  };
+}
+
+function tenantToForm(tenant: Tenant): TenantFormState {
+  const { id: _id, ...form } = tenant;
+  return form;
+}
+
+function textToForm(text: Text): TextFormState {
+  return {
+    tenant_id: text.tenant_id,
+    title: text.title,
+    body: text.body,
+    chat_id: text.chat_id,
+    morning_time: text.morning_time,
+    evening_time: text.evening_time,
+    summary_time_morning: text.summary_time_morning,
+    summary_time_evening: text.summary_time_evening,
+    enabled: text.enabled,
+  };
+}
+
+function pollToForm(poll: Poll): PollFormState {
+  return {
+    tenant_id: poll.tenant_id,
+    text_id: poll.text_id,
+    question: poll.question,
+    options: poll.options,
+    correct_option: poll.correct_option,
+    explanation: poll.explanation,
+    greenapi_message_id: poll.greenapi_message_id || "",
+    chat_id: poll.chat_id,
+    generated_from_text: poll.generated_from_text,
+    status: poll.status,
+    scheduled_slot: poll.scheduled_slot || "",
+    sent_at: poll.sent_at || "",
+    summary_sent_at: poll.summary_sent_at || "",
+  };
+}
+
+function normalizePathname(pathname: string) {
+  if (!pathname || pathname === "/") return "/";
+  return pathname.replace(/\/+$/, "") || "/";
+}
+
+function parseRoute(pathname: string): Route {
+  const path = normalizePathname(pathname);
+  if (path === "/register") return { name: "register" };
+  if (path === "/dashboard" || path === "/") return { name: "dashboard" };
+  if (path === "/texts") return { name: "texts" };
+  if (path === "/polls") return { name: "polls" };
+  if (path === "/settings") return { name: "settings" };
+  const textMatch = path.match(/^\/texts\/(\d+)$/);
+  if (textMatch) return { name: "text-detail", id: Number(textMatch[1]) };
+  const pollMatch = path.match(/^\/polls\/(\d+)$/);
+  if (pollMatch) return { name: "poll-detail", id: Number(pollMatch[1]) };
+  return { name: "login" };
+}
+
+function routeHref(route: Route): string {
+  switch (route.name) {
+    case "register":
+      return "/register";
+    case "dashboard":
+      return "/dashboard";
+    case "texts":
+      return "/texts";
+    case "text-detail":
+      return `/texts/${route.id}`;
+    case "polls":
+      return "/polls";
+    case "poll-detail":
+      return `/polls/${route.id}`;
+    case "settings":
+      return "/settings";
+    default:
+      return "/login";
+  }
+}
+
+function navigateTo(route: Route, replace = false) {
+  const href = routeHref(route);
+  if (replace) window.history.replaceState({}, "", href);
+  else window.history.pushState({}, "", href);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+function describeVoteEvent(event: VoteEvent) {
+  if (event.event_type === "unvote") {
+    return `retracted vote from ${event.previous_option_name || "unknown option"}`;
+  }
+  if (event.event_type === "change") {
+    return `changed ${event.previous_option_name || "unknown option"} -> ${event.option_name}`;
+  }
+  return `voted ${event.option_name}`;
+}
+
+function formatVoteContact(event: VoteEvent) {
+  const name = event.voter_name?.trim();
+  const phone = event.phone_number?.trim();
+  if (name && phone) return `${name} (${phone})`;
+  if (name) return name;
+  if (phone) return phone;
+  return event.voter_wid;
+}
+
+function excerpt(value: string, length = 160) {
+  if (value.length <= length) return value;
+  return `${value.slice(0, length)}...`;
+}
+
+function formatWhen(value?: string | null) {
+  return value || "Not sent yet";
+}
+
+export function App() {
+  const [token, setTokenState] = useState(getToken());
+  const [route, setRoute] = useState<Route>(parseRoute(window.location.pathname));
+
+  useEffect(() => {
+    const onRoute = () => setRoute(parseRoute(window.location.pathname));
+    const onExpired = () => {
+      setTokenState(null);
+      navigateTo({ name: "login" }, true);
+    };
+    window.addEventListener("popstate", onRoute);
+    window.addEventListener("auth-expired", onExpired);
+    return () => {
+      window.removeEventListener("popstate", onRoute);
+      window.removeEventListener("auth-expired", onExpired);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!token) {
+      if (route.name !== "register" && route.name !== "login") {
+        navigateTo({ name: "login" }, true);
+      }
+      return;
+    }
+    if (route.name === "login" || route.name === "register") {
+      navigateTo({ name: "dashboard" }, true);
+    }
+  }, [token, route.name]);
+
+  function handleAuth(nextToken: string) {
+    setToken(nextToken);
+    setTokenState(nextToken);
+    navigateTo({ name: "dashboard" }, true);
+  }
+
+  if (!token) {
+    if (route.name === "register") {
+      return <RegisterPage onRegistered={handleAuth} onLoginLink={() => navigateTo({ name: "login" })} />;
+    }
+    return <LoginPage onLogin={handleAuth} onRegisterLink={() => navigateTo({ name: "register" })} />;
+  }
+
+  return <AuthenticatedApp route={route} onLogout={() => setTokenState(null)} />;
+}
+
+function LoginPage({ onLogin, onRegisterLink }: { onLogin: (token: string) => void; onRegisterLink: () => void }) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("admin");
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    try {
+      const result = await api<{ access_token: string }>("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+      });
+      onLogin(result.access_token);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Login failed");
+    }
+  }
+
+  return (
+    <PublicLayout
+      eyebrow="English WhatsApp Poll Bot"
+      title="Run smarter learning polls"
+      subtitle="A sharper admin experience for texts, polls, summaries, and tenant configuration."
+    >
+      <form className="auth-card" onSubmit={submit}>
+        <div className="auth-card-header">
+          <h2>Login</h2>
+          <p>Access your workspace and manage one tenant from a cleaner app shell.</p>
+        </div>
+        {error && <div className="alert error">{error}</div>}
+        <TextInput label="Username" value={username} onChange={setUsername} />
+        <TextInput label="Password" type="password" value={password} onChange={setPassword} />
+        <button className="button button-primary" type="submit">
+          Login
+        </button>
+        <button className="button button-ghost" type="button" onClick={onRegisterLink}>
+          Create workspace
+        </button>
+      </form>
+    </PublicLayout>
+  );
+}
+
+function RegisterPage({ onRegistered, onLoginLink }: { onRegistered: (token: string) => void; onLoginLink: () => void }) {
+  const [form, setForm] = useState<RegisterFormState>({
+    name: "",
+    username: "",
+    password: "",
+    confirmPassword: "",
+    timezone: "Asia/Jerusalem",
+  });
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    if (form.password !== form.confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+    try {
+      const result = await api<{ access_token: string }>("/auth/register", {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.name,
+          username: form.username,
+          password: form.password,
+          timezone: form.timezone,
+        }),
+      });
+      onRegistered(result.access_token);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Registration failed");
+    }
+  }
+
+  return (
+    <PublicLayout
+      eyebrow="Tenant Registration"
+      title="Create your workspace"
+      subtitle="Register a tenant, sign in immediately, and finish configuration from a dedicated settings page."
+    >
+      <form className="auth-card" onSubmit={submit}>
+        <div className="auth-card-header">
+          <h2>Register</h2>
+          <p>Tenant creation is now a public onboarding flow, not an in-app settings action.</p>
+        </div>
+        {error && <div className="alert error">{error}</div>}
+        <TextInput label="Workspace name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} />
+        <TextInput label="Username" value={form.username} onChange={(value) => setForm({ ...form, username: value })} />
+        <TextInput label="Password" type="password" value={form.password} onChange={(value) => setForm({ ...form, password: value })} />
+        <TextInput
+          label="Confirm password"
+          type="password"
+          value={form.confirmPassword}
+          onChange={(value) => setForm({ ...form, confirmPassword: value })}
+        />
+        <TextInput label="Timezone" value={form.timezone} onChange={(value) => setForm({ ...form, timezone: value })} />
+        <button className="button button-primary" type="submit">
+          Register workspace
+        </button>
+        <button className="button button-ghost" type="button" onClick={onLoginLink}>
+          Back to login
+        </button>
+      </form>
+    </PublicLayout>
+  );
+}
+
+function PublicLayout({
+  eyebrow,
+  title,
+  subtitle,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <main className="public-screen">
+      <section className="public-hero">
+        <div className="hero-copy">
+          <p className="eyebrow">{eyebrow}</p>
+          <h1>{title}</h1>
+          <p className="hero-subtitle">{subtitle}</p>
+          <div className="hero-points">
+            <HeroPoint icon={<Sparkles size={16} />} label="Refined dashboard and detail views" />
+            <HeroPoint icon={<Building2 size={16} />} label="Tenant onboarding through registration" />
+            <HeroPoint icon={<CheckCircle2 size={16} />} label="Floating create and edit workflows" />
+          </div>
+        </div>
+        {children}
+      </section>
+    </main>
+  );
+}
+
+function HeroPoint({ icon, label }: { icon: React.ReactNode; label: string }) {
+  return (
+    <div className="hero-point">
+      <span>{icon}</span>
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => void }) {
+  const [tenant, setTenant] = useState<Tenant | null>(null);
+  const [texts, setTexts] = useState<Text[]>([]);
+  const [polls, setPolls] = useState<Poll[]>([]);
+  const [pollStats, setPollStats] = useState<PollStats[]>([]);
+  const [voteEvents, setVoteEvents] = useState<VoteEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState<Toast>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [textModal, setTextModal] = useState<{ mode: "create" | "edit"; text?: Text } | null>(null);
+  const [pollModal, setPollModal] = useState<{ mode: "create" | "edit"; poll?: Poll } | null>(null);
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [preview, setPreview] = useState<GeneratedQuestion | null>(null);
+
+  async function loadData() {
+    setLoading(true);
+    try {
+      const me = await api<Tenant>("/auth/me");
+      const [textPage, pollPage, stats, votePage] = await Promise.all([
+        api<Page<Text>>(`/texts?tenant_id=${me.id}&page_size=100`),
+        api<Page<Poll>>(`/polls?tenant_id=${me.id}&page_size=100`),
+        api<PollStats[]>(`/polls/stats?tenant_id=${me.id}&limit=100`),
+        api<Page<VoteEvent>>(`/poll-vote-events?tenant_id=${me.id}&page_size=200`),
+      ]);
+      setTenant(me);
+      setTexts(textPage.items);
+      setPolls(pollPage.items);
+      setPollStats(stats);
+      setVoteEvents(votePage.items);
+    } catch (err) {
+      setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to load workspace" });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadData();
+  }, []);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [route]);
+
+  const configured = useMemo(
+    () =>
+      Boolean(
+        tenant?.greenapi_api_url &&
+          tenant.greenapi_id_instance &&
+          tenant.greenapi_api_token_instance &&
+          tenant.gemini_api_key,
+      ),
+    [tenant],
+  );
+
+  const currentText = route.name === "text-detail" ? texts.find((item) => item.id === route.id) || null : null;
+  const currentPoll = route.name === "poll-detail" ? polls.find((item) => item.id === route.id) || null : null;
+  const currentPollStats = currentPoll ? pollStats.find((item) => item.poll.id === currentPoll.id) || null : null;
+  const currentPollEvents = currentPoll ? voteEvents.filter((item) => item.poll_id === currentPoll.id) : [];
+
+  function handleLogout() {
+    setToken(null);
+    onLogout();
+    navigateTo({ name: "login" }, true);
+  }
+
+  function handleSuccess(message: string) {
+    setToast({ kind: "success", message });
+    void loadData();
+  }
+
+  function handleError(message: string) {
+    setToast({ kind: "error", message });
+  }
+
+  async function handlePreview(textId: number) {
+    try {
+      const result = await api<GeneratedQuestion>("/questions/preview", {
+        method: "POST",
+        body: JSON.stringify({ text_id: textId }),
+      });
+      setPreview(result);
+    } catch (err) {
+      handleError(err instanceof Error ? err.message : "Preview failed");
+    }
+  }
+
+  async function handleSendPoll(textId: number) {
+    try {
+      await api("/polls/send-now", { method: "POST", body: JSON.stringify({ text_id: textId, scheduled_slot: "manual" }) });
+      handleSuccess("Poll sent");
+    } catch (err) {
+      handleError(err instanceof Error ? err.message : "Poll send failed");
+    }
+  }
+
+  async function handleDeleteText(textId: number) {
+    if (!window.confirm("Delete this text?")) return;
+    await api(`/texts/${textId}`, { method: "DELETE" });
+    if (route.name === "text-detail" && route.id === textId) navigateTo({ name: "texts" }, true);
+    handleSuccess("Text deleted");
+  }
+
+  async function handleDeletePoll(pollId: number) {
+    if (!window.confirm("Delete this poll?")) return;
+    await api(`/polls/${pollId}`, { method: "DELETE" });
+    if (route.name === "poll-detail" && route.id === pollId) navigateTo({ name: "polls" }, true);
+    handleSuccess("Poll deleted");
+  }
+
+  if (loading && !tenant) {
+    return <LoadingScreen />;
+  }
+
+  if (!tenant) {
+    return (
+      <div className="empty-state page-shell">
+        <h2>Workspace unavailable</h2>
+        <p>Unable to load the current tenant.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-frame">
+      <Sidebar route={route} open={mobileNavOpen} tenant={tenant} onClose={() => setMobileNavOpen(false)} />
+      <div className="frame-main">
+        <Topbar
+          tenant={tenant}
+          route={route}
+          configured={configured}
+          onMenu={() => setMobileNavOpen(true)}
+          onRefresh={() => void loadData()}
+          onDownload={() => downloadCsv().catch((err) => handleError(err.message))}
+          onLogout={handleLogout}
+        />
+        {toast && <div className={`alert ${toast.kind}`}>{toast.message}</div>}
+        {!configured && <div className="alert warning">Workspace setup is incomplete. Finish GreenAPI and Gemini settings to enable delivery.</div>}
+        <div className="page-shell">
+          {route.name === "dashboard" && (
+            <DashboardPage
+              tenant={tenant}
+              texts={texts}
+              polls={polls}
+              pollStats={pollStats}
+              onOpenText={(text) => navigateTo({ name: "text-detail", id: text.id })}
+              onOpenPoll={(poll) => navigateTo({ name: "poll-detail", id: poll.id })}
+              onNewText={() => setTextModal({ mode: "create" })}
+              onNewPoll={() => setPollModal({ mode: "create" })}
+            />
+          )}
+          {route.name === "texts" && (
+            <TextsPage
+              texts={texts}
+              onOpen={(text) => navigateTo({ name: "text-detail", id: text.id })}
+              onCreate={() => setTextModal({ mode: "create" })}
+              onEdit={(text) => setTextModal({ mode: "edit", text })}
+              onPreview={handlePreview}
+              onSendPoll={handleSendPoll}
+              onDelete={(text) => void handleDeleteText(text.id)}
+            />
+          )}
+          {route.name === "text-detail" && (
+            <TextDetailPage
+              text={currentText}
+              onBack={() => navigateTo({ name: "texts" })}
+              onEdit={(text) => setTextModal({ mode: "edit", text })}
+              onPreview={handlePreview}
+              onSendPoll={handleSendPoll}
+              onDelete={(text) => void handleDeleteText(text.id)}
+            />
+          )}
+          {route.name === "polls" && (
+            <PollsPage
+              polls={polls}
+              texts={texts}
+              pollStats={pollStats}
+              onOpen={(poll) => navigateTo({ name: "poll-detail", id: poll.id })}
+              onCreate={() => setPollModal({ mode: "create" })}
+              onEdit={(poll) => setPollModal({ mode: "edit", poll })}
+              onDelete={(poll) => void handleDeletePoll(poll.id)}
+            />
+          )}
+          {route.name === "poll-detail" && (
+            <PollDetailPage
+              poll={currentPoll}
+              stats={currentPollStats}
+              events={currentPollEvents}
+              onBack={() => navigateTo({ name: "polls" })}
+              onEdit={(poll) => setPollModal({ mode: "edit", poll })}
+              onDelete={(poll) => void handleDeletePoll(poll.id)}
+            />
+          )}
+          {route.name === "settings" && (
+            <SettingsPage tenant={tenant} onEdit={() => setSettingsModalOpen(true)} />
+          )}
+        </div>
+      </div>
+
+      {textModal && (
+        <TextModal
+          tenant={tenant}
+          initialText={textModal.text}
+          onClose={() => setTextModal(null)}
+          onSaved={(message) => {
+            setTextModal(null);
+            handleSuccess(message);
+          }}
+          onError={handleError}
+        />
+      )}
+      {pollModal && (
+        <PollModal
+          tenant={tenant}
+          texts={texts}
+          initialPoll={pollModal.poll}
+          onClose={() => setPollModal(null)}
+          onSaved={(message, pollId) => {
+            setPollModal(null);
+            handleSuccess(message);
+            if (pollId) navigateTo({ name: "poll-detail", id: pollId });
+          }}
+          onError={handleError}
+        />
+      )}
+      {settingsModalOpen && (
+        <SettingsModal
+          tenant={tenant}
+          onClose={() => setSettingsModalOpen(false)}
+          onSaved={(message) => {
+            setSettingsModalOpen(false);
+            handleSuccess(message);
+          }}
+          onError={handleError}
+        />
+      )}
+      {preview && <PreviewModal preview={preview} onClose={() => setPreview(null)} />}
+    </div>
+  );
+}
+
+function LoadingScreen() {
+  return (
+    <div className="loading-screen">
+      <div className="loading-card">
+        <RefreshCw className="spin" size={20} />
+        <span>Loading workspace...</span>
+      </div>
+    </div>
+  );
+}
+
+function Sidebar({
+  route,
+  open,
+  tenant,
+  onClose,
+}: {
+  route: Route;
+  open: boolean;
+  tenant: Tenant;
+  onClose: () => void;
+}) {
+  const items = [
+    { icon: <BarChart3 size={18} />, label: "Dashboard", route: { name: "dashboard" } as Route, active: route.name === "dashboard" },
+    {
+      icon: <FileText size={18} />,
+      label: "Texts",
+      route: { name: "texts" } as Route,
+      active: route.name === "texts" || route.name === "text-detail",
+    },
+    {
+      icon: <Vote size={18} />,
+      label: "Polls",
+      route: { name: "polls" } as Route,
+      active: route.name === "polls" || route.name === "poll-detail",
+    },
+    { icon: <Settings size={18} />, label: "Settings", route: { name: "settings" } as Route, active: route.name === "settings" },
+  ];
+
+  return (
+    <>
+      <div className={open ? "sidebar-backdrop open" : "sidebar-backdrop"} onClick={onClose} />
+      <aside className={open ? "sidebar open" : "sidebar"}>
+        <div className="sidebar-brand">
+          <div className="brand-mark">EP</div>
+          <div>
+            <strong>English Polls</strong>
+            <p>{tenant.name}</p>
+          </div>
+          <button className="icon-button button-ghost sidebar-close" onClick={onClose} title="Close navigation">
+            <X size={18} />
+          </button>
+        </div>
+        <nav className="sidebar-nav">
+          {items.map((item) => (
+            <button
+              className={item.active ? "sidebar-link active" : "sidebar-link"}
+              key={item.label}
+              onClick={() => navigateTo(item.route)}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-foot">
+          <div className="sidebar-note">
+            <BellRing size={16} />
+            <span>Manage one workspace cleanly from a dedicated shell.</span>
+          </div>
+        </div>
+      </aside>
+    </>
+  );
+}
+
+function Topbar({
+  tenant,
+  route,
+  configured,
+  onMenu,
+  onRefresh,
+  onDownload,
+  onLogout,
+}: {
+  tenant: Tenant;
+  route: Route;
+  configured: boolean;
+  onMenu: () => void;
+  onRefresh: () => void;
+  onDownload: () => void;
+  onLogout: () => void;
+}) {
+  return (
+    <header className="topbar">
+      <div className="topbar-left">
+        <button className="icon-button button-ghost mobile-only" onClick={onMenu} title="Open navigation">
+          <Menu size={18} />
+        </button>
+        <div>
+          <p className="eyebrow">{tenant.name}</p>
+          <h1>{routeTitle(route)}</h1>
+        </div>
+      </div>
+      <div className="topbar-actions">
+        <div className={configured ? "status-chip ready" : "status-chip"}>{configured ? "Ready" : "Setup needed"}</div>
+        <button className="button button-ghost" onClick={onDownload}>
+          <Download size={16} /> CSV
+        </button>
+        <button className="icon-button button-ghost" onClick={onRefresh} title="Refresh">
+          <RefreshCw size={18} />
+        </button>
+        <button className="icon-button button-ghost" onClick={onLogout} title="Logout">
+          <LogOut size={18} />
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function routeTitle(route: Route) {
+  switch (route.name) {
+    case "texts":
+      return "Texts";
+    case "text-detail":
+      return "Text Detail";
+    case "polls":
+      return "Polls";
+    case "poll-detail":
+      return "Poll Detail";
+    case "settings":
+      return "Workspace Settings";
+    default:
+      return "Dashboard";
+  }
+}
+
+function DashboardPage({
+  tenant,
+  texts,
+  polls,
+  pollStats,
+  onOpenText,
+  onOpenPoll,
+  onNewText,
+  onNewPoll,
+}: {
+  tenant: Tenant;
+  texts: Text[];
+  polls: Poll[];
+  pollStats: PollStats[];
+  onOpenText: (text: Text) => void;
+  onOpenPoll: (poll: Poll) => void;
+  onNewText: () => void;
+  onNewPoll: () => void;
+}) {
+  const totalVotes = pollStats.reduce((sum, item) => sum + item.total, 0);
+  const averageCorrect = pollStats.length === 0 ? 0 : pollStats.reduce((sum, item) => sum + item.correct_rate, 0) / pollStats.length;
+  const sentPolls = polls.filter((poll) => poll.status === "sent").length;
+
+  return (
+    <div className="dashboard-layout">
+      <section className="hero-panel">
+        <div>
+          <p className="eyebrow">Workspace Overview</p>
+          <h2>{tenant.name}</h2>
+          <p className="hero-subtitle">A cleaner command surface for content, delivery, and post-send performance.</p>
+        </div>
+        <div className="hero-actions">
+          <button className="button button-primary" onClick={onNewText}>
+            <Plus size={16} /> New text
+          </button>
+          <button className="button button-secondary" onClick={onNewPoll}>
+            <Plus size={16} /> New poll
+          </button>
+        </div>
+      </section>
+
+      <section className="metric-grid">
+        <MetricCard label="Texts" value={texts.length} detail="Content sources" icon={<FileText size={18} />} />
+        <MetricCard label="Polls" value={polls.length} detail="Draft + sent" icon={<Vote size={18} />} />
+        <MetricCard label="Sent polls" value={sentPolls} detail="Delivered to groups" icon={<Send size={18} />} />
+        <MetricCard label="Total votes" value={totalVotes} detail="Across all tracked polls" icon={<BarChart3 size={18} />} />
+        <MetricCard label="Avg correct" value={`${averageCorrect.toFixed(1)}%`} detail="Accuracy rate" icon={<CheckCircle2 size={18} />} />
+      </section>
+
+      <div className="content-grid">
+        <section className="surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Recent Texts</p>
+              <h3>Source content</h3>
+            </div>
+          </div>
+          <div className="stack">
+            {texts.slice(0, 4).map((text) => (
+              <button className="list-card" key={text.id} onClick={() => onOpenText(text)}>
+                <div className="list-card-header">
+                  <strong>{text.title}</strong>
+                  <span className={text.enabled ? "pill success" : "pill"}>{text.enabled ? "Enabled" : "Disabled"}</span>
+                </div>
+                <p>{excerpt(text.body)}</p>
+              </button>
+            ))}
+            {texts.length === 0 && <EmptyState title="No texts yet" body="Create your first text from the floating form." />}
+          </div>
+        </section>
+
+        <section className="surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Recent Polls</p>
+              <h3>Performance snapshot</h3>
+            </div>
+          </div>
+          <div className="stack">
+            {pollStats.slice(0, 4).map((item) => (
+              <button className="list-card" key={item.poll.id} onClick={() => onOpenPoll(item.poll)}>
+                <div className="list-card-header">
+                  <strong>{item.poll.question}</strong>
+                  <span className="pill">{item.total} votes</span>
+                </div>
+                <p>{item.correct_rate.toFixed(1)}% correct · {item.poll.status}</p>
+              </button>
+            ))}
+            {pollStats.length === 0 && <EmptyState title="No polls yet" body="Generated and manual polls will appear here." />}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, detail, icon }: { label: string; value: string | number; detail: string; icon: React.ReactNode }) {
+  return (
+    <article className="metric-card">
+      <div className="metric-icon">{icon}</div>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <p>{detail}</p>
+    </article>
+  );
+}
+
+function TextsPage({
+  texts,
+  onOpen,
+  onCreate,
+  onEdit,
+  onPreview,
+  onSendPoll,
+  onDelete,
+}: {
+  texts: Text[];
+  onOpen: (text: Text) => void;
+  onCreate: () => void;
+  onEdit: (text: Text) => void;
+  onPreview: (textId: number) => void;
+  onSendPoll: (textId: number) => void;
+  onDelete: (text: Text) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const filtered = texts.filter((text) => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return true;
+    return [text.title, text.body, text.chat_id].some((value) => value.toLowerCase().includes(needle));
+  });
+
+  return (
+    <section className="resource-page">
+      <div className="section-header">
+        <div>
+          <p className="section-kicker">Texts</p>
+          <h2>Manage source content</h2>
+        </div>
+        <button className="button button-primary" onClick={onCreate}>
+          <Plus size={16} /> New text
+        </button>
+      </div>
+      <div className="toolbar">
+        <TextInput label="Search" value={search} onChange={setSearch} placeholder="Title, body, or chat ID" />
+      </div>
+      <div className="resource-grid">
+        {filtered.map((text) => (
+          <article className="resource-card" key={text.id}>
+            <button className="resource-main" onClick={() => onOpen(text)}>
+              <div className="resource-topline">
+                <span className="resource-id">#{text.id}</span>
+                <span className={text.enabled ? "pill success" : "pill"}>{text.enabled ? "Enabled" : "Disabled"}</span>
+              </div>
+              <h3>{text.title}</h3>
+              <p>{excerpt(text.body, 190)}</p>
+              <div className="meta-row">
+                <span>{text.chat_id || "No chat ID"}</span>
+                <span>{text.morning_time} / {text.evening_time}</span>
+              </div>
+            </button>
+            <div className="card-actions">
+              <button className="button button-ghost" onClick={() => onEdit(text)}>
+                <Pencil size={16} /> Edit
+              </button>
+              <button className="button button-ghost" onClick={() => onPreview(text.id)}>
+                <Play size={16} /> Preview
+              </button>
+              <button className="button button-secondary" onClick={() => onSendPoll(text.id)}>
+                <Send size={16} /> Send poll
+              </button>
+              <button className="icon-button button-danger" onClick={() => onDelete(text)} title="Delete text">
+                <Trash2 size={18} />
+              </button>
+            </div>
+          </article>
+        ))}
+        {filtered.length === 0 && <EmptyState title="No matching texts" body="Try a different search or create a new text." />}
+      </div>
+    </section>
+  );
+}
+
+function TextDetailPage({
+  text,
+  onBack,
+  onEdit,
+  onPreview,
+  onSendPoll,
+  onDelete,
+}: {
+  text: Text | null;
+  onBack: () => void;
+  onEdit: (text: Text) => void;
+  onPreview: (textId: number) => void;
+  onSendPoll: (textId: number) => void;
+  onDelete: (text: Text) => void;
+}) {
+  if (!text) {
+    return <EmptyState title="Text not found" body="The selected text no longer exists." />;
+  }
+
+  return (
+    <section className="detail-page">
+      <button className="back-link" onClick={onBack}>
+        <ArrowLeft size={16} /> Back to texts
+      </button>
+      <div className="detail-hero">
+        <div>
+          <p className="section-kicker">Text #{text.id}</p>
+          <h2>{text.title}</h2>
+          <p className="hero-subtitle">{text.chat_id || "No chat ID configured yet."}</p>
+        </div>
+        <div className="hero-actions">
+          <button className="button button-secondary" onClick={() => onPreview(text.id)}>
+            <Play size={16} /> Preview question
+          </button>
+          <button className="button button-secondary" onClick={() => onSendPoll(text.id)}>
+            <Send size={16} /> Send poll
+          </button>
+          <button className="button button-primary" onClick={() => onEdit(text)}>
+            <Pencil size={16} /> Edit text
+          </button>
+        </div>
+      </div>
+
+      <div className="detail-layout">
+        <section className="surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Content</p>
+              <h3>Body</h3>
+            </div>
+          </div>
+          <div className="prose-block">{text.body}</div>
+        </section>
+
+        <aside className="surface side-surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Delivery</p>
+              <h3>Schedule</h3>
+            </div>
+          </div>
+          <DetailRow label="Morning" value={text.morning_time} />
+          <DetailRow label="Evening" value={text.evening_time} />
+          <DetailRow label="AM summary" value={text.summary_time_morning} />
+          <DetailRow label="PM summary" value={text.summary_time_evening} />
+          <DetailRow label="Attachment" value={text.attachment_name || "None"} />
+          <DetailRow label="Status" value={text.enabled ? "Enabled" : "Disabled"} />
+          <button className="button button-danger full-width" onClick={() => onDelete(text)}>
+            <Trash2 size={16} /> Delete text
+          </button>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function PollsPage({
+  polls,
+  texts,
+  pollStats,
+  onOpen,
+  onCreate,
+  onEdit,
+  onDelete,
+}: {
+  polls: Poll[];
+  texts: Text[];
+  pollStats: PollStats[];
+  onOpen: (poll: Poll) => void;
+  onCreate: () => void;
+  onEdit: (poll: Poll) => void;
+  onDelete: (poll: Poll) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const textById = new Map(texts.map((item) => [item.id, item]));
+  const statsById = new Map(pollStats.map((item) => [item.poll.id, item]));
+  const filtered = polls.filter((poll) => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return true;
+    return [poll.question, poll.status, poll.chat_id].some((value) => value.toLowerCase().includes(needle));
+  });
+
+  return (
+    <section className="resource-page">
+      <div className="section-header">
+        <div>
+          <p className="section-kicker">Polls</p>
+          <h2>Track delivery and answers</h2>
+        </div>
+        <button className="button button-primary" onClick={onCreate}>
+          <Plus size={16} /> New poll
+        </button>
+      </div>
+      <div className="toolbar">
+        <TextInput label="Search" value={search} onChange={setSearch} placeholder="Question, status, or chat ID" />
+      </div>
+      <div className="resource-grid">
+        {filtered.map((poll) => {
+          const stats = statsById.get(poll.id);
+          const sourceText = textById.get(poll.text_id);
+          return (
+            <article className="resource-card" key={poll.id}>
+              <button className="resource-main" onClick={() => onOpen(poll)}>
+                <div className="resource-topline">
+                  <span className="resource-id">#{poll.id}</span>
+                  <span className="pill">{poll.status}</span>
+                </div>
+                <h3>{poll.question}</h3>
+                <p>{sourceText ? excerpt(sourceText.body, 120) : "No linked text loaded."}</p>
+                <div className="meta-row">
+                  <span>{stats ? `${stats.total} votes` : "0 votes"}</span>
+                  <span>{stats ? `${stats.correct_rate.toFixed(1)}% correct` : "No stats yet"}</span>
+                </div>
+              </button>
+              <div className="option-badges">
+                {poll.options.map((option) => (
+                  <span className={option === poll.correct_option ? "pill success" : "pill"} key={option}>
+                    {option}
+                  </span>
+                ))}
+              </div>
+              <div className="card-actions">
+                <button className="button button-ghost" onClick={() => onEdit(poll)}>
+                  <Pencil size={16} /> Edit
+                </button>
+                <button className="icon-button button-danger" onClick={() => onDelete(poll)} title="Delete poll">
+                  <Trash2 size={18} />
+                </button>
+              </div>
+            </article>
+          );
+        })}
+        {filtered.length === 0 && <EmptyState title="No matching polls" body="Try a different search or create a new poll." />}
+      </div>
+    </section>
+  );
+}
+
+function PollDetailPage({
+  poll,
+  stats,
+  events,
+  onBack,
+  onEdit,
+  onDelete,
+}: {
+  poll: Poll | null;
+  stats: PollStats | null;
+  events: VoteEvent[];
+  onBack: () => void;
+  onEdit: (poll: Poll) => void;
+  onDelete: (poll: Poll) => void;
+}) {
+  if (!poll) {
+    return <EmptyState title="Poll not found" body="The selected poll no longer exists." />;
+  }
+
+  return (
+    <section className="detail-page">
+      <button className="back-link" onClick={onBack}>
+        <ArrowLeft size={16} /> Back to polls
+      </button>
+      <div className="detail-hero">
+        <div>
+          <p className="section-kicker">Poll #{poll.id}</p>
+          <h2>{poll.question}</h2>
+          <p className="hero-subtitle">{poll.chat_id}</p>
+        </div>
+        <div className="hero-actions">
+          <button className="button button-primary" onClick={() => onEdit(poll)}>
+            <Pencil size={16} /> Edit poll
+          </button>
+          <button className="button button-danger" onClick={() => onDelete(poll)}>
+            <Trash2 size={16} /> Delete poll
+          </button>
+        </div>
+      </div>
+
+      <div className="detail-layout">
+        <section className="surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Results</p>
+              <h3>Answer distribution</h3>
+            </div>
+          </div>
+          <div className="stack">
+            {poll.options.map((option) => (
+              <div className="result-row" key={option}>
+                <div>
+                  <strong>{option}</strong>
+                  {option === poll.correct_option && <span className="pill success">Correct</span>}
+                </div>
+                <span>{stats?.counts[option] || 0} votes</span>
+              </div>
+            ))}
+          </div>
+          <div className="detail-summary">
+            <StatBlock label="Total votes" value={stats?.total || 0} />
+            <StatBlock label="Correct rate" value={`${stats?.correct_rate.toFixed(1) || "0.0"}%`} />
+            <StatBlock label="Status" value={poll.status} />
+          </div>
+          <div className="prose-block subtle">{poll.explanation || "No explanation provided."}</div>
+        </section>
+
+        <aside className="surface side-surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Poll Events</p>
+              <h3>Vote timeline</h3>
+            </div>
+          </div>
+          <div className="stack">
+            {events.map((event) => (
+              <article className="event-row" key={event.id}>
+                <div className="event-row-top">
+                  <span className="pill">{formatVoteContact(event)}</span>
+                  <span className="meta-inline">{event.recorded_at}</span>
+                </div>
+                <strong>{describeVoteEvent(event)}</strong>
+              </article>
+            ))}
+            {events.length === 0 && <EmptyState title="No poll events yet" body="Vote changes will appear here as GreenAPI updates arrive." />}
+          </div>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () => void }) {
+  const readiness = [
+    { label: "GreenAPI URL", ready: Boolean(tenant.greenapi_api_url) },
+    { label: "GreenAPI instance", ready: Boolean(tenant.greenapi_id_instance) },
+    { label: "GreenAPI token", ready: Boolean(tenant.greenapi_api_token_instance) },
+    { label: "Gemini API key", ready: Boolean(tenant.gemini_api_key) },
+  ];
+
+  return (
+    <section className="detail-page">
+      <div className="detail-hero">
+        <div>
+          <p className="section-kicker">Settings</p>
+          <h2>{tenant.name}</h2>
+          <p className="hero-subtitle">Tenant creation moved to registration. This page now edits only the current workspace.</p>
+        </div>
+        <div className="hero-actions">
+          <button className="button button-primary" onClick={onEdit}>
+            <FilePenLine size={16} /> Edit workspace
+          </button>
+        </div>
+      </div>
+
+      <div className="detail-layout">
+        <section className="surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Configuration</p>
+              <h3>Workspace details</h3>
+            </div>
+          </div>
+          <DetailRow label="Username" value={tenant.username} />
+          <DetailRow label="Timezone" value={tenant.timezone} />
+          <DetailRow label="Scheduler" value={tenant.scheduler_enabled ? "Enabled" : "Disabled"} />
+          <DetailRow label="Summaries" value={tenant.summary_enabled ? "Enabled" : "Disabled"} />
+          <DetailRow label="Gemini model" value={tenant.gemini_model} />
+          <DetailRow label="GreenAPI URL" value={tenant.greenapi_api_url} />
+        </section>
+
+        <aside className="surface side-surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Readiness</p>
+              <h3>Integration status</h3>
+            </div>
+          </div>
+          <div className="stack">
+            {readiness.map((item) => (
+              <div className="result-row" key={item.label}>
+                <span>{item.label}</span>
+                <span className={item.ready ? "pill success" : "pill"}>{item.ready ? "Configured" : "Missing"}</span>
+              </div>
+            ))}
+          </div>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function TextModal({
+  tenant,
+  initialText,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  tenant: Tenant;
+  initialText?: Text;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+  onError: (message: string) => void;
+}) {
+  const editing = Boolean(initialText);
+  const [form, setForm] = useState<TextFormState>(initialText ? textToForm(initialText) : blankText(tenant.id));
+  const [attachment, setAttachment] = useState<File | null>(null);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      if (editing && initialText) {
+        await api<Text>(`/texts/${initialText.id}`, { method: "PATCH", body: JSON.stringify(form) });
+        onSaved("Text updated");
+        return;
+      }
+      const data = new FormData();
+      data.set("tenant_id", String(tenant.id));
+      data.set("title", form.title);
+      data.set("body", form.body);
+      data.set("chat_id", form.chat_id);
+      data.set("morning_time", form.morning_time);
+      data.set("evening_time", form.evening_time);
+      data.set("summary_time_morning", form.summary_time_morning);
+      data.set("summary_time_evening", form.summary_time_evening);
+      data.set("enabled", String(form.enabled));
+      if (attachment) data.set("attachment", attachment);
+      await api<Text>("/texts", { method: "POST", body: data });
+      onSaved("Text created");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Failed to save text");
+    }
+  }
+
+  return (
+    <Modal title={editing ? "Edit Text" : "Create Text"} onClose={onClose}>
+      <form className="modal-form" onSubmit={submit}>
+        <TextInput label="Title" value={form.title} onChange={(value) => setForm({ ...form, title: value })} />
+        <label>
+          Body
+          <textarea rows={8} value={form.body} onChange={(event) => setForm({ ...form, body: event.target.value })} />
+        </label>
+        <TextInput label="WhatsApp group chat ID" value={form.chat_id} onChange={(value) => setForm({ ...form, chat_id: value })} />
+        <div className="time-grid">
+          <TextInput label="Morning" value={form.morning_time} onChange={(value) => setForm({ ...form, morning_time: value })} />
+          <TextInput label="Evening" value={form.evening_time} onChange={(value) => setForm({ ...form, evening_time: value })} />
+          <TextInput
+            label="AM summary"
+            value={form.summary_time_morning}
+            onChange={(value) => setForm({ ...form, summary_time_morning: value })}
+          />
+          <TextInput
+            label="PM summary"
+            value={form.summary_time_evening}
+            onChange={(value) => setForm({ ...form, summary_time_evening: value })}
+          />
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
+          Enable text
+        </label>
+        {!editing && (
+          <label>
+            Attachment
+            <input type="file" onChange={(event) => setAttachment(event.target.files?.[0] || null)} />
+          </label>
+        )}
+        <div className="modal-actions">
+          <button className="button button-ghost" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="button button-primary" type="submit">
+            <Save size={16} /> {editing ? "Save changes" : "Create text"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function PollModal({
+  tenant,
+  texts,
+  initialPoll,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  tenant: Tenant;
+  texts: Text[];
+  initialPoll?: Poll;
+  onClose: () => void;
+  onSaved: (message: string, pollId?: number) => void;
+  onError: (message: string) => void;
+}) {
+  const editing = Boolean(initialPoll);
+  const [form, setForm] = useState<PollFormState>(initialPoll ? pollToForm(initialPoll) : blankPoll(tenant.id, texts[0]));
+
+  function setText(textId: number) {
+    const text = texts.find((item) => item.id === textId);
+    setForm((current) => ({
+      ...current,
+      text_id: textId,
+      chat_id: text?.chat_id || current.chat_id,
+      generated_from_text: text?.body || current.generated_from_text,
+    }));
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!form.text_id) {
+      onError("Select a text before saving a poll.");
+      return;
+    }
+    const payload = {
+      ...form,
+      scheduled_slot: form.scheduled_slot || null,
+      sent_at: form.sent_at || null,
+      summary_sent_at: form.summary_sent_at || null,
+      greenapi_message_id: form.greenapi_message_id || null,
+    };
+    try {
+      if (editing && initialPoll) {
+        await api<Poll>(`/polls/${initialPoll.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+        onSaved("Poll updated", initialPoll.id);
+        return;
+      }
+      const created = await api<Poll>("/polls", { method: "POST", body: JSON.stringify(payload) });
+      onSaved("Poll created", created.id);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Failed to save poll");
+    }
+  }
+
+  return (
+    <Modal title={editing ? "Edit Poll" : "Create Poll"} onClose={onClose}>
+      <form className="modal-form" onSubmit={submit}>
+        <label>
+          Text
+          <select value={form.text_id} onChange={(event) => setText(Number(event.target.value))}>
+            <option value={0}>Select text</option>
+            {texts.map((text) => (
+              <option value={text.id} key={text.id}>
+                {text.title}
+              </option>
+            ))}
+          </select>
+        </label>
+        <TextInput label="Question" value={form.question} onChange={(value) => setForm({ ...form, question: value })} />
+        <div className="time-grid">
+          {form.options.map((option, index) => (
+            <TextInput
+              label={`Option ${index + 1}`}
+              value={option}
+              onChange={(value) => {
+                const options = [...form.options];
+                options[index] = value;
+                setForm({ ...form, options });
+              }}
+              key={index}
+            />
+          ))}
+        </div>
+        <TextInput label="Correct option" value={form.correct_option} onChange={(value) => setForm({ ...form, correct_option: value })} />
+        <TextInput label="Status" value={form.status} onChange={(value) => setForm({ ...form, status: value })} />
+        <TextInput label="Chat ID" value={form.chat_id} onChange={(value) => setForm({ ...form, chat_id: value })} />
+        <TextInput label="Scheduled slot" value={form.scheduled_slot || ""} onChange={(value) => setForm({ ...form, scheduled_slot: value })} />
+        <label>
+          Explanation
+          <textarea rows={4} value={form.explanation} onChange={(event) => setForm({ ...form, explanation: event.target.value })} />
+        </label>
+        <label>
+          Generated from text
+          <textarea rows={5} value={form.generated_from_text} onChange={(event) => setForm({ ...form, generated_from_text: event.target.value })} />
+        </label>
+        <div className="modal-actions">
+          <button className="button button-ghost" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="button button-primary" type="submit">
+            <Save size={16} /> {editing ? "Save changes" : "Create poll"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function SettingsModal({
+  tenant,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  tenant: Tenant;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+  onError: (message: string) => void;
+}) {
+  const [form, setForm] = useState<TenantFormState>(tenantToForm(tenant));
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    try {
+      await api<Tenant>(`/tenants/${tenant.id}`, { method: "PATCH", body: JSON.stringify(form) });
+      onSaved("Workspace updated");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Failed to save workspace");
+    }
+  }
+
+  return (
+    <Modal title="Edit Workspace" onClose={onClose}>
+      <form className="modal-form" onSubmit={submit}>
+        <TextInput label="Workspace name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} />
+        <TextInput label="Username" value={form.username} onChange={(value) => setForm({ ...form, username: value })} />
+        <TextInput label="Password" type="password" value={form.password} onChange={(value) => setForm({ ...form, password: value })} />
+        <TextInput label="GreenAPI URL" value={form.greenapi_api_url} onChange={(value) => setForm({ ...form, greenapi_api_url: value })} />
+        <TextInput
+          label="GreenAPI instance ID"
+          value={form.greenapi_id_instance}
+          onChange={(value) => setForm({ ...form, greenapi_id_instance: value })}
+        />
+        <TextInput
+          label="GreenAPI token"
+          type="password"
+          value={form.greenapi_api_token_instance}
+          onChange={(value) => setForm({ ...form, greenapi_api_token_instance: value })}
+        />
+        <TextInput label="Gemini API key" type="password" value={form.gemini_api_key} onChange={(value) => setForm({ ...form, gemini_api_key: value })} />
+        <TextInput label="Gemini model" value={form.gemini_model} onChange={(value) => setForm({ ...form, gemini_model: value })} />
+        <TextInput label="Timezone" value={form.timezone} onChange={(value) => setForm({ ...form, timezone: value })} />
+        <label className="check">
+          <input type="checkbox" checked={form.summary_enabled} onChange={(event) => setForm({ ...form, summary_enabled: event.target.checked })} />
+          Send summaries
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={form.scheduler_enabled}
+            onChange={(event) => setForm({ ...form, scheduler_enabled: event.target.checked })}
+          />
+          Enable scheduler
+        </label>
+        <div className="modal-actions">
+          <button className="button button-ghost" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="button button-primary" type="submit">
+            <Save size={16} /> Save workspace
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function PreviewModal({ preview, onClose }: { preview: GeneratedQuestion; onClose: () => void }) {
+  return (
+    <Modal title="Question Preview" onClose={onClose}>
+      <div className="stack">
+        <p className="question">{preview.question}</p>
+        <div className="stack">
+          {preview.options.map((option) => (
+            <div className={option === preview.correct_option ? "result-row correct-row" : "result-row"} key={option}>
+              <span>{option}</span>
+              {option === preview.correct_option && <span className="pill success">Correct</span>}
+            </div>
+          ))}
+        </div>
+        <div className="prose-block subtle">{preview.explanation}</div>
+      </div>
+    </Modal>
+  );
+}
+
+function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <h3>{title}</h3>
+          <button className="icon-button button-ghost" onClick={onClose} title="Close">
+            <X size={18} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="empty-state">
+      <h3>{title}</h3>
+      <p>{body}</p>
+    </div>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="detail-row">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function StatBlock({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="stat-block">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function TextInput({
+  label,
+  value,
+  onChange,
+  name,
+  type = "text",
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  name?: string;
+  type?: string;
+  placeholder?: string;
+}) {
+  return (
+    <label>
+      {label}
+      <input
+        name={name}
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
+  );
+}
