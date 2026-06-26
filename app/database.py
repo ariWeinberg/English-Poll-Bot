@@ -707,13 +707,6 @@ def replace_poll_votes(
             """,
             [(poll_id, option_name, voter_wid, timestamp) for voter_wid, option_name in target_by_voter.items()],
         )
-    if target_by_voter:
-        conn.execute(
-            "DELETE FROM poll_votes WHERE poll_id = %s AND voter_wid <> ALL(%s)",
-            (poll_id, list(target_by_voter.keys())),
-        )
-    else:
-        conn.execute("DELETE FROM poll_votes WHERE poll_id = %s", (poll_id,))
     if event_rows:
         with conn.cursor() as cursor:
             cursor.executemany(
