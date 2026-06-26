@@ -237,6 +237,24 @@ textarea {
   background: #ffd2e4;
 }
 
+.poll-events {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #f1d6c7;
+}
+
+.poll-events h4 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+}
+
+.event-row {
+  padding: 12px;
+  border: 1px solid #f1d6c7;
+  border-radius: 8px;
+  background: #fffaf6;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(140px, 1fr));

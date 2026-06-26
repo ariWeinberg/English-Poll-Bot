@@ -13,6 +13,44 @@ def test_parse_poll_update_ignores_non_poll_payload():
     assert parse_poll_update({"typeWebhook": "incomingMessageReceived", "messageData": {}}) is None
 
 
+def test_parse_poll_update_extracts_contact_name_and_phone():
+    payload = {
+        "typeWebhook": "incomingMessageReceived",
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "poll-message-id",
+                "votes": [
+                    {
+                        "optionName": "A",
+                        "optionVoters": [
+                            {
+                                "voterWid": "972501234567@c.us",
+                                "contactName": "Dana Cohen",
+                                "phoneNumber": "972501234567",
+                            }
+                        ],
+                    }
+                ],
+            },
+        },
+    }
+
+    parsed = parse_poll_update(payload)
+    assert parsed == (
+        "poll-message-id",
+        {
+            "A": [
+                {
+                    "voter_wid": "972501234567@c.us",
+                    "voter_name": "Dana Cohen",
+                    "phone_number": "972501234567",
+                }
+            ]
+        },
+    )
+
+
 @pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
 def test_handle_greenapi_webhook_accumulates_votes_across_delta_updates():
     assert TEST_DATABASE_URL is not None
@@ -128,13 +166,32 @@ def test_handle_greenapi_webhook_records_vote_history_when_vote_changes():
 
     with db_session(TEST_DATABASE_URL) as conn:
         rows = conn.execute(
-            "SELECT option_name, voter_wid, event_type, previous_option_name FROM poll_vote_events WHERE poll_id = %s ORDER BY id",
+            """
+            SELECT option_name, voter_wid, voter_name, phone_number, event_type, previous_option_name
+            FROM poll_vote_events
+            WHERE poll_id = %s
+            ORDER BY id
+            """,
             (poll_id,),
         ).fetchall()
 
     assert rows == [
-        {"option_name": "A", "voter_wid": "111@c.us", "event_type": "vote", "previous_option_name": None},
-        {"option_name": "B", "voter_wid": "111@c.us", "event_type": "change", "previous_option_name": "A"},
+        {
+            "option_name": "A",
+            "voter_wid": "111@c.us",
+            "voter_name": None,
+            "phone_number": "111",
+            "event_type": "vote",
+            "previous_option_name": None,
+        },
+        {
+            "option_name": "B",
+            "voter_wid": "111@c.us",
+            "voter_name": None,
+            "phone_number": "111",
+            "event_type": "change",
+            "previous_option_name": "A",
+        },
     ]
 
 
@@ -164,11 +221,30 @@ def test_delete_poll_vote_records_unvote_event():
 
     with db_session(TEST_DATABASE_URL) as conn:
         rows = conn.execute(
-            "SELECT option_name, voter_wid, event_type, previous_option_name FROM poll_vote_events WHERE poll_id = %s ORDER BY id",
+            """
+            SELECT option_name, voter_wid, voter_name, phone_number, event_type, previous_option_name
+            FROM poll_vote_events
+            WHERE poll_id = %s
+            ORDER BY id
+            """,
             (poll_id,),
         ).fetchall()
 
     assert rows == [
-        {"option_name": "A", "voter_wid": "111@c.us", "event_type": "vote", "previous_option_name": None},
-        {"option_name": "", "voter_wid": "111@c.us", "event_type": "unvote", "previous_option_name": "A"},
+        {
+            "option_name": "A",
+            "voter_wid": "111@c.us",
+            "voter_name": None,
+            "phone_number": "111",
+            "event_type": "vote",
+            "previous_option_name": None,
+        },
+        {
+            "option_name": "",
+            "voter_wid": "111@c.us",
+            "voter_name": None,
+            "phone_number": "111",
+            "event_type": "unvote",
+            "previous_option_name": "A",
+        },
     ]

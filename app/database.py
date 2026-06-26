@@ -38,6 +38,15 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def normalize_phone_number(value: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        return ""
+    base = stripped.split("@", 1)[0]
+    digits = "".join(ch for ch in base if ch.isdigit())
+    return digits or base
+
+
 def connect(database_url: str) -> psycopg.Connection[DbRow]:
     return psycopg.connect(database_url, row_factory=dict_row)
 
@@ -122,6 +131,8 @@ def init_db(database_url: str) -> None:
                 poll_id INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
                 option_name TEXT NOT NULL,
                 voter_wid TEXT NOT NULL,
+                voter_name TEXT,
+                phone_number TEXT,
                 updated_at TEXT NOT NULL,
                 UNIQUE (poll_id, voter_wid)
             );
@@ -131,13 +142,19 @@ def init_db(database_url: str) -> None:
                 poll_id INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
                 option_name TEXT NOT NULL,
                 voter_wid TEXT NOT NULL,
+                voter_name TEXT,
+                phone_number TEXT,
                 event_type TEXT NOT NULL DEFAULT 'vote',
                 previous_option_name TEXT,
                 recorded_at TEXT NOT NULL
             );
 
+            ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS voter_name TEXT;
+            ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS phone_number TEXT;
             ALTER TABLE poll_vote_events ADD COLUMN IF NOT EXISTS event_type TEXT NOT NULL DEFAULT 'vote';
             ALTER TABLE poll_vote_events ADD COLUMN IF NOT EXISTS previous_option_name TEXT;
+            ALTER TABLE poll_vote_events ADD COLUMN IF NOT EXISTS voter_name TEXT;
+            ALTER TABLE poll_vote_events ADD COLUMN IF NOT EXISTS phone_number TEXT;
 
             CREATE INDEX IF NOT EXISTS idx_tenants_active ON tenants(is_active);
             CREATE INDEX IF NOT EXISTS idx_tenants_username ON tenants(username);
@@ -685,20 +702,22 @@ def replace_poll_votes(
     conn: psycopg.Connection[DbRow],
     *,
     poll_id: int,
-    option_voters: dict[str, list[str]],
+    option_voters: dict[str, list[dict[str, str | None]]],
 ) -> None:
     existing_rows = conn.execute("SELECT option_name, voter_wid FROM poll_votes WHERE poll_id = %s", (poll_id,)).fetchall()
     current_by_voter = {str(row["voter_wid"]): str(row["option_name"]) for row in existing_rows}
-    target_by_voter: dict[str, str] = {}
-    event_rows: list[tuple[int, str, str, str]] = []
+    target_by_voter: dict[str, tuple[str, str | None, str]] = {}
+    event_rows: list[tuple[int, str, str, str | None, str, str, str | None, str]] = []
     timestamp = now_iso()
-    for option_name, voters in option_voters.items():
-        for voter in voters:
-            voter_id = voter.strip()
+    for option_name, voter_records in option_voters.items():
+        for voter in voter_records:
+            voter_id = str(voter.get("voter_wid") or "").strip()
             option = option_name.strip()
             if not voter_id or not option:
                 continue
-            target_by_voter[voter_id] = option
+            voter_name = str(voter.get("voter_name") or "").strip() or None
+            phone_number = str(voter.get("phone_number") or "").strip() or normalize_phone_number(voter_id)
+            target_by_voter[voter_id] = (option, voter_name, phone_number)
             previous_option = current_by_voter.get(voter_id)
             if previous_option != option:
                 event_rows.append(
@@ -706,6 +725,8 @@ def replace_poll_votes(
                         poll_id,
                         option,
                         voter_id,
+                        voter_name,
+                        phone_number,
                         "change" if previous_option else "vote",
                         previous_option,
                         timestamp,
@@ -714,20 +735,27 @@ def replace_poll_votes(
     with conn.cursor() as cursor:
         cursor.executemany(
             """
-            INSERT INTO poll_votes (poll_id, option_name, voter_wid, updated_at)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO poll_votes (poll_id, option_name, voter_wid, voter_name, phone_number, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (poll_id, voter_wid) DO UPDATE SET
                 option_name = EXCLUDED.option_name,
+                voter_name = EXCLUDED.voter_name,
+                phone_number = EXCLUDED.phone_number,
                 updated_at = EXCLUDED.updated_at
             """,
-            [(poll_id, option_name, voter_wid, timestamp) for voter_wid, option_name in target_by_voter.items()],
+            [
+                (poll_id, option_name, voter_wid, voter_name, phone_number, timestamp)
+                for voter_wid, (option_name, voter_name, phone_number) in target_by_voter.items()
+            ],
         )
     if event_rows:
         with conn.cursor() as cursor:
             cursor.executemany(
                 """
-                INSERT INTO poll_vote_events (poll_id, option_name, voter_wid, event_type, previous_option_name, recorded_at)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO poll_vote_events (
+                    poll_id, option_name, voter_wid, voter_name, phone_number, event_type, previous_option_name, recorded_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 event_rows,
             )
@@ -826,20 +854,26 @@ def record_poll_vote_event(
     poll_id: int,
     option_name: str,
     voter_wid: str,
+    voter_name: str | None = None,
+    phone_number: str | None = None,
     recorded_at: str | None = None,
     event_type: str = "vote",
     previous_option_name: str | None = None,
 ) -> int:
     row = conn.execute(
         """
-        INSERT INTO poll_vote_events (poll_id, option_name, voter_wid, event_type, previous_option_name, recorded_at)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO poll_vote_events (
+            poll_id, option_name, voter_wid, voter_name, phone_number, event_type, previous_option_name, recorded_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
             poll_id,
             option_name.strip(),
             voter_wid.strip(),
+            voter_name.strip() if voter_name else None,
+            (phone_number.strip() if phone_number else normalize_phone_number(voter_wid)),
             event_type.strip() or "vote",
             previous_option_name.strip() if previous_option_name else None,
             recorded_at or now_iso(),
@@ -848,7 +882,15 @@ def record_poll_vote_event(
     return int(row["id"])
 
 
-def create_poll_vote(conn: psycopg.Connection[DbRow], *, poll_id: int, option_name: str, voter_wid: str) -> int:
+def create_poll_vote(
+    conn: psycopg.Connection[DbRow],
+    *,
+    poll_id: int,
+    option_name: str,
+    voter_wid: str,
+    voter_name: str | None = None,
+    phone_number: str | None = None,
+) -> int:
     timestamp = now_iso()
     existing = conn.execute(
         "SELECT option_name FROM poll_votes WHERE poll_id = %s AND voter_wid = %s",
@@ -856,14 +898,23 @@ def create_poll_vote(conn: psycopg.Connection[DbRow], *, poll_id: int, option_na
     ).fetchone()
     row = conn.execute(
         """
-        INSERT INTO poll_votes (poll_id, option_name, voter_wid, updated_at)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO poll_votes (poll_id, option_name, voter_wid, voter_name, phone_number, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (poll_id, voter_wid) DO UPDATE SET
             option_name = EXCLUDED.option_name,
+            voter_name = EXCLUDED.voter_name,
+            phone_number = EXCLUDED.phone_number,
             updated_at = EXCLUDED.updated_at
         RETURNING id
         """,
-        (poll_id, option_name.strip(), voter_wid.strip(), timestamp),
+        (
+            poll_id,
+            option_name.strip(),
+            voter_wid.strip(),
+            voter_name.strip() if voter_name else None,
+            phone_number.strip() if phone_number else normalize_phone_number(voter_wid),
+            timestamp,
+        ),
     ).fetchone()
     previous_option = str(existing["option_name"]) if existing else None
     if previous_option != option_name.strip():
@@ -872,6 +923,8 @@ def create_poll_vote(conn: psycopg.Connection[DbRow], *, poll_id: int, option_na
             poll_id=poll_id,
             option_name=option_name,
             voter_wid=voter_wid,
+            voter_name=voter_name,
+            phone_number=phone_number,
             recorded_at=timestamp,
             event_type="change" if previous_option else "vote",
             previous_option_name=previous_option,
@@ -879,16 +932,33 @@ def create_poll_vote(conn: psycopg.Connection[DbRow], *, poll_id: int, option_na
     return int(row["id"])
 
 
-def update_poll_vote(conn: psycopg.Connection[DbRow], *, vote_id: int, poll_id: int, option_name: str, voter_wid: str) -> None:
+def update_poll_vote(
+    conn: psycopg.Connection[DbRow],
+    *,
+    vote_id: int,
+    poll_id: int,
+    option_name: str,
+    voter_wid: str,
+    voter_name: str | None = None,
+    phone_number: str | None = None,
+) -> None:
     timestamp = now_iso()
     existing = conn.execute("SELECT option_name FROM poll_votes WHERE id = %s", (vote_id,)).fetchone()
     conn.execute(
         """
         UPDATE poll_votes
-        SET poll_id = %s, option_name = %s, voter_wid = %s, updated_at = %s
+        SET poll_id = %s, option_name = %s, voter_wid = %s, voter_name = %s, phone_number = %s, updated_at = %s
         WHERE id = %s
         """,
-        (poll_id, option_name.strip(), voter_wid.strip(), timestamp, vote_id),
+        (
+            poll_id,
+            option_name.strip(),
+            voter_wid.strip(),
+            voter_name.strip() if voter_name else None,
+            phone_number.strip() if phone_number else normalize_phone_number(voter_wid),
+            timestamp,
+            vote_id,
+        ),
     )
     previous_option = str(existing["option_name"]) if existing else None
     if previous_option != option_name.strip():
@@ -897,6 +967,8 @@ def update_poll_vote(conn: psycopg.Connection[DbRow], *, vote_id: int, poll_id: 
             poll_id=poll_id,
             option_name=option_name,
             voter_wid=voter_wid,
+            voter_name=voter_name,
+            phone_number=phone_number,
             recorded_at=timestamp,
             event_type="change" if previous_option else "vote",
             previous_option_name=previous_option,
@@ -904,7 +976,10 @@ def update_poll_vote(conn: psycopg.Connection[DbRow], *, vote_id: int, poll_id: 
 
 
 def delete_poll_vote(conn: psycopg.Connection[DbRow], vote_id: int) -> None:
-    existing = conn.execute("SELECT poll_id, option_name, voter_wid FROM poll_votes WHERE id = %s", (vote_id,)).fetchone()
+    existing = conn.execute(
+        "SELECT poll_id, option_name, voter_wid, voter_name, phone_number FROM poll_votes WHERE id = %s",
+        (vote_id,),
+    ).fetchone()
     conn.execute("DELETE FROM poll_votes WHERE id = %s", (vote_id,))
     if existing is not None:
         record_poll_vote_event(
@@ -912,6 +987,8 @@ def delete_poll_vote(conn: psycopg.Connection[DbRow], vote_id: int) -> None:
             poll_id=int(existing["poll_id"]),
             option_name="",
             voter_wid=str(existing["voter_wid"]),
+            voter_name=str(existing["voter_name"]) if existing["voter_name"] else None,
+            phone_number=str(existing["phone_number"]) if existing["phone_number"] else None,
             event_type="unvote",
             previous_option_name=str(existing["option_name"]),
         )

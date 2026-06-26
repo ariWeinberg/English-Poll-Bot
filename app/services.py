@@ -20,6 +20,7 @@ from app.database import (
     poll_stats,
     replace_poll_votes,
 )
+from app.database import normalize_phone_number
 from app.greenapi import GreenAPIClient, GreenAPIConfig
 from app.question_generator import GeminiQuestionGenerator, GeneratedQuestion
 
@@ -149,7 +150,44 @@ async def generate_and_send_poll(
     return poll_id
 
 
-def parse_poll_update(payload: dict[str, Any]) -> tuple[str, dict[str, list[str]]] | None:
+def _parse_voter_record(value: Any) -> dict[str, str | None] | None:
+    if isinstance(value, str):
+        voter_wid = value.strip()
+        if not voter_wid:
+            return None
+        return {
+            "voter_wid": voter_wid,
+            "voter_name": None,
+            "phone_number": normalize_phone_number(voter_wid),
+        }
+    if not isinstance(value, dict):
+        return None
+    voter_wid = str(
+        value.get("voterWid")
+        or value.get("wid")
+        or value.get("voterId")
+        or value.get("chatId")
+        or value.get("id")
+        or ""
+    ).strip()
+    if not voter_wid:
+        return None
+    voter_name = str(
+        value.get("contactName")
+        or value.get("senderName")
+        or value.get("name")
+        or value.get("pushName")
+        or ""
+    ).strip() or None
+    phone_number = str(value.get("phoneNumber") or value.get("phone") or "").strip() or normalize_phone_number(voter_wid)
+    return {
+        "voter_wid": voter_wid,
+        "voter_name": voter_name,
+        "phone_number": phone_number,
+    }
+
+
+def parse_poll_update(payload: dict[str, Any]) -> tuple[str, dict[str, list[dict[str, str | None]]]] | None:
     if payload.get("typeWebhook") != "incomingMessageReceived":
         return None
     message_data = payload.get("messageData") or {}
@@ -161,14 +199,14 @@ def parse_poll_update(payload: dict[str, Any]) -> tuple[str, dict[str, list[str]
     if not stanza_id or not isinstance(votes, list):
         return None
 
-    option_voters: dict[str, list[str]] = {}
+    option_voters: dict[str, list[dict[str, str | None]]] = {}
     for vote in votes:
         if not isinstance(vote, dict):
             continue
         option = str(vote.get("optionName", "")).strip()
         voters = vote.get("optionVoters") or []
         if option:
-            option_voters[option] = [str(voter) for voter in voters]
+            option_voters[option] = [record for voter in voters if (record := _parse_voter_record(voter)) is not None]
     return str(stanza_id), option_voters
 
 

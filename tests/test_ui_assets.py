@@ -12,6 +12,9 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert 'type View = "dashboard" | "texts" | "polls" | "settings"' in app
     assert "Poll Stats" in app
     assert "Poll Events" in app
+    assert "formatVoteContact" in app
+    assert "phone_number" in app
+    assert "voter_name" in app
     assert "changed" in app
     assert "retracted vote from" in app
     assert "Edit Text" in app

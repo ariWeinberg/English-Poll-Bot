@@ -83,6 +83,8 @@ type VoteEvent = {
   poll_id: number;
   option_name: string;
   voter_wid: string;
+  voter_name?: string | null;
+  phone_number?: string | null;
   event_type: "vote" | "change" | "unvote";
   previous_option_name?: string | null;
   recorded_at: string;
@@ -391,7 +393,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
       {!configured && !loading && <div className="alert warning">This tenant still needs GreenAPI and Gemini settings.</div>}
 
       {view === "dashboard" && tenant && (
-        <Dashboard tenant={tenant} texts={texts} polls={polls} pollStats={pollStats} voteEvents={voteEvents} preview={preview} />
+        <Dashboard tenant={tenant} texts={texts} polls={polls} pollStats={pollStats} preview={preview} />
       )}
 
       {view === "texts" && tenant && (
@@ -408,7 +410,14 @@ function Shell({ onLogout }: { onLogout: () => void }) {
       )}
 
       {view === "polls" && tenant && (
-        <Polls tenant={tenant} texts={texts} polls={polls} onChanged={handleSuccess} onError={handleError} />
+        <Polls
+          tenant={tenant}
+          texts={texts}
+          polls={polls}
+          voteEvents={voteEvents}
+          onChanged={handleSuccess}
+          onError={handleError}
+        />
       )}
 
       {view === "settings" && tenant && (
@@ -454,21 +463,18 @@ function Dashboard({
   texts,
   polls,
   pollStats,
-  voteEvents,
   preview,
 }: {
   tenant: Tenant;
   texts: Text[];
   polls: Poll[];
   pollStats: PollStats[];
-  voteEvents: VoteEvent[];
   preview: GeneratedQuestion | null;
 }) {
   const totalVotes = pollStats.reduce((sum, item) => sum + item.total, 0);
   const averageCorrect =
     pollStats.length === 0 ? 0 : pollStats.reduce((sum, item) => sum + item.correct_rate, 0) / pollStats.length;
   const sentPolls = polls.filter((poll) => poll.status === "sent").length;
-  const pollById = new Map(polls.map((poll) => [poll.id, poll]));
 
   return (
     <main className="dashboard-grid">
@@ -527,32 +533,6 @@ function Dashboard({
         </div>
       </section>
 
-      <section className="panel span-2">
-        <div className="panel-header">
-          <h2>Poll Events</h2>
-        </div>
-        <div className="list">
-          {voteEvents.map((event) => {
-            const poll = pollById.get(event.poll_id);
-            return (
-              <article className="poll-card" key={event.id}>
-                <div className="poll-meta">
-                  <span>#{event.id}</span>
-                  <span>poll #{event.poll_id}</span>
-                  <span>{event.recorded_at}</span>
-                </div>
-                <h3>{poll?.question || "Unknown poll"}</h3>
-                <div className="vote-row">
-                  <span className="vote-pill">{event.voter_wid}</span>
-                  <strong>{describeVoteEvent(event)}</strong>
-                </div>
-              </article>
-            );
-          })}
-          {voteEvents.length === 0 && <p className="empty">No poll events yet.</p>}
-        </div>
-      </section>
-
       <section className="panel">
         <div className="panel-header">
           <h2>Tenant Status</h2>
@@ -602,6 +582,15 @@ function describeVoteEvent(event: VoteEvent) {
     return `changed ${event.previous_option_name || "unknown option"} -> ${event.option_name}`;
   }
   return `voted ${event.option_name}`;
+}
+
+function formatVoteContact(event: VoteEvent) {
+  const name = event.voter_name?.trim();
+  const phone = event.phone_number?.trim();
+  if (name && phone) return `${name} (${phone})`;
+  if (name) return name;
+  if (phone) return phone;
+  return event.voter_wid;
 }
 
 function Texts({
@@ -772,12 +761,14 @@ function Polls({
   tenant,
   texts,
   polls,
+  voteEvents,
   onChanged,
   onError,
 }: {
   tenant: Tenant;
   texts: Text[];
   polls: Poll[];
+  voteEvents: VoteEvent[];
   onChanged: (message: string) => void;
   onError: (message: string) => void;
 }) {
@@ -924,6 +915,26 @@ function Polls({
                 <button className="icon-button danger" onClick={() => void remove(poll.id)} title="Delete">
                   <Trash2 size={18} />
                 </button>
+              </div>
+              <div className="poll-events">
+                <h4>Poll Events</h4>
+                <div className="list">
+                  {voteEvents
+                    .filter((event) => event.poll_id === poll.id)
+                    .map((event) => (
+                      <div className="event-row" key={event.id}>
+                        <div className="poll-meta">
+                          <span>#{event.id}</span>
+                          <span>{event.recorded_at}</span>
+                        </div>
+                        <div className="vote-row">
+                          <span className="vote-pill">{formatVoteContact(event)}</span>
+                          <strong>{describeVoteEvent(event)}</strong>
+                        </div>
+                      </div>
+                    ))}
+                  {!voteEvents.some((event) => event.poll_id === poll.id) && <p className="empty">No poll events yet.</p>}
+                </div>
               </div>
             </article>
           ))}
