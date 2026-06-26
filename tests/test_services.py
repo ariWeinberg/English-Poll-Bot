@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from app.database import create_poll, db_session, init_db, poll_stats
+from app.database import create_poll, create_poll_vote, db_session, delete_poll_vote, get_poll_vote, init_db, poll_stats
 from app.services import handle_greenapi_webhook, parse_poll_update
 
 
@@ -128,11 +128,47 @@ def test_handle_greenapi_webhook_records_vote_history_when_vote_changes():
 
     with db_session(TEST_DATABASE_URL) as conn:
         rows = conn.execute(
-            "SELECT option_name, voter_wid FROM poll_vote_events WHERE poll_id = %s ORDER BY id",
+            "SELECT option_name, voter_wid, event_type, previous_option_name FROM poll_vote_events WHERE poll_id = %s ORDER BY id",
             (poll_id,),
         ).fetchall()
 
     assert rows == [
-        {"option_name": "A", "voter_wid": "111@c.us"},
-        {"option_name": "B", "voter_wid": "111@c.us"},
+        {"option_name": "A", "voter_wid": "111@c.us", "event_type": "vote", "previous_option_name": None},
+        {"option_name": "B", "voter_wid": "111@c.us", "event_type": "change", "previous_option_name": "A"},
+    ]
+
+
+@pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
+def test_delete_poll_vote_records_unvote_event():
+    assert TEST_DATABASE_URL is not None
+    init_db(TEST_DATABASE_URL)
+    with db_session(TEST_DATABASE_URL) as conn:
+        conn.execute("TRUNCATE poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
+    init_db(TEST_DATABASE_URL)
+    with db_session(TEST_DATABASE_URL) as conn:
+        poll_id = create_poll(
+            conn,
+            tenant_id=1,
+            text_id=1,
+            question="Choose",
+            options=["A", "B"],
+            correct_option="A",
+            explanation="",
+            chat_id="120@g.us",
+            generated_from_text="text",
+            scheduled_slot="manual",
+        )
+        vote_id = create_poll_vote(conn, poll_id=poll_id, option_name="A", voter_wid="111@c.us")
+        assert get_poll_vote(conn, vote_id) is not None
+        delete_poll_vote(conn, vote_id)
+
+    with db_session(TEST_DATABASE_URL) as conn:
+        rows = conn.execute(
+            "SELECT option_name, voter_wid, event_type, previous_option_name FROM poll_vote_events WHERE poll_id = %s ORDER BY id",
+            (poll_id,),
+        ).fetchall()
+
+    assert rows == [
+        {"option_name": "A", "voter_wid": "111@c.us", "event_type": "vote", "previous_option_name": None},
+        {"option_name": "", "voter_wid": "111@c.us", "event_type": "unvote", "previous_option_name": "A"},
     ]

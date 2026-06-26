@@ -11,7 +11,9 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Authorization" in app
     assert 'type View = "dashboard" | "texts" | "polls" | "settings"' in app
     assert "Poll Stats" in app
-    assert "Vote History" in app
+    assert "Poll Events" in app
+    assert "changed" in app
+    assert "retracted vote from" in app
     assert "Edit Text" in app
     assert "Edit Poll" in app
     assert "Edit Tenant" in app
