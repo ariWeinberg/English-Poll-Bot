@@ -21,8 +21,8 @@ jobs:
     steps:
       - name: Prepare SSH access
         env:
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           set -euo pipefail
@@ -38,10 +38,10 @@ jobs:
 
       - name: Deploy release branch on server
         env:
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
-          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
           set -euo pipefail
           : "${DEPLOY_HOST:?Missing DEPLOY_HOST}"
@@ -56,13 +56,14 @@ jobs:
           git fetch origin release
           git checkout release
           git pull --ff-only origin release
+          docker-compose down --remove-orphans
           docker-compose up -d --build --remove-orphans
           EOF
 
       - name: Smoke test public endpoint
         env:
-          DEPLOY_BASE_URL: ${{ vars.DEPLOY_BASE_URL }}
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_BASE_URL: ${{ secrets.DEPLOY_BASE_URL }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
           set -euo pipefail
           BASE_URL="${DEPLOY_BASE_URL:-http://${DEPLOY_HOST}:8988}"
