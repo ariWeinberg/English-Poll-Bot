@@ -760,6 +760,7 @@ def list_poll_vote_events_page(
     *,
     page: int = 1,
     page_size: int = 25,
+    tenant_id: int | None = None,
     poll_id: int | None = None,
     option_name: str | None = None,
     voter_wid: str | None = None,
@@ -767,19 +768,37 @@ def list_poll_vote_events_page(
     page, page_size, offset = _page_bounds(page, page_size)
     where: list[str] = []
     params: list[Any] = []
+    if tenant_id is not None:
+        where.append("polls.tenant_id = %s")
+        params.append(tenant_id)
     if poll_id is not None:
-        where.append("poll_id = %s")
+        where.append("poll_vote_events.poll_id = %s")
         params.append(poll_id)
     if option_name:
-        where.append("option_name = %s")
+        where.append("poll_vote_events.option_name = %s")
         params.append(option_name)
     if voter_wid:
-        where.append("voter_wid ILIKE %s")
+        where.append("poll_vote_events.voter_wid ILIKE %s")
         params.append(_like(voter_wid))
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-    total = conn.execute(f"SELECT COUNT(*) AS count FROM poll_vote_events {where_sql}", params).fetchone()["count"]
+    total = conn.execute(
+        f"""
+        SELECT COUNT(*) AS count
+        FROM poll_vote_events
+        JOIN polls ON polls.id = poll_vote_events.poll_id
+        {where_sql}
+        """,
+        params,
+    ).fetchone()["count"]
     items = conn.execute(
-        f"SELECT * FROM poll_vote_events {where_sql} ORDER BY recorded_at DESC, id DESC LIMIT %s OFFSET %s",
+        f"""
+        SELECT poll_vote_events.*
+        FROM poll_vote_events
+        JOIN polls ON polls.id = poll_vote_events.poll_id
+        {where_sql}
+        ORDER BY poll_vote_events.recorded_at DESC, poll_vote_events.id DESC
+        LIMIT %s OFFSET %s
+        """,
         [*params, page_size, offset],
     ).fetchall()
     return paginated_response(items, int(total), page, page_size)

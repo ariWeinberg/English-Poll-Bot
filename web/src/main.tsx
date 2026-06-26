@@ -78,6 +78,14 @@ type PollStats = {
   correct_rate: number;
 };
 
+type VoteEvent = {
+  id: number;
+  poll_id: number;
+  option_name: string;
+  voter_wid: string;
+  recorded_at: string;
+};
+
 type Page<T> = {
   items: T[];
   total: number;
@@ -286,6 +294,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
   const [texts, setTexts] = useState<Text[]>([]);
   const [polls, setPolls] = useState<Poll[]>([]);
   const [pollStats, setPollStats] = useState<PollStats[]>([]);
+  const [voteEvents, setVoteEvents] = useState<VoteEvent[]>([]);
   const [preview, setPreview] = useState<GeneratedQuestion | null>(null);
   const [toast, setToast] = useState<Toast>(null);
   const [loading, setLoading] = useState(true);
@@ -294,17 +303,19 @@ function Shell({ onLogout }: { onLogout: () => void }) {
     setLoading(true);
     try {
       const me = await api<Tenant>("/auth/me");
-      const [tenantPage, textPage, pollPage, stats] = await Promise.all([
+      const [tenantPage, textPage, pollPage, stats, votePage] = await Promise.all([
         api<Page<Tenant>>("/tenants?page_size=100"),
         api<Page<Text>>(`/texts?tenant_id=${me.id}&page_size=100`),
         api<Page<Poll>>(`/polls?tenant_id=${me.id}&page_size=100`),
         api<PollStats[]>(`/polls/stats?tenant_id=${me.id}&limit=50`),
+        api<Page<VoteEvent>>(`/poll-vote-events?tenant_id=${me.id}&page_size=100`),
       ]);
       setTenant(me);
       setTenants(tenantPage.items);
       setTexts(textPage.items);
       setPolls(pollPage.items);
       setPollStats(stats);
+      setVoteEvents(votePage.items);
     } catch (err) {
       setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to load data" });
     } finally {
@@ -378,7 +389,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
       {!configured && !loading && <div className="alert warning">This tenant still needs GreenAPI and Gemini settings.</div>}
 
       {view === "dashboard" && tenant && (
-        <Dashboard tenant={tenant} texts={texts} polls={polls} pollStats={pollStats} preview={preview} />
+        <Dashboard tenant={tenant} texts={texts} polls={polls} pollStats={pollStats} voteEvents={voteEvents} preview={preview} />
       )}
 
       {view === "texts" && tenant && (
@@ -441,18 +452,21 @@ function Dashboard({
   texts,
   polls,
   pollStats,
+  voteEvents,
   preview,
 }: {
   tenant: Tenant;
   texts: Text[];
   polls: Poll[];
   pollStats: PollStats[];
+  voteEvents: VoteEvent[];
   preview: GeneratedQuestion | null;
 }) {
   const totalVotes = pollStats.reduce((sum, item) => sum + item.total, 0);
   const averageCorrect =
     pollStats.length === 0 ? 0 : pollStats.reduce((sum, item) => sum + item.correct_rate, 0) / pollStats.length;
   const sentPolls = polls.filter((poll) => poll.status === "sent").length;
+  const pollById = new Map(polls.map((poll) => [poll.id, poll]));
 
   return (
     <main className="dashboard-grid">
@@ -508,6 +522,34 @@ function Dashboard({
             </article>
           ))}
           {pollStats.length === 0 && <p className="empty">No poll stats yet.</p>}
+        </div>
+      </section>
+
+      <section className="panel span-2">
+        <div className="panel-header">
+          <h2>Vote History</h2>
+        </div>
+        <div className="list">
+          {voteEvents.map((event) => {
+            const poll = pollById.get(event.poll_id);
+            return (
+              <article className="poll-card" key={event.id}>
+                <div className="poll-meta">
+                  <span>#{event.id}</span>
+                  <span>poll #{event.poll_id}</span>
+                  <span>{event.recorded_at}</span>
+                </div>
+                <h3>{poll?.question || "Unknown poll"}</h3>
+                <div className="vote-row">
+                  <span className="vote-pill">{event.voter_wid}</span>
+                  <span className={event.option_name === poll?.correct_option ? "vote-pill correct" : "vote-pill"}>
+                    {event.option_name}
+                  </span>
+                </div>
+              </article>
+            );
+          })}
+          {voteEvents.length === 0 && <p className="empty">No vote history yet.</p>}
         </div>
       </section>
 
