@@ -132,7 +132,17 @@ def test_greenapi_webhook_is_tenant_scoped():
         response = client.get("/api/v1/poll-vote-events?tenant_id=2&page_size=10", headers=headers)
         assert response.status_code == 200
         events = response.json()["items"]
-        assert events == [{"id": 1, "poll_id": poll_b, "option_name": "B", "voter_wid": "222@c.us", "recorded_at": events[0]["recorded_at"]}]
+        assert events == [
+            {
+                "id": 1,
+                "poll_id": poll_b,
+                "option_name": "B",
+                "voter_wid": "222@c.us",
+                "event_type": "vote",
+                "previous_option_name": None,
+                "recorded_at": events[0]["recorded_at"],
+            }
+        ]
 
     with db_session(database_url) as conn:
         rows = conn.execute("SELECT poll_id, option_name FROM poll_votes ORDER BY poll_id").fetchall()

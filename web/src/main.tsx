@@ -83,6 +83,8 @@ type VoteEvent = {
   poll_id: number;
   option_name: string;
   voter_wid: string;
+  event_type: "vote" | "change" | "unvote";
+  previous_option_name?: string | null;
   recorded_at: string;
 };
 
@@ -527,7 +529,7 @@ function Dashboard({
 
       <section className="panel span-2">
         <div className="panel-header">
-          <h2>Vote History</h2>
+          <h2>Poll Events</h2>
         </div>
         <div className="list">
           {voteEvents.map((event) => {
@@ -542,14 +544,12 @@ function Dashboard({
                 <h3>{poll?.question || "Unknown poll"}</h3>
                 <div className="vote-row">
                   <span className="vote-pill">{event.voter_wid}</span>
-                  <span className={event.option_name === poll?.correct_option ? "vote-pill correct" : "vote-pill"}>
-                    {event.option_name}
-                  </span>
+                  <strong>{describeVoteEvent(event)}</strong>
                 </div>
               </article>
             );
           })}
-          {voteEvents.length === 0 && <p className="empty">No vote history yet.</p>}
+          {voteEvents.length === 0 && <p className="empty">No poll events yet.</p>}
         </div>
       </section>
 
@@ -592,6 +592,16 @@ function Status({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function describeVoteEvent(event: VoteEvent) {
+  if (event.event_type === "unvote") {
+    return `retracted vote from ${event.previous_option_name || "unknown option"}`;
+  }
+  if (event.event_type === "change") {
+    return `changed ${event.previous_option_name || "unknown option"} -> ${event.option_name}`;
+  }
+  return `voted ${event.option_name}`;
 }
 
 function Texts({

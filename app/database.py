@@ -131,8 +131,13 @@ def init_db(database_url: str) -> None:
                 poll_id INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
                 option_name TEXT NOT NULL,
                 voter_wid TEXT NOT NULL,
+                event_type TEXT NOT NULL DEFAULT 'vote',
+                previous_option_name TEXT,
                 recorded_at TEXT NOT NULL
             );
+
+            ALTER TABLE poll_vote_events ADD COLUMN IF NOT EXISTS event_type TEXT NOT NULL DEFAULT 'vote';
+            ALTER TABLE poll_vote_events ADD COLUMN IF NOT EXISTS previous_option_name TEXT;
 
             CREATE INDEX IF NOT EXISTS idx_tenants_active ON tenants(is_active);
             CREATE INDEX IF NOT EXISTS idx_tenants_username ON tenants(username);
@@ -694,8 +699,18 @@ def replace_poll_votes(
             if not voter_id or not option:
                 continue
             target_by_voter[voter_id] = option
-            if current_by_voter.get(voter_id) != option:
-                event_rows.append((poll_id, option, voter_id, timestamp))
+            previous_option = current_by_voter.get(voter_id)
+            if previous_option != option:
+                event_rows.append(
+                    (
+                        poll_id,
+                        option,
+                        voter_id,
+                        "change" if previous_option else "vote",
+                        previous_option,
+                        timestamp,
+                    )
+                )
     with conn.cursor() as cursor:
         cursor.executemany(
             """
@@ -711,8 +726,8 @@ def replace_poll_votes(
         with conn.cursor() as cursor:
             cursor.executemany(
                 """
-                INSERT INTO poll_vote_events (poll_id, option_name, voter_wid, recorded_at)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO poll_vote_events (poll_id, option_name, voter_wid, event_type, previous_option_name, recorded_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 event_rows,
             )
@@ -812,20 +827,33 @@ def record_poll_vote_event(
     option_name: str,
     voter_wid: str,
     recorded_at: str | None = None,
+    event_type: str = "vote",
+    previous_option_name: str | None = None,
 ) -> int:
     row = conn.execute(
         """
-        INSERT INTO poll_vote_events (poll_id, option_name, voter_wid, recorded_at)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO poll_vote_events (poll_id, option_name, voter_wid, event_type, previous_option_name, recorded_at)
+        VALUES (%s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (poll_id, option_name.strip(), voter_wid.strip(), recorded_at or now_iso()),
+        (
+            poll_id,
+            option_name.strip(),
+            voter_wid.strip(),
+            event_type.strip() or "vote",
+            previous_option_name.strip() if previous_option_name else None,
+            recorded_at or now_iso(),
+        ),
     ).fetchone()
     return int(row["id"])
 
 
 def create_poll_vote(conn: psycopg.Connection[DbRow], *, poll_id: int, option_name: str, voter_wid: str) -> int:
     timestamp = now_iso()
+    existing = conn.execute(
+        "SELECT option_name FROM poll_votes WHERE poll_id = %s AND voter_wid = %s",
+        (poll_id, voter_wid.strip()),
+    ).fetchone()
     row = conn.execute(
         """
         INSERT INTO poll_votes (poll_id, option_name, voter_wid, updated_at)
@@ -837,18 +865,23 @@ def create_poll_vote(conn: psycopg.Connection[DbRow], *, poll_id: int, option_na
         """,
         (poll_id, option_name.strip(), voter_wid.strip(), timestamp),
     ).fetchone()
-    record_poll_vote_event(
-        conn,
-        poll_id=poll_id,
-        option_name=option_name,
-        voter_wid=voter_wid,
-        recorded_at=timestamp,
-    )
+    previous_option = str(existing["option_name"]) if existing else None
+    if previous_option != option_name.strip():
+        record_poll_vote_event(
+            conn,
+            poll_id=poll_id,
+            option_name=option_name,
+            voter_wid=voter_wid,
+            recorded_at=timestamp,
+            event_type="change" if previous_option else "vote",
+            previous_option_name=previous_option,
+        )
     return int(row["id"])
 
 
 def update_poll_vote(conn: psycopg.Connection[DbRow], *, vote_id: int, poll_id: int, option_name: str, voter_wid: str) -> None:
     timestamp = now_iso()
+    existing = conn.execute("SELECT option_name FROM poll_votes WHERE id = %s", (vote_id,)).fetchone()
     conn.execute(
         """
         UPDATE poll_votes
@@ -857,17 +890,31 @@ def update_poll_vote(conn: psycopg.Connection[DbRow], *, vote_id: int, poll_id: 
         """,
         (poll_id, option_name.strip(), voter_wid.strip(), timestamp, vote_id),
     )
-    record_poll_vote_event(
-        conn,
-        poll_id=poll_id,
-        option_name=option_name,
-        voter_wid=voter_wid,
-        recorded_at=timestamp,
-    )
+    previous_option = str(existing["option_name"]) if existing else None
+    if previous_option != option_name.strip():
+        record_poll_vote_event(
+            conn,
+            poll_id=poll_id,
+            option_name=option_name,
+            voter_wid=voter_wid,
+            recorded_at=timestamp,
+            event_type="change" if previous_option else "vote",
+            previous_option_name=previous_option,
+        )
 
 
 def delete_poll_vote(conn: psycopg.Connection[DbRow], vote_id: int) -> None:
+    existing = conn.execute("SELECT poll_id, option_name, voter_wid FROM poll_votes WHERE id = %s", (vote_id,)).fetchone()
     conn.execute("DELETE FROM poll_votes WHERE id = %s", (vote_id,))
+    if existing is not None:
+        record_poll_vote_event(
+            conn,
+            poll_id=int(existing["poll_id"]),
+            option_name="",
+            voter_wid=str(existing["voter_wid"]),
+            event_type="unvote",
+            previous_option_name=str(existing["option_name"]),
+        )
 
 
 def poll_stats(conn: psycopg.Connection[DbRow], poll: DbRow) -> dict[str, Any]:
