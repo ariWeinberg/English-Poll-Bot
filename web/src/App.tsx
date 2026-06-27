@@ -72,6 +72,9 @@ type Poll = {
   scheduled_slot?: string | null;
   sent_at?: string | null;
   summary_sent_at?: string | null;
+  change_window_seconds?: number | null;
+  manual_lock: boolean;
+  auto_lock_seconds?: number | null;
   created_at: string;
 };
 
@@ -93,7 +96,22 @@ type VoteEvent = {
   phone_number?: string | null;
   event_type: "vote" | "change" | "unvote";
   previous_option_name?: string | null;
+  accepted: boolean;
+  ignored_reason?: string | null;
   recorded_at: string;
+};
+
+type VoteStatus = {
+  poll_id: number;
+  voter_wid: string;
+  voter_name?: string | null;
+  phone_number?: string | null;
+  counted_option_name?: string | null;
+  first_accepted_at?: string | null;
+  updated_at?: string | null;
+  latest_ignored_option_name?: string | null;
+  latest_ignored_reason?: string | null;
+  latest_ignored_at?: string | null;
 };
 
 type Page<T> = {
@@ -224,6 +242,9 @@ function blankPoll(tenantId: number, text?: Text): PollFormState {
     scheduled_slot: "",
     sent_at: "",
     summary_sent_at: "",
+    change_window_seconds: null,
+    manual_lock: false,
+    auto_lock_seconds: null,
   };
 }
 
@@ -261,6 +282,9 @@ function pollToForm(poll: Poll): PollFormState {
     scheduled_slot: poll.scheduled_slot || "",
     sent_at: poll.sent_at || "",
     summary_sent_at: poll.summary_sent_at || "",
+    change_window_seconds: poll.change_window_seconds ?? null,
+    manual_lock: poll.manual_lock,
+    auto_lock_seconds: poll.auto_lock_seconds ?? null,
   };
 }
 
@@ -312,22 +336,35 @@ function navigateTo(route: Route, replace = false) {
 }
 
 function describeVoteEvent(event: VoteEvent) {
+  const suffix = event.accepted ? "" : ` (ignored: ${describeIgnoredReason(event.ignored_reason)})`;
   if (event.event_type === "unvote") {
-    return `retracted vote from ${event.previous_option_name || "unknown option"}`;
+    return `retracted vote from ${event.previous_option_name || "unknown option"}${suffix}`;
   }
   if (event.event_type === "change") {
-    return `changed ${event.previous_option_name || "unknown option"} -> ${event.option_name}`;
+    return `changed ${event.previous_option_name || "unknown option"} -> ${event.option_name}${suffix}`;
   }
-  return `voted ${event.option_name}`;
+  return `voted ${event.option_name}${suffix}`;
 }
 
-function formatVoteContact(event: VoteEvent) {
-  const name = event.voter_name?.trim();
-  const phone = event.phone_number?.trim();
+function formatVoteContact(contact: { voter_name?: string | null; phone_number?: string | null; voter_wid: string }) {
+  const name = contact.voter_name?.trim();
+  const phone = contact.phone_number?.trim();
   if (name && phone) return `${name} (${phone})`;
   if (name) return name;
   if (phone) return phone;
-  return event.voter_wid;
+  return contact.voter_wid;
+}
+
+function describeIgnoredReason(reason?: string | null) {
+  if (reason === "manual_lock") return "poll locked";
+  if (reason === "auto_lock_expired") return "auto-lock expired";
+  if (reason === "change_window_expired") return "change window expired";
+  return "rule blocked";
+}
+
+function minutesLabel(seconds?: number | null) {
+  if (seconds == null) return "No limit";
+  return `${Math.floor(seconds / 60)} min`;
 }
 
 function excerpt(value: string, length = 160) {
@@ -540,6 +577,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
   const [polls, setPolls] = useState<Poll[]>([]);
   const [pollStats, setPollStats] = useState<PollStats[]>([]);
   const [voteEvents, setVoteEvents] = useState<VoteEvent[]>([]);
+  const [currentVoteStatus, setCurrentVoteStatus] = useState<VoteStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<Toast>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -593,6 +631,16 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
   const currentPoll = route.name === "poll-detail" ? polls.find((item) => item.id === route.id) || null : null;
   const currentPollStats = currentPoll ? pollStats.find((item) => item.poll.id === currentPoll.id) || null : null;
   const currentPollEvents = currentPoll ? voteEvents.filter((item) => item.poll_id === currentPoll.id) : [];
+
+  useEffect(() => {
+    if (!currentPoll) {
+      setCurrentVoteStatus([]);
+      return;
+    }
+    api<VoteStatus[]>(`/polls/${currentPoll.id}/vote-status`)
+      .then(setCurrentVoteStatus)
+      .catch((err) => handleError(err instanceof Error ? err.message : "Failed to load vote status"));
+  }, [currentPoll?.id]);
 
   function handleLogout() {
     setToken(null);
@@ -721,6 +769,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
             <PollDetailPage
               poll={currentPoll}
               stats={currentPollStats}
+              voteStatus={currentVoteStatus}
               events={currentPollEvents}
               onBack={() => navigateTo({ name: "polls" })}
               onEdit={(poll) => setPollModal({ mode: "edit", poll })}
@@ -1227,6 +1276,10 @@ function PollsPage({
                   <span>{stats ? `${stats.total} votes` : "0 votes"}</span>
                   <span>{stats ? `${stats.correct_rate.toFixed(1)}% correct` : "No stats yet"}</span>
                 </div>
+                <div className="meta-row">
+                  <span>{poll.manual_lock ? "Locked" : "Open"}</span>
+                  <span>Changes {minutesLabel(poll.change_window_seconds)}</span>
+                </div>
               </button>
               <div className="option-badges">
                 {poll.options.map((option) => (
@@ -1255,6 +1308,7 @@ function PollsPage({
 function PollDetailPage({
   poll,
   stats,
+  voteStatus,
   events,
   onBack,
   onEdit,
@@ -1262,6 +1316,7 @@ function PollDetailPage({
 }: {
   poll: Poll | null;
   stats: PollStats | null;
+  voteStatus: VoteStatus[];
   events: VoteEvent[];
   onBack: () => void;
   onEdit: (poll: Poll) => void;
@@ -1315,11 +1370,52 @@ function PollDetailPage({
             <StatBlock label="Total votes" value={stats?.total || 0} />
             <StatBlock label="Correct rate" value={`${stats?.correct_rate.toFixed(1) || "0.0"}%`} />
             <StatBlock label="Status" value={poll.status} />
+            <StatBlock label="Vote changes" value={minutesLabel(poll.change_window_seconds)} />
+            <StatBlock label="Poll lock" value={poll.manual_lock ? "Locked" : "Open"} />
+            <StatBlock label="Auto-lock" value={minutesLabel(poll.auto_lock_seconds)} />
           </div>
           <div className="prose-block subtle">{poll.explanation || "No explanation provided."}</div>
         </section>
 
         <aside className="surface side-surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Current Vote Status</p>
+              <h3>By contact</h3>
+            </div>
+          </div>
+          <div className="status-table-wrap">
+            {voteStatus.length > 0 ? (
+              <table className="status-table">
+                <thead>
+                  <tr>
+                    <th>Contact</th>
+                    <th>Counted vote</th>
+                    <th>First vote</th>
+                    <th>Last accepted</th>
+                    <th>Ignored latest</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {voteStatus.map((item) => (
+                    <tr key={item.voter_wid}>
+                      <td>{formatVoteContact(item)}</td>
+                      <td>{item.counted_option_name || "Not counted"}</td>
+                      <td>{item.first_accepted_at || "—"}</td>
+                      <td>{item.updated_at || "—"}</td>
+                      <td>
+                        {item.latest_ignored_option_name
+                          ? `${item.latest_ignored_option_name} (${describeIgnoredReason(item.latest_ignored_reason)})`
+                          : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <EmptyState title="No vote status yet" body="Accepted and ignored vote attempts will appear here by contact." />
+            )}
+          </div>
           <div className="section-header">
             <div>
               <p className="section-kicker">Poll Events</p>
@@ -1533,6 +1629,8 @@ function PollModal({
       sent_at: form.sent_at || null,
       summary_sent_at: form.summary_sent_at || null,
       greenapi_message_id: form.greenapi_message_id || null,
+      change_window_seconds: form.change_window_seconds == null ? null : Number(form.change_window_seconds),
+      auto_lock_seconds: form.auto_lock_seconds == null ? null : Number(form.auto_lock_seconds),
     };
     try {
       if (editing && initialPoll) {
@@ -1580,6 +1678,40 @@ function PollModal({
         <TextInput label="Status" value={form.status} onChange={(value) => setForm({ ...form, status: value })} />
         <TextInput label="Chat ID" value={form.chat_id} onChange={(value) => setForm({ ...form, chat_id: value })} />
         <TextInput label="Scheduled slot" value={form.scheduled_slot || ""} onChange={(value) => setForm({ ...form, scheduled_slot: value })} />
+        <div className="time-grid">
+          <TextInput
+            label="Change window minutes"
+            type="number"
+            value={form.change_window_seconds == null ? "" : String(form.change_window_seconds / 60)}
+            placeholder="Blank = no limit"
+            onChange={(value) =>
+              setForm({
+                ...form,
+                change_window_seconds: value.trim() ? Math.max(0, Number(value) * 60) : null,
+              })
+            }
+          />
+          <TextInput
+            label="Auto-lock minutes"
+            type="number"
+            value={form.auto_lock_seconds == null ? "" : String(form.auto_lock_seconds / 60)}
+            placeholder="Blank = disabled"
+            onChange={(value) =>
+              setForm({
+                ...form,
+                auto_lock_seconds: value.trim() ? Math.max(0, Number(value) * 60) : null,
+              })
+            }
+          />
+        </div>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={form.manual_lock}
+            onChange={(event) => setForm({ ...form, manual_lock: event.target.checked })}
+          />
+          <span>Lock poll manually</span>
+        </label>
         <label>
           Explanation
           <textarea rows={4} value={form.explanation} onChange={(event) => setForm({ ...form, explanation: event.target.value })} />

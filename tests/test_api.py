@@ -180,3 +180,57 @@ def test_greenapi_webhook_is_tenant_scoped():
     with db_session(database_url) as conn:
         rows = conn.execute("SELECT poll_id, option_name FROM poll_votes ORDER BY poll_id").fetchall()
     assert rows == [{"poll_id": poll_b, "option_name": "B"}]
+
+
+def test_poll_vote_status_route_returns_counted_and_ignored_state():
+    database_url = reset_db()
+    with db_session(database_url) as conn:
+        poll_id = create_poll(
+            conn,
+            tenant_id=1,
+            text_id=1,
+            question="Choose",
+            options=["A", "B"],
+            correct_option="A",
+            explanation="",
+            chat_id="group@g.us",
+            generated_from_text="Body",
+            scheduled_slot="manual",
+            change_window_seconds=60,
+            manual_lock=False,
+            auto_lock_seconds=300,
+        )
+        conn.execute(
+            """
+            INSERT INTO poll_votes (poll_id, option_name, voter_wid, voter_name, phone_number, first_accepted_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (poll_id, "A", "111@c.us", "Dana Cohen", "111", "2026-01-01T12:00:00+00:00", "2026-01-01T12:00:00+00:00"),
+        )
+        conn.execute(
+            """
+            INSERT INTO poll_vote_events
+                (poll_id, option_name, voter_wid, voter_name, phone_number, event_type, previous_option_name, accepted, ignored_reason, recorded_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (poll_id, "B", "111@c.us", "Dana Cohen", "111", "change", "A", False, "change_window_expired", "2026-01-01T12:02:00+00:00"),
+        )
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.get(f"/api/v1/polls/{poll_id}/vote-status", headers=headers)
+        assert response.status_code == 200
+        assert response.json() == [
+            {
+                "poll_id": poll_id,
+                "voter_wid": "111@c.us",
+                "voter_name": "Dana Cohen",
+                "phone_number": "111",
+                "counted_option_name": "A",
+                "first_accepted_at": "2026-01-01T12:00:00+00:00",
+                "updated_at": "2026-01-01T12:00:00+00:00",
+                "latest_ignored_option_name": "B",
+                "latest_ignored_reason": "change_window_expired",
+                "latest_ignored_at": "2026-01-01T12:02:00+00:00",
+            }
+        ]

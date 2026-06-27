@@ -7,6 +7,7 @@ from typing import Any
 from app.database import (
     create_poll,
     db_session,
+    get_contact_profile,
     get_poll_by_message_id,
     get_poll_by_message_id_for_tenant,
     get_source_text,
@@ -19,6 +20,7 @@ from app.database import (
     mark_summary_sent,
     poll_stats,
     replace_poll_votes,
+    upsert_contact_profile,
 )
 from app.database import normalize_phone_number
 from app.greenapi import GreenAPIClient, GreenAPIConfig
@@ -210,7 +212,64 @@ def parse_poll_update(payload: dict[str, Any]) -> tuple[str, dict[str, list[dict
     return str(stanza_id), option_voters
 
 
-def handle_greenapi_webhook(*, database_url: str, payload: dict[str, Any], tenant_id: int | None = None) -> bool:
+async def _resolve_contact_name(
+    *,
+    database_url: str,
+    tenant_id: int,
+    voter_wid: str,
+    voter_name: str | None,
+    phone_number: str | None,
+) -> str | None:
+    cleaned_name = voter_name.strip() if voter_name else ""
+    cleaned_phone = phone_number.strip() if phone_number else normalize_phone_number(voter_wid)
+    with db_session(database_url) as conn:
+        cached = get_contact_profile(conn, tenant_id=tenant_id, voter_wid=voter_wid)
+        cached_name = str(cached["display_name"]).strip() if cached and cached["display_name"] else None
+        if cleaned_name:
+            upsert_contact_profile(
+                conn,
+                tenant_id=tenant_id,
+                voter_wid=voter_wid,
+                phone_number=cleaned_phone,
+                display_name=cleaned_name,
+            )
+            return cleaned_name
+        if cached_name:
+            upsert_contact_profile(conn, tenant_id=tenant_id, voter_wid=voter_wid, phone_number=cleaned_phone)
+            return cached_name
+        tenant = get_tenant(conn, tenant_id)
+    if tenant is None:
+        return None
+    settings = RuntimeConfig(
+        tenant_id=int(tenant["id"]),
+        tenant_name=str(tenant["name"]),
+        greenapi_api_url=str(tenant["greenapi_api_url"]).rstrip("/"),
+        greenapi_id_instance=str(tenant["greenapi_id_instance"]),
+        greenapi_api_token_instance=str(tenant["greenapi_api_token_instance"]),
+        gemini_api_key=str(tenant["gemini_api_key"]),
+        gemini_model=str(tenant["gemini_model"]),
+        timezone=str(tenant["timezone"]),
+        summary_enabled=_as_bool(tenant["summary_enabled"], True),
+        scheduler_enabled=_as_bool(tenant["scheduler_enabled"], True),
+    )
+    resolved_name: str | None = None
+    if settings.greenapi_ready:
+        try:
+            resolved_name = await create_greenapi_client(settings).get_contact_name(chat_id=voter_wid)
+        except Exception:
+            resolved_name = None
+    with db_session(database_url) as conn:
+        upsert_contact_profile(
+            conn,
+            tenant_id=tenant_id,
+            voter_wid=voter_wid,
+            phone_number=cleaned_phone,
+            display_name=resolved_name,
+        )
+    return resolved_name
+
+
+async def handle_greenapi_webhook_async(*, database_url: str, payload: dict[str, Any], tenant_id: int | None = None) -> bool:
     parsed = parse_poll_update(payload)
     if parsed is None:
         return False
@@ -221,10 +280,45 @@ def handle_greenapi_webhook(*, database_url: str, payload: dict[str, Any], tenan
             if tenant_id is not None
             else get_poll_by_message_id(conn, message_id)
         )
-        if poll is None:
+    if poll is None:
+        return False
+    tenant_key = int(poll["tenant_id"])
+    enriched: dict[str, list[dict[str, str | None]]] = {}
+    for option_name, voters in option_voters.items():
+        enriched[option_name] = []
+        for voter in voters:
+            voter_wid = str(voter.get("voter_wid") or "").strip()
+            if not voter_wid:
+                continue
+            phone_number = str(voter.get("phone_number") or "").strip() or normalize_phone_number(voter_wid)
+            voter_name = await _resolve_contact_name(
+                database_url=database_url,
+                tenant_id=tenant_key,
+                voter_wid=voter_wid,
+                voter_name=voter.get("voter_name"),
+                phone_number=phone_number,
+            )
+            enriched[option_name].append(
+                {
+                    "voter_wid": voter_wid,
+                    "voter_name": voter_name,
+                    "phone_number": phone_number,
+                }
+            )
+    with db_session(database_url) as conn:
+        live_poll = (
+            get_poll_by_message_id_for_tenant(conn, message_id=message_id, tenant_id=tenant_id)
+            if tenant_id is not None
+            else get_poll_by_message_id(conn, message_id)
+        )
+        if live_poll is None:
             return False
-        replace_poll_votes(conn, poll_id=poll["id"], option_voters=option_voters)
+        replace_poll_votes(conn, poll=live_poll, option_voters=enriched)
     return True
+
+
+def handle_greenapi_webhook(*, database_url: str, payload: dict[str, Any], tenant_id: int | None = None) -> bool:
+    return asyncio.run(handle_greenapi_webhook_async(database_url=database_url, payload=payload, tenant_id=tenant_id))
 
 
 def build_summary_text(stats: dict[str, Any]) -> str:

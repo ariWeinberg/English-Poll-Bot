@@ -33,6 +33,7 @@ from app.database import (
     get_tenant,
     get_text,
     init_db,
+    list_poll_vote_status,
     list_poll_votes_page,
     list_poll_vote_events_page,
     list_polls_page,
@@ -49,6 +50,7 @@ from app.services import (
     generate_and_send_poll,
     generate_question,
     handle_greenapi_webhook,
+    handle_greenapi_webhook_async,
     load_runtime_config,
     send_pending_summaries,
 )
@@ -133,6 +135,9 @@ class PollPayload(BaseModel):
     scheduled_slot: str | None = None
     sent_at: str | None = None
     summary_sent_at: str | None = None
+    change_window_seconds: int | None = Field(default=None, ge=0)
+    manual_lock: bool = False
+    auto_lock_seconds: int | None = Field(default=None, ge=0)
 
 
 class PollVotePayload(BaseModel):
@@ -494,6 +499,9 @@ async def create_poll_route(payload: PollPayload, _: dict[str, Any] = Depends(cu
             chat_id=payload.chat_id,
             generated_from_text=payload.generated_from_text,
             scheduled_slot=payload.scheduled_slot,
+            change_window_seconds=payload.change_window_seconds,
+            manual_lock=payload.manual_lock,
+            auto_lock_seconds=payload.auto_lock_seconds,
         )
         update_poll(conn, poll_id=poll_id, **payload.model_dump())
         return serialize_poll(get_poll(conn, poll_id))
@@ -529,6 +537,14 @@ async def poll(poll_id: int, _: dict[str, Any] = Depends(current_user)):
     if row is None:
         raise HTTPException(status_code=404, detail="Poll not found")
     return serialize_poll(row)
+
+
+@app.get("/api/v1/polls/{poll_id}/vote-status")
+async def poll_vote_status(poll_id: int, _: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        if get_poll(conn, poll_id) is None:
+            raise HTTPException(status_code=404, detail="Poll not found")
+        return list_poll_vote_status(conn, poll_id=poll_id)
 
 
 @app.patch("/api/v1/polls/{poll_id}")
@@ -662,5 +678,5 @@ async def summary_now(payload: SendSummaryRequest, user: dict[str, Any] = Depend
 
 @app.post("/webhooks/greenapi/{tenant_id}")
 async def greenapi_webhook(tenant_id: int, payload: dict[str, Any]):
-    handled = handle_greenapi_webhook(database_url=settings.database_url, payload=payload, tenant_id=tenant_id)
+    handled = await handle_greenapi_webhook_async(database_url=settings.database_url, payload=payload, tenant_id=tenant_id)
     return {"ok": True, "handled": handled}
