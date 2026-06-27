@@ -25,6 +25,7 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Edit Text" in app
     assert "Edit Poll" in app
     assert "Edit Workspace" in app
+    assert "Leave blank to keep current password" in app
     assert 'import { App } from "./App"' in entry
     assert "proxy_pass http://api:8000/api/" in nginx
     assert "proxy_pass http://api:8000/webhooks/" in nginx

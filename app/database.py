@@ -10,6 +10,8 @@ from typing import Any, Iterator
 import psycopg
 from psycopg.rows import dict_row
 
+from app.auth import hash_password, is_password_hash
+
 
 DbRow = dict[str, Any]
 
@@ -213,6 +215,15 @@ def init_db(database_url: str) -> None:
             """,
             (timestamp, timestamp),
         )
+        existing_tenants = conn.execute("SELECT id, password FROM tenants").fetchall()
+        for tenant in existing_tenants:
+            password = str(tenant["password"] or "")
+            if not password or is_password_hash(password):
+                continue
+            conn.execute(
+                "UPDATE tenants SET password = %s, updated_at = %s WHERE id = %s",
+                (hash_password(password), now_iso(), tenant["id"]),
+            )
         conn.execute(
             """
             INSERT INTO texts
@@ -355,7 +366,7 @@ def upsert_tenant(
     tenant_id: int | None,
     name: str,
     username: str,
-    password: str,
+    password: str | None,
     greenapi_api_url: str,
     greenapi_id_instance: str,
     greenapi_api_token_instance: str,
@@ -367,6 +378,7 @@ def upsert_tenant(
     is_active: bool,
 ) -> int:
     timestamp = now_iso()
+    normalized_password = (password or "").strip()
     if tenant_id is None:
         row = conn.execute(
             """
@@ -381,7 +393,7 @@ def upsert_tenant(
             (
                 name.strip() or "Tenant",
                 username.strip(),
-                password.strip(),
+                hash_password(normalized_password),
                 greenapi_api_url.strip().rstrip("/"),
                 greenapi_id_instance.strip(),
                 greenapi_api_token_instance.strip(),
@@ -397,6 +409,11 @@ def upsert_tenant(
         ).fetchone()
         return int(row["id"])
 
+    existing = get_tenant(conn, tenant_id)
+    if existing is None:
+        raise RuntimeError("Tenant not found")
+    stored_password = str(existing["password"] or "")
+    next_password = hash_password(normalized_password) if normalized_password else stored_password
     conn.execute(
         """
         UPDATE tenants
@@ -409,7 +426,7 @@ def upsert_tenant(
         (
             name.strip() or "Tenant",
             username.strip(),
-            password.strip(),
+            next_password,
             greenapi_api_url.strip().rstrip("/"),
             greenapi_id_instance.strip(),
             greenapi_api_token_instance.strip(),

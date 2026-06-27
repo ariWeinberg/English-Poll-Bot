@@ -15,7 +15,7 @@ Default tenant login on first run:
 - username: `admin`
 - password: `admin`
 
-Change these in the dashboard after logging in. Passwords are stored as plaintext for the V1 MVP.
+Change these in the dashboard after logging in. Passwords are stored as salted password hashes.
 
 The Compose stack starts:
 

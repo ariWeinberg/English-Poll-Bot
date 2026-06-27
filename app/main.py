@@ -15,6 +15,7 @@ from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+from app.auth import verify_password
 from app.config import settings
 from app.database import (
     all_poll_stats,
@@ -97,7 +98,7 @@ class RegisterRequest(BaseModel):
 class TenantPayload(BaseModel):
     name: str = "Tenant"
     username: str = ""
-    password: str = ""
+    password: str | None = None
     greenapi_api_url: str = "https://api.green-api.com"
     greenapi_id_instance: str = ""
     greenapi_api_token_instance: str = ""
@@ -216,7 +217,7 @@ def current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) 
         tenant = get_tenant(conn, int(claims["tenant_id"]))
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Tenant not found")
-    return dict(tenant)
+    return serialize_tenant(tenant)
 
 
 def ensure_unique_username(conn, username: str, current_tenant_id: int | None = None) -> None:
@@ -251,6 +252,12 @@ def serialize_poll(row: dict[str, Any]) -> dict[str, Any]:
     return poll
 
 
+def serialize_tenant(row: dict[str, Any]) -> dict[str, Any]:
+    tenant = dict(row)
+    tenant.pop("password", None)
+    return tenant
+
+
 @app.get("/api/v1/health")
 async def health():
     return {"ok": True}
@@ -259,11 +266,8 @@ async def health():
 @app.post("/api/v1/auth/login", response_model=TokenResponse)
 async def login(payload: LoginRequest):
     with db_session(settings.database_url) as conn:
-        tenant = conn.execute(
-            "SELECT * FROM tenants WHERE username = %s AND password = %s LIMIT 1",
-            (payload.username.strip(), payload.password.strip()),
-        ).fetchone()
-    if tenant is None:
+        tenant = get_tenant_by_username(conn, payload.username)
+    if tenant is None or not verify_password(payload.password.strip(), str(tenant["password"] or "")):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
     token, expires_at = create_token(dict(tenant))
     return TokenResponse(access_token=token, expires_at=expires_at)
@@ -310,11 +314,15 @@ async def tenants(
     _: dict[str, Any] = Depends(current_user),
 ):
     with db_session(settings.database_url) as conn:
-        return list_tenants_page(conn, page=page, page_size=page_size, is_active=parse_bool(is_active), search=search)
+        result = list_tenants_page(conn, page=page, page_size=page_size, is_active=parse_bool(is_active), search=search)
+    result["items"] = [serialize_tenant(item) for item in result["items"]]
+    return result
 
 
 @app.post("/api/v1/tenants", status_code=201)
 async def create_tenant(payload: TenantPayload, _: dict[str, Any] = Depends(current_user)):
+    if not (payload.password or "").strip():
+        raise HTTPException(status_code=400, detail="Password is required")
     with db_session(settings.database_url) as conn:
         ensure_unique_username(conn, payload.username)
         tenant_id = upsert_tenant(conn, tenant_id=None, **payload.model_dump())
@@ -322,7 +330,7 @@ async def create_tenant(payload: TenantPayload, _: dict[str, Any] = Depends(curr
             set_active_tenant(conn, tenant_id)
         tenant = get_tenant(conn, tenant_id)
     restart_scheduler_for_tenant(tenant_id)
-    return tenant
+    return serialize_tenant(tenant)
 
 
 @app.get("/api/v1/tenants/{tenant_id}")
@@ -331,7 +339,7 @@ async def tenant(tenant_id: int, _: dict[str, Any] = Depends(current_user)):
         row = get_tenant(conn, tenant_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
-    return row
+    return serialize_tenant(row)
 
 
 @app.patch("/api/v1/tenants/{tenant_id}")
@@ -345,7 +353,7 @@ async def update_tenant_route(tenant_id: int, payload: TenantPayload, _: dict[st
             set_active_tenant(conn, saved_id)
         row = get_tenant(conn, saved_id)
     restart_scheduler_for_tenant(saved_id)
-    return row
+    return serialize_tenant(row)
 
 
 @app.delete("/api/v1/tenants/{tenant_id}", status_code=204)
@@ -364,7 +372,7 @@ async def activate_tenant(tenant_id: int, _: dict[str, Any] = Depends(current_us
         row = get_tenant(conn, tenant_id)
     restart_scheduler_for_tenant(tenant_id)
     token, expires_at = create_token(dict(row))
-    return {"tenant": row, "access_token": token, "token_type": "bearer", "expires_at": expires_at}
+    return {"tenant": serialize_tenant(row), "access_token": token, "token_type": "bearer", "expires_at": expires_at}
 
 
 @app.get("/api/v1/texts")

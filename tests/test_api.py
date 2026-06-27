@@ -49,6 +49,7 @@ def test_register_creates_tenant_and_allows_login():
         assert me.status_code == 200
         assert me.json()["name"] == "Acme Learning"
         assert me.json()["username"] == "acme"
+        assert "password" not in me.json()
 
         duplicate = client.post(
             "/api/v1/auth/register",
@@ -58,6 +59,18 @@ def test_register_creates_tenant_and_allows_login():
 
         login = client.post("/api/v1/auth/login", json={"username": "acme", "password": "secret123"})
         assert login.status_code == 200
+
+
+def test_default_admin_login_works_after_password_hash_migration():
+    database_url = reset_db()
+    with db_session(database_url) as conn:
+        tenant = conn.execute("SELECT password FROM tenants WHERE id = 1").fetchone()
+    assert tenant is not None
+    assert tenant["password"] != "admin"
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+    assert response.status_code == 200
 
 
 def test_auth_and_text_pagination_filtering():
@@ -91,6 +104,65 @@ def test_auth_and_text_pagination_filtering():
         response = client.get("/api/v1/texts?tenant_id=1&enabled=false", headers=headers)
         assert response.status_code == 200
         assert [item["title"] for item in response.json()["items"]] == ["Lesson 2"]
+
+
+def test_tenant_routes_hide_password_and_blank_update_keeps_existing_login():
+    reset_db()
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        created = client.post(
+            "/api/v1/tenants",
+            headers=headers,
+            json={
+                "name": "Workspace",
+                "username": "workspace",
+                "password": "initial-secret",
+                "greenapi_api_url": "https://api.green-api.com",
+                "greenapi_id_instance": "",
+                "greenapi_api_token_instance": "",
+                "gemini_api_key": "",
+                "gemini_model": "gemini-3.5-flash",
+                "timezone": "Asia/Jerusalem",
+                "summary_enabled": True,
+                "scheduler_enabled": True,
+                "is_active": False,
+            },
+        )
+        assert created.status_code == 201
+        tenant = created.json()
+        assert "password" not in tenant
+
+        listing = client.get("/api/v1/tenants", headers=headers)
+        assert listing.status_code == 200
+        assert all("password" not in item for item in listing.json()["items"])
+
+        detail = client.get(f"/api/v1/tenants/{tenant['id']}", headers=headers)
+        assert detail.status_code == 200
+        assert "password" not in detail.json()
+
+        updated = client.patch(
+            f"/api/v1/tenants/{tenant['id']}",
+            headers=headers,
+            json={
+                "name": "Workspace Updated",
+                "username": "workspace",
+                "password": "",
+                "greenapi_api_url": "https://api.green-api.com",
+                "greenapi_id_instance": "",
+                "greenapi_api_token_instance": "",
+                "gemini_api_key": "",
+                "gemini_model": "gemini-3.5-flash",
+                "timezone": "Asia/Jerusalem",
+                "summary_enabled": True,
+                "scheduler_enabled": True,
+                "is_active": False,
+            },
+        )
+        assert updated.status_code == 200
+        assert "password" not in updated.json()
+
+        login = client.post("/api/v1/auth/login", json={"username": "workspace", "password": "initial-secret"})
+        assert login.status_code == 200
 
 
 def test_greenapi_webhook_is_tenant_scoped():

@@ -30,7 +30,6 @@ type Tenant = {
   id: number;
   name: string;
   username: string;
-  password: string;
   greenapi_api_url: string;
   greenapi_id_instance: string;
   greenapi_api_token_instance: string;
@@ -133,7 +132,7 @@ type Toast = { kind: "success" | "error"; message: string } | null;
 
 type TextFormState = Omit<Text, "id" | "tenant_name" | "attachment_name">;
 type PollFormState = Omit<Poll, "id" | "created_at">;
-type TenantFormState = Omit<Tenant, "id">;
+type TenantFormState = Omit<Tenant, "id"> & { password: string };
 type RegisterFormState = { name: string; username: string; password: string; confirmPassword: string; timezone: string };
 type Route =
   | { name: "login" }
@@ -249,8 +248,11 @@ function blankPoll(tenantId: number, text?: Text): PollFormState {
 }
 
 function tenantToForm(tenant: Tenant): TenantFormState {
-  const { id: _id, ...form } = tenant;
-  return form;
+  const { id: _id, ...rest } = tenant;
+  return {
+    ...rest,
+    password: "",
+  };
 }
 
 function textToForm(text: Text): TextFormState {
@@ -513,7 +515,12 @@ function RegisterPage({ onRegistered, onLoginLink }: { onRegistered: (token: str
         {error && <div className="alert error">{error}</div>}
         <TextInput label="Workspace name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} />
         <TextInput label="Username" value={form.username} onChange={(value) => setForm({ ...form, username: value })} />
-        <TextInput label="Password" type="password" value={form.password} onChange={(value) => setForm({ ...form, password: value })} />
+        <TextInput
+          label="Password"
+          type="password"
+          value={form.password}
+          onChange={(value) => setForm({ ...form, password: value })}
+        />
         <TextInput
           label="Confirm password"
           type="password"
@@ -1761,7 +1768,13 @@ function SettingsModal({
       <form className="modal-form" onSubmit={submit}>
         <TextInput label="Workspace name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} />
         <TextInput label="Username" value={form.username} onChange={(value) => setForm({ ...form, username: value })} />
-        <TextInput label="Password" type="password" value={form.password} onChange={(value) => setForm({ ...form, password: value })} />
+        <TextInput
+          label="Password"
+          type="password"
+          value={form.password}
+          placeholder="Leave blank to keep current password"
+          onChange={(value) => setForm({ ...form, password: value })}
+        />
         <TextInput label="GreenAPI URL" value={form.greenapi_api_url} onChange={(value) => setForm({ ...form, greenapi_api_url: value })} />
         <TextInput
           label="GreenAPI instance ID"
