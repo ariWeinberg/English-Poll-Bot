@@ -18,8 +18,11 @@ from pydantic import BaseModel, Field
 from app.auth import verify_password
 from app.config import settings
 from app.database import (
+    POLL_POOL_REFILL_BATCH_SIZE,
+    POLL_POOL_TARGET_SIZE,
     all_poll_stats,
     create_poll,
+    count_queued_polls,
     create_poll_vote,
     db_session,
     delete_poll,
@@ -30,6 +33,9 @@ from app.database import (
     get_poll,
     get_poll_vote_event,
     get_poll_vote,
+    get_effective_poll_pool_threshold_percent,
+    get_next_queued_poll,
+    get_poll_pool_refill_threshold_count,
     get_tenant_by_username,
     get_tenant,
     get_text,
@@ -38,8 +44,10 @@ from app.database import (
     list_poll_votes_page,
     list_poll_vote_events_page,
     list_polls_page,
+    list_queued_polls,
     list_tenants_page,
     list_texts_page,
+    reorder_queued_poll,
     set_active_tenant,
     update_poll,
     update_poll_vote,
@@ -48,11 +56,13 @@ from app.database import (
 )
 from app.scheduler import build_scheduler
 from app.services import (
+    fill_poll_pool,
     generate_and_send_poll,
     generate_question,
     handle_greenapi_webhook,
     handle_greenapi_webhook_async,
     load_runtime_config,
+    preview_next_pooled_poll,
     send_pending_summaries,
 )
 
@@ -105,6 +115,7 @@ class TenantPayload(BaseModel):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash"
     timezone: str = "Asia/Jerusalem"
+    poll_pool_threshold_percent: int = Field(default=80, ge=0, le=100)
     summary_enabled: bool = True
     scheduler_enabled: bool = True
     is_active: bool = True
@@ -119,6 +130,7 @@ class TextPayload(BaseModel):
     evening_time: str = "18:00"
     summary_time_morning: str = "08:25"
     summary_time_evening: str = "17:55"
+    poll_pool_threshold_percent: int | None = Field(default=None, ge=0, le=100)
     enabled: bool = True
 
 
@@ -136,6 +148,7 @@ class PollPayload(BaseModel):
     scheduled_slot: str | None = None
     sent_at: str | None = None
     summary_sent_at: str | None = None
+    pool_rank: int | None = Field(default=None, ge=1)
     change_window_seconds: int | None = Field(default=None, ge=0)
     manual_lock: bool = False
     auto_lock_seconds: int | None = Field(default=None, ge=0)
@@ -160,6 +173,10 @@ class SendPollRequest(BaseModel):
 
 class SendSummaryRequest(BaseModel):
     text_id: int | None = None
+
+
+class PoolRankPayload(BaseModel):
+    pool_rank: int = Field(ge=1)
 
 
 def _b64encode(data: bytes) -> str:
@@ -405,6 +422,7 @@ async def create_text(
     evening_time: str = Form("18:00"),
     summary_time_morning: str = Form("08:25"),
     summary_time_evening: str = Form("17:55"),
+    poll_pool_threshold_percent: int | None = Form(None),
     enabled: bool = Form(True),
     attachment: UploadFile | None = File(None),
     _: dict[str, Any] = Depends(current_user),
@@ -422,6 +440,7 @@ async def create_text(
             evening_time=evening_time,
             summary_time_morning=summary_time_morning,
             summary_time_evening=summary_time_evening,
+            poll_pool_threshold_percent=poll_pool_threshold_percent,
             enabled=enabled,
             attachment_name=attachment_name,
             attachment_path=attachment_path,
@@ -507,6 +526,8 @@ async def create_poll_route(payload: PollPayload, _: dict[str, Any] = Depends(cu
             chat_id=payload.chat_id,
             generated_from_text=payload.generated_from_text,
             scheduled_slot=payload.scheduled_slot,
+            status=payload.status,
+            pool_rank=payload.pool_rank,
             change_window_seconds=payload.change_window_seconds,
             manual_lock=payload.manual_lock,
             auto_lock_seconds=payload.auto_lock_seconds,
@@ -562,6 +583,62 @@ async def update_poll_route(poll_id: int, payload: PollPayload, _: dict[str, Any
             raise HTTPException(status_code=404, detail="Poll not found")
         update_poll(conn, poll_id=poll_id, **payload.model_dump())
         return serialize_poll(get_poll(conn, poll_id))
+
+
+@app.get("/api/v1/texts/{text_id}/poll-pool")
+async def get_text_poll_pool(text_id: int, _: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        text_row = get_text(conn, text_id)
+        if text_row is None:
+            raise HTTPException(status_code=404, detail="Text not found")
+        items = [serialize_poll(item) for item in list_queued_polls(conn, text_id=text_id)]
+        effective_threshold_percent = get_effective_poll_pool_threshold_percent(conn, text_id=text_id)
+        refill_when_below = get_poll_pool_refill_threshold_count(conn, text_id=text_id)
+        queued_count = count_queued_polls(conn, text_id=text_id)
+    return {
+        "text_id": text_id,
+        "queued_count": queued_count,
+        "effective_threshold_percent": effective_threshold_percent,
+        "refill_when_below": refill_when_below,
+        "target_size": POLL_POOL_TARGET_SIZE,
+        "refill_batch_size": POLL_POOL_REFILL_BATCH_SIZE,
+        "next_poll": items[0] if items else None,
+        "items": items,
+    }
+
+
+@app.post("/api/v1/texts/{text_id}/poll-pool/refill")
+async def refill_text_poll_pool(text_id: int, user: dict[str, Any] = Depends(current_user)):
+    runtime = load_runtime_config(settings.database_url, int(user["id"]))
+    created = await fill_poll_pool(settings=runtime, database_url=settings.database_url, text_id=text_id)
+    with db_session(settings.database_url) as conn:
+        items = [serialize_poll(item) for item in list_queued_polls(conn, text_id=text_id)]
+        effective_threshold_percent = get_effective_poll_pool_threshold_percent(conn, text_id=text_id)
+        refill_when_below = get_poll_pool_refill_threshold_count(conn, text_id=text_id)
+        queued_count = count_queued_polls(conn, text_id=text_id)
+    return {
+        "created": len(created),
+        "text_id": text_id,
+        "queued_count": queued_count,
+        "effective_threshold_percent": effective_threshold_percent,
+        "refill_when_below": refill_when_below,
+        "target_size": POLL_POOL_TARGET_SIZE,
+        "refill_batch_size": POLL_POOL_REFILL_BATCH_SIZE,
+        "next_poll": items[0] if items else None,
+        "items": items,
+    }
+
+
+@app.patch("/api/v1/polls/{poll_id}/pool-rank")
+async def update_poll_pool_rank(poll_id: int, payload: PoolRankPayload, _: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        poll = get_poll(conn, poll_id)
+        if poll is None:
+            raise HTTPException(status_code=404, detail="Poll not found")
+        if str(poll["status"]) != "queued":
+            raise HTTPException(status_code=400, detail="Only queued polls can be reordered")
+        reordered = reorder_queued_poll(conn, poll_id=poll_id, pool_rank=payload.pool_rank)
+    return serialize_poll(reordered)
 
 
 @app.delete("/api/v1/polls/{poll_id}", status_code=204)
@@ -662,7 +739,7 @@ async def preview_question(payload: PreviewRequest, user: dict[str, Any] = Depen
     if text_row is None:
         raise HTTPException(status_code=404, detail="Text not found")
     runtime = load_runtime_config(settings.database_url, int(user["id"]))
-    return await generate_question(runtime, text_row["body"])
+    return await preview_next_pooled_poll(settings=runtime, database_url=settings.database_url, text_id=payload.text_id)
 
 
 @app.post("/api/v1/polls/send-now")

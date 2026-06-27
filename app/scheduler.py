@@ -34,7 +34,7 @@ async def run_due_jobs(*, database_url: str) -> int:
         texts = list_pending_texts(conn)
     for text in texts:
         runtime = load_runtime_config(database_url, int(text["tenant_id"]))
-        if not runtime.scheduler_enabled or not runtime.greenapi_ready or not runtime.gemini_ready:
+        if not runtime.scheduler_enabled or not runtime.greenapi_ready:
             continue
         now_local = datetime.now(ZoneInfo(runtime.timezone))
         minute_key = now_local.strftime("%H:%M")

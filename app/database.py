@@ -5,6 +5,7 @@ import io
 import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from math import ceil
 from typing import Any, Iterator
 
 import psycopg
@@ -38,6 +39,11 @@ def paginated_response(items: list[DbRow], total: int, page: int, page_size: int
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+POLL_POOL_TARGET_SIZE = 10
+POLL_POOL_REFILL_BATCH_SIZE = 5
+DEFAULT_POLL_POOL_THRESHOLD_PERCENT = 80
 
 
 def normalize_phone_number(value: str) -> str:
@@ -81,6 +87,7 @@ def init_db(database_url: str) -> None:
                 gemini_api_key TEXT NOT NULL DEFAULT '',
                 gemini_model TEXT NOT NULL DEFAULT 'gemini-3.5-flash',
                 timezone TEXT NOT NULL DEFAULT 'Asia/Jerusalem',
+                poll_pool_threshold_percent INTEGER NOT NULL DEFAULT 80,
                 summary_enabled BOOLEAN NOT NULL DEFAULT TRUE,
                 scheduler_enabled BOOLEAN NOT NULL DEFAULT TRUE,
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -100,6 +107,7 @@ def init_db(database_url: str) -> None:
                 evening_time TEXT NOT NULL DEFAULT '18:00',
                 summary_time_morning TEXT NOT NULL DEFAULT '08:25',
                 summary_time_evening TEXT NOT NULL DEFAULT '17:55',
+                poll_pool_threshold_percent INTEGER,
                 enabled BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -128,6 +136,7 @@ def init_db(database_url: str) -> None:
                 change_window_seconds INTEGER,
                 manual_lock BOOLEAN NOT NULL DEFAULT FALSE,
                 auto_lock_seconds INTEGER,
+                pool_rank INTEGER,
                 created_at TEXT NOT NULL
             );
 
@@ -170,6 +179,9 @@ def init_db(database_url: str) -> None:
             ALTER TABLE polls ADD COLUMN IF NOT EXISTS change_window_seconds INTEGER;
             ALTER TABLE polls ADD COLUMN IF NOT EXISTS manual_lock BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE polls ADD COLUMN IF NOT EXISTS auto_lock_seconds INTEGER;
+            ALTER TABLE tenants ADD COLUMN IF NOT EXISTS poll_pool_threshold_percent INTEGER NOT NULL DEFAULT 80;
+            ALTER TABLE texts ADD COLUMN IF NOT EXISTS poll_pool_threshold_percent INTEGER;
+            ALTER TABLE polls ADD COLUMN IF NOT EXISTS pool_rank INTEGER;
             ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS voter_name TEXT;
             ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS phone_number TEXT;
             ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS first_accepted_at TEXT;
@@ -191,6 +203,7 @@ def init_db(database_url: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_polls_status ON polls(status);
             CREATE INDEX IF NOT EXISTS idx_polls_sent_at ON polls(sent_at);
             CREATE INDEX IF NOT EXISTS idx_polls_greenapi_message_id ON polls(greenapi_message_id);
+            CREATE INDEX IF NOT EXISTS idx_polls_text_status_rank ON polls(text_id, status, pool_rank);
             CREATE INDEX IF NOT EXISTS idx_votes_poll_id ON poll_votes(poll_id);
             CREATE INDEX IF NOT EXISTS idx_votes_option_name ON poll_votes(option_name);
             CREATE INDEX IF NOT EXISTS idx_votes_voter_wid ON poll_votes(voter_wid);
@@ -205,11 +218,11 @@ def init_db(database_url: str) -> None:
             """
             INSERT INTO tenants
                 (id, name, username, password, greenapi_api_url, greenapi_id_instance, greenapi_api_token_instance,
-                 gemini_api_key, gemini_model, timezone, summary_enabled, scheduler_enabled,
+                 gemini_api_key, gemini_model, timezone, poll_pool_threshold_percent, summary_enabled, scheduler_enabled,
                  is_active, created_at, updated_at)
             VALUES
                 (1, 'Default tenant', 'admin', 'admin', 'https://api.green-api.com', '', '',
-                 '', 'gemini-3.5-flash', 'Asia/Jerusalem', TRUE, TRUE,
+                 '', 'gemini-3.5-flash', 'Asia/Jerusalem', 80, TRUE, TRUE,
                  TRUE, %s, %s)
             ON CONFLICT (id) DO NOTHING
             """,
@@ -228,9 +241,9 @@ def init_db(database_url: str) -> None:
             """
             INSERT INTO texts
                 (id, tenant_id, title, body, chat_id, morning_time, evening_time,
-                 summary_time_morning, summary_time_evening, enabled, created_at, updated_at)
+                 summary_time_morning, summary_time_evening, poll_pool_threshold_percent, enabled, created_at, updated_at)
             VALUES
-                (1, 1, 'Default text', '', '', '08:30', '18:00', '08:25', '17:55', TRUE, %s, %s)
+                (1, 1, 'Default text', '', '', '08:30', '18:00', '08:25', '17:55', NULL, TRUE, %s, %s)
             ON CONFLICT (id) DO NOTHING
             """,
             (timestamp, timestamp),
@@ -299,6 +312,7 @@ def list_texts(conn: psycopg.Connection[DbRow], tenant_id: int | None = None) ->
     return conn.execute(
         """
         SELECT texts.*, tenants.name AS tenant_name
+            , tenants.poll_pool_threshold_percent AS tenant_poll_pool_threshold_percent
         FROM texts
         JOIN tenants ON tenants.id = texts.tenant_id
         WHERE texts.tenant_id = %s
@@ -337,6 +351,7 @@ def list_texts_page(
     items = conn.execute(
         f"""
         SELECT texts.*, tenants.name AS tenant_name
+            , tenants.poll_pool_threshold_percent AS tenant_poll_pool_threshold_percent
         FROM texts
         JOIN tenants ON tenants.id = texts.tenant_id
         {where_sql}
@@ -352,6 +367,7 @@ def get_text(conn: psycopg.Connection[DbRow], text_id: int) -> DbRow | None:
     return conn.execute(
         """
         SELECT texts.*, tenants.name AS tenant_name
+            , tenants.poll_pool_threshold_percent AS tenant_poll_pool_threshold_percent
         FROM texts
         JOIN tenants ON tenants.id = texts.tenant_id
         WHERE texts.id = %s
@@ -373,9 +389,10 @@ def upsert_tenant(
     gemini_api_key: str,
     gemini_model: str,
     timezone: str,
-    summary_enabled: bool,
-    scheduler_enabled: bool,
-    is_active: bool,
+    poll_pool_threshold_percent: int = DEFAULT_POLL_POOL_THRESHOLD_PERCENT,
+    summary_enabled: bool = True,
+    scheduler_enabled: bool = True,
+    is_active: bool = True,
 ) -> int:
     timestamp = now_iso()
     normalized_password = (password or "").strip()
@@ -384,10 +401,10 @@ def upsert_tenant(
             """
             INSERT INTO tenants (
                 name, username, password, greenapi_api_url, greenapi_id_instance, greenapi_api_token_instance,
-                gemini_api_key, gemini_model, timezone, summary_enabled, scheduler_enabled,
+                gemini_api_key, gemini_model, timezone, poll_pool_threshold_percent, summary_enabled, scheduler_enabled,
                 is_active, created_at, updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -400,6 +417,7 @@ def upsert_tenant(
                 gemini_api_key.strip(),
                 gemini_model.strip() or "gemini-3.5-flash",
                 timezone.strip() or "Asia/Jerusalem",
+                max(0, min(100, int(poll_pool_threshold_percent))),
                 summary_enabled,
                 scheduler_enabled,
                 is_active,
@@ -419,7 +437,7 @@ def upsert_tenant(
         UPDATE tenants
         SET name = %s, username = %s, password = %s, greenapi_api_url = %s,
             greenapi_id_instance = %s, greenapi_api_token_instance = %s,
-            gemini_api_key = %s, gemini_model = %s, timezone = %s, summary_enabled = %s,
+            gemini_api_key = %s, gemini_model = %s, timezone = %s, poll_pool_threshold_percent = %s, summary_enabled = %s,
             scheduler_enabled = %s, is_active = %s, updated_at = %s
         WHERE id = %s
         """,
@@ -433,6 +451,7 @@ def upsert_tenant(
             gemini_api_key.strip(),
             gemini_model.strip() or "gemini-3.5-flash",
             timezone.strip() or "Asia/Jerusalem",
+            max(0, min(100, int(poll_pool_threshold_percent))),
             summary_enabled,
             scheduler_enabled,
             is_active,
@@ -463,7 +482,8 @@ def upsert_text(
     evening_time: str,
     summary_time_morning: str,
     summary_time_evening: str,
-    enabled: bool,
+    poll_pool_threshold_percent: int | None = None,
+    enabled: bool = True,
     attachment_name: str | None = None,
     attachment_path: str | None = None,
 ) -> int:
@@ -473,10 +493,10 @@ def upsert_text(
             """
             INSERT INTO texts (
                 tenant_id, title, body, attachment_name, attachment_path, chat_id,
-                morning_time, evening_time, summary_time_morning, summary_time_evening,
+                morning_time, evening_time, summary_time_morning, summary_time_evening, poll_pool_threshold_percent,
                 enabled, created_at, updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -490,6 +510,7 @@ def upsert_text(
                 evening_time or "18:00",
                 summary_time_morning or "08:25",
                 summary_time_evening or "17:55",
+                max(0, min(100, int(poll_pool_threshold_percent))) if poll_pool_threshold_percent is not None else None,
                 enabled,
                 timestamp,
                 timestamp,
@@ -503,7 +524,7 @@ def upsert_text(
         UPDATE texts
         SET tenant_id = %s, title = %s, body = %s, attachment_name = %s, attachment_path = %s,
             chat_id = %s, morning_time = %s, evening_time = %s, summary_time_morning = %s,
-            summary_time_evening = %s, enabled = %s, updated_at = %s
+            summary_time_evening = %s, poll_pool_threshold_percent = %s, enabled = %s, updated_at = %s
         WHERE id = %s
         """,
         (
@@ -517,6 +538,7 @@ def upsert_text(
             evening_time or "18:00",
             summary_time_morning or "08:25",
             summary_time_evening or "17:55",
+            max(0, min(100, int(poll_pool_threshold_percent))) if poll_pool_threshold_percent is not None else None,
             enabled,
             timestamp,
             text_id,
@@ -553,6 +575,8 @@ def create_poll(
     chat_id: str,
     generated_from_text: str,
     scheduled_slot: str | None,
+    status: str = "draft",
+    pool_rank: int | None = None,
     change_window_seconds: int | None = None,
     manual_lock: bool = False,
     auto_lock_seconds: int | None = None,
@@ -561,9 +585,9 @@ def create_poll(
         """
         INSERT INTO polls (
             tenant_id, text_id, question, options_json, correct_option, explanation, chat_id,
-            generated_from_text, scheduled_slot, change_window_seconds, manual_lock, auto_lock_seconds, created_at
+            generated_from_text, status, scheduled_slot, change_window_seconds, manual_lock, auto_lock_seconds, pool_rank, created_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -575,24 +599,32 @@ def create_poll(
             explanation,
             chat_id,
             generated_from_text,
+            status,
             scheduled_slot,
             change_window_seconds,
             manual_lock,
             auto_lock_seconds,
+            pool_rank,
             now_iso(),
         ),
     ).fetchone()
     return int(row["id"])
 
 
-def mark_poll_sent(conn: psycopg.Connection[DbRow], poll_id: int, message_id: str) -> None:
+def mark_poll_sent(
+    conn: psycopg.Connection[DbRow],
+    poll_id: int,
+    message_id: str,
+    *,
+    scheduled_slot: str | None = None,
+) -> None:
     conn.execute(
         """
         UPDATE polls
-        SET greenapi_message_id = %s, status = 'sent', sent_at = %s
+        SET greenapi_message_id = %s, status = 'sent', sent_at = %s, scheduled_slot = %s, pool_rank = NULL
         WHERE id = %s
         """,
-        (message_id, now_iso(), poll_id),
+        (message_id, now_iso(), scheduled_slot, poll_id),
     )
 
 
@@ -618,6 +650,52 @@ def get_poll_by_message_id_for_tenant(
 
 def get_poll(conn: psycopg.Connection[DbRow], poll_id: int) -> DbRow | None:
     return conn.execute("SELECT * FROM polls WHERE id = %s", (poll_id,)).fetchone()
+
+
+def get_text_poll_history(conn: psycopg.Connection[DbRow], *, text_id: int) -> list[DbRow]:
+    return conn.execute(
+        "SELECT * FROM polls WHERE text_id = %s ORDER BY created_at ASC, id ASC",
+        (text_id,),
+    ).fetchall()
+
+
+def list_queued_polls(conn: psycopg.Connection[DbRow], *, text_id: int) -> list[DbRow]:
+    return conn.execute(
+        """
+        SELECT * FROM polls
+        WHERE text_id = %s AND status = 'queued'
+        ORDER BY pool_rank ASC NULLS LAST, id ASC
+        """,
+        (text_id,),
+    ).fetchall()
+
+
+def count_queued_polls(conn: psycopg.Connection[DbRow], *, text_id: int) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM polls WHERE text_id = %s AND status = 'queued'",
+        (text_id,),
+    ).fetchone()
+    return int(row["count"])
+
+
+def get_next_queued_poll(conn: psycopg.Connection[DbRow], *, text_id: int) -> DbRow | None:
+    return conn.execute(
+        """
+        SELECT * FROM polls
+        WHERE text_id = %s AND status = 'queued'
+        ORDER BY pool_rank ASC NULLS LAST, id ASC
+        LIMIT 1
+        """,
+        (text_id,),
+    ).fetchone()
+
+
+def get_text_pool_tail_rank(conn: psycopg.Connection[DbRow], *, text_id: int) -> int:
+    row = conn.execute(
+        "SELECT COALESCE(MAX(pool_rank), 0) AS max_rank FROM polls WHERE text_id = %s AND status = 'queued'",
+        (text_id,),
+    ).fetchone()
+    return int(row["max_rank"])
 
 
 def list_polls(conn: psycopg.Connection[DbRow], limit: int = 25, tenant_id: int | None = None) -> list[DbRow]:
@@ -685,6 +763,7 @@ def update_poll(
     scheduled_slot: str | None,
     sent_at: str | None,
     summary_sent_at: str | None,
+    pool_rank: int | None,
     change_window_seconds: int | None,
     manual_lock: bool,
     auto_lock_seconds: int | None,
@@ -695,7 +774,7 @@ def update_poll(
         SET tenant_id = %s, text_id = %s, question = %s, options_json = %s,
             correct_option = %s, explanation = %s, greenapi_message_id = %s,
             chat_id = %s, generated_from_text = %s, status = %s, scheduled_slot = %s,
-            sent_at = %s, summary_sent_at = %s, change_window_seconds = %s,
+            sent_at = %s, summary_sent_at = %s, pool_rank = %s, change_window_seconds = %s,
             manual_lock = %s, auto_lock_seconds = %s
         WHERE id = %s
         """,
@@ -713,6 +792,7 @@ def update_poll(
             scheduled_slot,
             sent_at,
             summary_sent_at,
+            pool_rank,
             change_window_seconds,
             manual_lock,
             auto_lock_seconds,
@@ -722,7 +802,61 @@ def update_poll(
 
 
 def delete_poll(conn: psycopg.Connection[DbRow], poll_id: int) -> None:
+    poll = get_poll(conn, poll_id)
     conn.execute("DELETE FROM polls WHERE id = %s", (poll_id,))
+    if poll is not None and str(poll.get("status")) == "queued":
+        compact_queued_poll_ranks(conn, text_id=int(poll["text_id"]))
+
+
+def update_poll_pool_ranks(conn: psycopg.Connection[DbRow], *, text_id: int, ordered_poll_ids: list[int]) -> None:
+    with conn.cursor() as cursor:
+        cursor.executemany(
+            "UPDATE polls SET pool_rank = %s WHERE id = %s AND text_id = %s AND status = 'queued'",
+            [(rank, poll_id, text_id) for rank, poll_id in enumerate(ordered_poll_ids, start=1)],
+        )
+
+
+def compact_queued_poll_ranks(conn: psycopg.Connection[DbRow], *, text_id: int) -> None:
+    update_poll_pool_ranks(conn, text_id=text_id, ordered_poll_ids=[int(item["id"]) for item in list_queued_polls(conn, text_id=text_id)])
+
+
+def reorder_queued_poll(conn: psycopg.Connection[DbRow], *, poll_id: int, pool_rank: int) -> DbRow:
+    poll = get_poll(conn, poll_id)
+    if poll is None or str(poll.get("status")) != "queued":
+        raise RuntimeError("Queued poll not found")
+    text_id = int(poll["text_id"])
+    ordered_ids = [int(item["id"]) for item in list_queued_polls(conn, text_id=text_id)]
+    if poll_id not in ordered_ids:
+        raise RuntimeError("Queued poll not found")
+    ordered_ids.remove(poll_id)
+    insert_at = max(0, min(len(ordered_ids), pool_rank - 1))
+    ordered_ids.insert(insert_at, poll_id)
+    update_poll_pool_ranks(conn, text_id=text_id, ordered_poll_ids=ordered_ids)
+    refreshed = get_poll(conn, poll_id)
+    if refreshed is None:
+        raise RuntimeError("Queued poll not found")
+    return refreshed
+
+
+def get_effective_poll_pool_threshold_percent(conn: psycopg.Connection[DbRow], *, text_id: int) -> int:
+    row = conn.execute(
+        """
+        SELECT COALESCE(texts.poll_pool_threshold_percent, tenants.poll_pool_threshold_percent, %s) AS threshold
+        FROM texts
+        JOIN tenants ON tenants.id = texts.tenant_id
+        WHERE texts.id = %s
+        """,
+        (DEFAULT_POLL_POOL_THRESHOLD_PERCENT, text_id),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("Text not found")
+    return max(0, min(100, int(row["threshold"])))
+
+
+def get_poll_pool_refill_threshold_count(conn: psycopg.Connection[DbRow], *, text_id: int) -> int:
+    threshold_percent = get_effective_poll_pool_threshold_percent(conn, text_id=text_id)
+    remaining_percent = max(0, 100 - threshold_percent)
+    return ceil(POLL_POOL_TARGET_SIZE * remaining_percent / 100)
 
 
 def list_pending_texts(conn: psycopg.Connection[DbRow], tenant_id: int | None = None) -> list[DbRow]:

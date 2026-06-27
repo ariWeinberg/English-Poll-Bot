@@ -21,6 +21,10 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "retracted vote from" in app
     assert "Change window minutes" in app
     assert "Auto-lock minutes" in app
+    assert "Poll Pool" in app
+    assert "Refill pool" in app
+    assert "Pool threshold percent used" in app
+    assert "Preview next poll" in app
     assert "Lock poll manually" in app
     assert "Edit Text" in app
     assert "Edit Poll" in app

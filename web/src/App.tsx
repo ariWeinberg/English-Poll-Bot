@@ -36,6 +36,7 @@ type Tenant = {
   gemini_api_key: string;
   gemini_model: string;
   timezone: string;
+  poll_pool_threshold_percent: number;
   summary_enabled: boolean;
   scheduler_enabled: boolean;
   is_active: boolean;
@@ -52,6 +53,8 @@ type Text = {
   evening_time: string;
   summary_time_morning: string;
   summary_time_evening: string;
+  poll_pool_threshold_percent?: number | null;
+  tenant_poll_pool_threshold_percent?: number;
   enabled: boolean;
   attachment_name?: string | null;
 };
@@ -71,10 +74,22 @@ type Poll = {
   scheduled_slot?: string | null;
   sent_at?: string | null;
   summary_sent_at?: string | null;
+  pool_rank?: number | null;
   change_window_seconds?: number | null;
   manual_lock: boolean;
   auto_lock_seconds?: number | null;
   created_at: string;
+};
+
+type PollPool = {
+  text_id: number;
+  queued_count: number;
+  effective_threshold_percent: number;
+  refill_when_below: number;
+  target_size: number;
+  refill_batch_size: number;
+  next_poll?: Poll | null;
+  items: Poll[];
 };
 
 type PollStats = {
@@ -154,6 +169,7 @@ const defaultTenantForm: TenantFormState = {
   gemini_api_key: "",
   gemini_model: "gemini-3.5-flash",
   timezone: "Asia/Jerusalem",
+  poll_pool_threshold_percent: 80,
   summary_enabled: true,
   scheduler_enabled: true,
   is_active: true,
@@ -222,6 +238,7 @@ function blankText(tenantId: number): TextFormState {
     evening_time: "18:00",
     summary_time_morning: "08:25",
     summary_time_evening: "17:55",
+    poll_pool_threshold_percent: null,
     enabled: true,
   };
 }
@@ -265,6 +282,7 @@ function textToForm(text: Text): TextFormState {
     evening_time: text.evening_time,
     summary_time_morning: text.summary_time_morning,
     summary_time_evening: text.summary_time_evening,
+    poll_pool_threshold_percent: text.poll_pool_threshold_percent ?? null,
     enabled: text.enabled,
   };
 }
@@ -284,6 +302,7 @@ function pollToForm(poll: Poll): PollFormState {
     scheduled_slot: poll.scheduled_slot || "",
     sent_at: poll.sent_at || "",
     summary_sent_at: poll.summary_sent_at || "",
+    pool_rank: poll.pool_rank ?? null,
     change_window_seconds: poll.change_window_seconds ?? null,
     manual_lock: poll.manual_lock,
     auto_lock_seconds: poll.auto_lock_seconds ?? null,
@@ -592,22 +611,25 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
   const [pollModal, setPollModal] = useState<{ mode: "create" | "edit"; poll?: Poll } | null>(null);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [preview, setPreview] = useState<GeneratedQuestion | null>(null);
+  const [currentPool, setCurrentPool] = useState<PollPool | null>(null);
 
   async function loadData() {
     setLoading(true);
     try {
       const me = await api<Tenant>("/auth/me");
-      const [textPage, pollPage, stats, votePage] = await Promise.all([
+      const [textPage, pollPage, stats, votePage, pool] = await Promise.all([
         api<Page<Text>>(`/texts?tenant_id=${me.id}&page_size=100`),
         api<Page<Poll>>(`/polls?tenant_id=${me.id}&page_size=100`),
         api<PollStats[]>(`/polls/stats?tenant_id=${me.id}&limit=100`),
         api<Page<VoteEvent>>(`/poll-vote-events?tenant_id=${me.id}&page_size=200`),
+        route.name === "text-detail" ? api<PollPool>(`/texts/${route.id}/poll-pool`) : Promise.resolve(null),
       ]);
       setTenant(me);
       setTexts(textPage.items);
       setPolls(pollPage.items);
       setPollStats(stats);
       setVoteEvents(votePage.items);
+      setCurrentPool(pool);
     } catch (err) {
       setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to load workspace" });
     } finally {
@@ -617,7 +639,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
 
   useEffect(() => {
     void loadData();
-  }, []);
+  }, [route.name, route.name === "text-detail" ? route.id : null]);
 
   useEffect(() => {
     setMobileNavOpen(false);
@@ -682,6 +704,29 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
       handleSuccess("Poll sent");
     } catch (err) {
       handleError(err instanceof Error ? err.message : "Poll send failed");
+    }
+  }
+
+  async function handleRefillPool(textId: number) {
+    try {
+      const result = await api<PollPool>(`/texts/${textId}/poll-pool/refill`, { method: "POST" });
+      setCurrentPool(result);
+      handleSuccess("Poll pool refilled");
+    } catch (err) {
+      handleError(err instanceof Error ? err.message : "Poll pool refill failed");
+    }
+  }
+
+  async function handleMovePoolPoll(pollId: number, poolRank: number) {
+    try {
+      await api<Poll>(`/polls/${pollId}/pool-rank`, { method: "PATCH", body: JSON.stringify({ pool_rank: poolRank }) });
+      if (currentText) {
+        const result = await api<PollPool>(`/texts/${currentText.id}/poll-pool`);
+        setCurrentPool(result);
+      }
+      handleSuccess("Poll order updated");
+    } catch (err) {
+      handleError(err instanceof Error ? err.message : "Failed to reorder queued poll");
     }
   }
 
@@ -754,11 +799,15 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
           {route.name === "text-detail" && (
             <TextDetailPage
               text={currentText}
+              pool={currentPool}
               onBack={() => navigateTo({ name: "texts" })}
               onEdit={(text) => setTextModal({ mode: "edit", text })}
               onPreview={handlePreview}
               onSendPoll={handleSendPoll}
+              onRefillPool={handleRefillPool}
+              onMovePoolPoll={handleMovePoolPoll}
               onDelete={(text) => void handleDeleteText(text.id)}
+              onDeleteQueuedPoll={(poll) => void handleDeletePoll(poll.id)}
             />
           )}
           {route.name === "polls" && (
@@ -990,6 +1039,7 @@ function DashboardPage({
   const totalVotes = pollStats.reduce((sum, item) => sum + item.total, 0);
   const averageCorrect = pollStats.length === 0 ? 0 : pollStats.reduce((sum, item) => sum + item.correct_rate, 0) / pollStats.length;
   const sentPolls = polls.filter((poll) => poll.status === "sent").length;
+  const queuedPolls = polls.filter((poll) => poll.status === "queued").length;
 
   return (
     <div className="dashboard-layout">
@@ -1012,6 +1062,7 @@ function DashboardPage({
       <section className="metric-grid">
         <MetricCard label="Texts" value={texts.length} detail="Content sources" icon={<FileText size={18} />} />
         <MetricCard label="Polls" value={polls.length} detail="Draft + sent" icon={<Vote size={18} />} />
+        <MetricCard label="Queued polls" value={queuedPolls} detail="Ready in pool" icon={<Play size={18} />} />
         <MetricCard label="Sent polls" value={sentPolls} detail="Delivered to groups" icon={<Send size={18} />} />
         <MetricCard label="Total votes" value={totalVotes} detail="Across all tracked polls" icon={<BarChart3 size={18} />} />
         <MetricCard label="Avg correct" value={`${averageCorrect.toFixed(1)}%`} detail="Accuracy rate" icon={<CheckCircle2 size={18} />} />
@@ -1152,18 +1203,26 @@ function TextsPage({
 
 function TextDetailPage({
   text,
+  pool,
   onBack,
   onEdit,
   onPreview,
   onSendPoll,
+  onRefillPool,
+  onMovePoolPoll,
   onDelete,
+  onDeleteQueuedPoll,
 }: {
   text: Text | null;
+  pool: PollPool | null;
   onBack: () => void;
   onEdit: (text: Text) => void;
   onPreview: (textId: number) => void;
   onSendPoll: (textId: number) => void;
+  onRefillPool: (textId: number) => void;
+  onMovePoolPoll: (pollId: number, poolRank: number) => void;
   onDelete: (text: Text) => void;
+  onDeleteQueuedPoll: (poll: Poll) => void;
 }) {
   if (!text) {
     return <EmptyState title="Text not found" body="The selected text no longer exists." />;
@@ -1182,7 +1241,7 @@ function TextDetailPage({
         </div>
         <div className="hero-actions">
           <button className="button button-secondary" onClick={() => onPreview(text.id)}>
-            <Play size={16} /> Preview question
+            <Play size={16} /> Preview next poll
           </button>
           <button className="button button-secondary" onClick={() => onSendPoll(text.id)}>
             <Send size={16} /> Send poll
@@ -1215,6 +1274,14 @@ function TextDetailPage({
           <DetailRow label="Evening" value={text.evening_time} />
           <DetailRow label="AM summary" value={text.summary_time_morning} />
           <DetailRow label="PM summary" value={text.summary_time_evening} />
+          <DetailRow
+            label="Pool threshold"
+            value={
+              text.poll_pool_threshold_percent == null
+                ? `Inherited ${text.tenant_poll_pool_threshold_percent ?? 80}% used`
+                : `${text.poll_pool_threshold_percent}% used`
+            }
+          />
           <DetailRow label="Attachment" value={text.attachment_name || "None"} />
           <DetailRow label="Status" value={text.enabled ? "Enabled" : "Disabled"} />
           <button className="button button-danger full-width" onClick={() => onDelete(text)}>
@@ -1222,6 +1289,63 @@ function TextDetailPage({
           </button>
         </aside>
       </div>
+
+      <section className="surface">
+        <div className="section-header">
+          <div>
+            <p className="section-kicker">Poll Pool</p>
+            <h3>Queued polls</h3>
+          </div>
+          <button className="button button-secondary" onClick={() => onRefillPool(text.id)}>
+            <RefreshCw size={16} /> Refill pool
+          </button>
+        </div>
+        <div className="detail-summary">
+          <StatBlock label="Queued" value={pool?.queued_count ?? 0} />
+          <StatBlock label="Target size" value={pool?.target_size ?? 10} />
+          <StatBlock label="Threshold" value={`${pool?.effective_threshold_percent ?? text.tenant_poll_pool_threshold_percent ?? 80}% used`} />
+          <StatBlock label="Refill below" value={pool?.refill_when_below ?? 2} />
+        </div>
+        {pool?.next_poll && (
+          <div className="prose-block subtle">
+            <strong>Next queued poll:</strong> {pool.next_poll.question}
+          </div>
+        )}
+        <div className="stack">
+          {pool?.items.map((poll, index) => (
+            <article className="event-row" key={poll.id}>
+              <div className="event-row-top">
+                <span className="pill">Rank {poll.pool_rank}</span>
+                <span className="meta-inline">Queued draft</span>
+              </div>
+              <strong>{poll.question}</strong>
+              <p>{poll.options.join(" · ")}</p>
+              <div className="card-actions">
+                <button
+                  className="button button-ghost"
+                  onClick={() => onMovePoolPoll(poll.id, Math.max(1, (poll.pool_rank || index + 1) - 1))}
+                  disabled={index === 0}
+                >
+                  Up
+                </button>
+                <button
+                  className="button button-ghost"
+                  onClick={() => onMovePoolPoll(poll.id, (poll.pool_rank || index + 1) + 1)}
+                  disabled={index === pool.items.length - 1}
+                >
+                  Down
+                </button>
+                <button className="button button-danger" onClick={() => onDeleteQueuedPoll(poll)}>
+                  <Trash2 size={16} /> Delete
+                </button>
+              </div>
+            </article>
+          ))}
+          {(!pool || pool.items.length === 0) && (
+            <EmptyState title="No queued polls" body="Preview or refill to generate the next batch for this text." />
+          )}
+        </div>
+      </section>
     </section>
   );
 }
@@ -1275,7 +1399,7 @@ function PollsPage({
               <button className="resource-main" onClick={() => onOpen(poll)}>
                 <div className="resource-topline">
                   <span className="resource-id">#{poll.id}</span>
-                  <span className="pill">{poll.status}</span>
+                  <span className={poll.status === "queued" ? "pill success" : "pill"}>{poll.status}</span>
                 </div>
                 <h3>{poll.question}</h3>
                 <p>{sourceText ? excerpt(sourceText.body, 120) : "No linked text loaded."}</p>
@@ -1284,7 +1408,7 @@ function PollsPage({
                   <span>{stats ? `${stats.correct_rate.toFixed(1)}% correct` : "No stats yet"}</span>
                 </div>
                 <div className="meta-row">
-                  <span>{poll.manual_lock ? "Locked" : "Open"}</span>
+                  <span>{poll.status === "queued" ? `Queue rank ${poll.pool_rank ?? "?"}` : poll.manual_lock ? "Locked" : "Open"}</span>
                   <span>Changes {minutesLabel(poll.change_window_seconds)}</span>
                 </div>
               </button>
@@ -1482,6 +1606,7 @@ function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () => void }
           <DetailRow label="Timezone" value={tenant.timezone} />
           <DetailRow label="Scheduler" value={tenant.scheduler_enabled ? "Enabled" : "Disabled"} />
           <DetailRow label="Summaries" value={tenant.summary_enabled ? "Enabled" : "Disabled"} />
+          <DetailRow label="Pool threshold" value={`${tenant.poll_pool_threshold_percent}% used`} />
           <DetailRow label="Gemini model" value={tenant.gemini_model} />
           <DetailRow label="GreenAPI URL" value={tenant.greenapi_api_url} />
         </section>
@@ -1541,6 +1666,7 @@ function TextModal({
       data.set("evening_time", form.evening_time);
       data.set("summary_time_morning", form.summary_time_morning);
       data.set("summary_time_evening", form.summary_time_evening);
+      if (form.poll_pool_threshold_percent != null) data.set("poll_pool_threshold_percent", String(form.poll_pool_threshold_percent));
       data.set("enabled", String(form.enabled));
       if (attachment) data.set("attachment", attachment);
       await api<Text>("/texts", { method: "POST", body: data });
@@ -1573,6 +1699,18 @@ function TextModal({
             onChange={(value) => setForm({ ...form, summary_time_evening: value })}
           />
         </div>
+        <TextInput
+          label="Pool threshold percent used"
+          type="number"
+          value={form.poll_pool_threshold_percent == null ? "" : String(form.poll_pool_threshold_percent)}
+          placeholder={`Blank = inherit ${tenant.poll_pool_threshold_percent}%`}
+          onChange={(value) =>
+            setForm({
+              ...form,
+              poll_pool_threshold_percent: value.trim() ? Math.max(0, Math.min(100, Number(value))) : null,
+            })
+          }
+        />
         <label className="check">
           <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
           Enable text
@@ -1636,6 +1774,7 @@ function PollModal({
       sent_at: form.sent_at || null,
       summary_sent_at: form.summary_sent_at || null,
       greenapi_message_id: form.greenapi_message_id || null,
+      pool_rank: form.pool_rank == null ? null : Number(form.pool_rank),
       change_window_seconds: form.change_window_seconds == null ? null : Number(form.change_window_seconds),
       auto_lock_seconds: form.auto_lock_seconds == null ? null : Number(form.auto_lock_seconds),
     };
@@ -1774,6 +1913,17 @@ function SettingsModal({
           value={form.password}
           placeholder="Leave blank to keep current password"
           onChange={(value) => setForm({ ...form, password: value })}
+        />
+        <TextInput
+          label="Pool threshold percent used"
+          type="number"
+          value={String(form.poll_pool_threshold_percent)}
+          onChange={(value) =>
+            setForm({
+              ...form,
+              poll_pool_threshold_percent: Math.max(0, Math.min(100, Number(value || 0))),
+            })
+          }
         />
         <TextInput label="GreenAPI URL" value={form.greenapi_api_url} onChange={(value) => setForm({ ...form, greenapi_api_url: value })} />
         <TextInput

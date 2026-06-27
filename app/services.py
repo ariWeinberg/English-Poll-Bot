@@ -1,18 +1,29 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from typing import Any
 
 from app.database import (
+    POLL_POOL_REFILL_BATCH_SIZE,
+    POLL_POOL_TARGET_SIZE,
+    compact_queued_poll_ranks,
+    count_queued_polls,
     create_poll,
     db_session,
+    get_effective_poll_pool_threshold_percent,
+    get_next_queued_poll,
     get_contact_profile,
     get_poll_by_message_id,
     get_poll_by_message_id_for_tenant,
     get_source_text,
     get_tenant,
     get_text,
+    get_text_poll_history,
+    get_poll_pool_refill_threshold_count,
+    get_text_pool_tail_rank,
+    list_queued_polls,
     list_pending_texts,
     list_unsummarized_polls,
     mark_poll_failed,
@@ -100,13 +111,176 @@ def create_question_generator(settings: RuntimeConfig) -> GeminiQuestionGenerato
     return GeminiQuestionGenerator(api_key=settings.gemini_api_key, model=settings.gemini_model)
 
 
-async def generate_question(settings: RuntimeConfig, source_text: str) -> GeneratedQuestion:
+def _poll_options(row: dict[str, Any]) -> list[str]:
+    options = row.get("options")
+    if isinstance(options, list):
+        return [str(option) for option in options]
+    raw = row.get("options_json")
+    if not isinstance(raw, str):
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(option) for option in parsed]
+
+
+def _history_signature(row: dict[str, Any]) -> str:
+    question = str(row.get("question") or "").strip()
+    if not question:
+        return ""
+    return question.lower()
+
+
+def _build_duplicate_context(rows: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for row in rows:
+        question = str(row.get("question") or "").strip()
+        if not question:
+            continue
+        status = str(row.get("status") or "").strip() or "unknown"
+        options_text = ", ".join(
+            option.strip()
+            for option in row.get("options", [])
+            if isinstance(option, str) and option.strip()
+        )
+        if not options_text:
+            lines.append(f"- [{status}] {question}")
+        else:
+            lines.append(f"- [{status}] {question} | options: {options_text}")
+    return "\n".join(lines)
+
+
+def _serialize_generated_history(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    history: list[dict[str, Any]] = []
+    for row in rows:
+        history.append(
+            {
+                "question": row.get("question"),
+                "options": _poll_options(row),
+                "status": row.get("status"),
+            }
+        )
+    return history
+
+
+async def generate_question(
+    settings: RuntimeConfig,
+    source_text: str,
+    *,
+    prior_poll_history: list[dict[str, Any]] | None = None,
+) -> GeneratedQuestion:
     if not source_text.strip():
         raise ValueError("Add source text before generating a question.")
     if not settings.gemini_ready:
         raise ValueError("Gemini configuration is incomplete.")
     generator = create_question_generator(settings)
-    return await asyncio.to_thread(generator.generate, source_text)
+    history = _serialize_generated_history(prior_poll_history or [])
+    return await asyncio.to_thread(
+        generator.generate,
+        source_text,
+        duplicate_context=_build_duplicate_context(history),
+    )
+
+
+async def generate_poll_batch(
+    settings: RuntimeConfig,
+    source_text: str,
+    *,
+    prior_poll_history: list[dict[str, Any]],
+    count: int,
+) -> list[GeneratedQuestion]:
+    if not source_text.strip():
+        raise ValueError("Add source text before generating a question.")
+    if not settings.gemini_ready:
+        raise ValueError("Gemini configuration is incomplete.")
+    generator = create_question_generator(settings)
+    history = _serialize_generated_history(prior_poll_history)
+    return await asyncio.to_thread(
+        generator.generate_batch,
+        source_text,
+        count=count,
+        duplicate_context=_build_duplicate_context(history),
+        existing_signatures={_history_signature(row) for row in history},
+    )
+
+
+async def fill_poll_pool(
+    *,
+    settings: RuntimeConfig,
+    database_url: str,
+    text_id: int,
+    count: int = POLL_POOL_REFILL_BATCH_SIZE,
+) -> list[int]:
+    with db_session(database_url) as conn:
+        text = get_text(conn, text_id)
+        if text is None:
+            raise ValueError("Text not found.")
+        history = get_text_poll_history(conn, text_id=text_id)
+        source_text = get_source_text(conn, text_id)
+        tail_rank = get_text_pool_tail_rank(conn, text_id=text_id)
+
+    generated_batch = await generate_poll_batch(
+        settings,
+        source_text,
+        prior_poll_history=history,
+        count=count,
+    )
+
+    created_ids: list[int] = []
+    with db_session(database_url) as conn:
+        next_rank = tail_rank
+        for generated in generated_batch:
+            next_rank += 1
+            created_ids.append(
+                create_poll(
+                    conn,
+                    tenant_id=settings.tenant_id,
+                    text_id=text_id,
+                    question=generated.question,
+                    options=generated.options,
+                    correct_option=generated.correct_option,
+                    explanation=generated.explanation,
+                    chat_id=text["chat_id"],
+                    generated_from_text=source_text,
+                    scheduled_slot=None,
+                    status="queued",
+                    pool_rank=next_rank,
+                )
+            )
+    return created_ids
+
+
+async def _refill_pool_if_needed(*, settings: RuntimeConfig, database_url: str, text_id: int) -> None:
+    if not settings.gemini_ready:
+        return
+    with db_session(database_url) as conn:
+        queued_count = count_queued_polls(conn, text_id=text_id)
+        threshold_count = get_poll_pool_refill_threshold_count(conn, text_id=text_id)
+    if queued_count < threshold_count:
+        await fill_poll_pool(settings=settings, database_url=database_url, text_id=text_id)
+
+
+async def preview_next_pooled_poll(*, settings: RuntimeConfig, database_url: str, text_id: int) -> GeneratedQuestion:
+    with db_session(database_url) as conn:
+        text = get_text(conn, text_id)
+        if text is None:
+            raise ValueError("Text not found.")
+        queued = get_next_queued_poll(conn, text_id=text_id)
+    if queued is None:
+        await fill_poll_pool(settings=settings, database_url=database_url, text_id=text_id)
+        with db_session(database_url) as conn:
+            queued = get_next_queued_poll(conn, text_id=text_id)
+    if queued is None:
+        raise ValueError("Unable to prepare a preview poll.")
+    return GeneratedQuestion(
+        question=str(queued["question"]),
+        options=_poll_options(queued),
+        correct_option=str(queued["correct_option"]),
+        explanation=str(queued.get("explanation") or ""),
+    )
 
 
 async def generate_and_send_poll(
@@ -122,20 +296,33 @@ async def generate_and_send_poll(
         text = get_text(conn, text_id)
         if text is None:
             raise ValueError("Text not found.")
+        queued = get_next_queued_poll(conn, text_id=text_id)
         source_text = get_source_text(conn, text_id)
-    generated = await generate_question(settings, source_text)
-    with db_session(database_url) as conn:
-        poll_id = create_poll(
-            conn,
-            tenant_id=settings.tenant_id,
-            text_id=text_id,
-            question=generated.question,
-            options=generated.options,
-            correct_option=generated.correct_option,
-            explanation=generated.explanation,
-            chat_id=text["chat_id"],
-            generated_from_text=source_text,
-            scheduled_slot=scheduled_slot,
+        history = get_text_poll_history(conn, text_id=text_id)
+
+    used_pool = queued is not None
+    if queued is None:
+        generated = await generate_question(settings, source_text, prior_poll_history=history)
+        with db_session(database_url) as conn:
+            poll_id = create_poll(
+                conn,
+                tenant_id=settings.tenant_id,
+                text_id=text_id,
+                question=generated.question,
+                options=generated.options,
+                correct_option=generated.correct_option,
+                explanation=generated.explanation,
+                chat_id=text["chat_id"],
+                generated_from_text=source_text,
+                scheduled_slot=scheduled_slot,
+            )
+    else:
+        poll_id = int(queued["id"])
+        generated = GeneratedQuestion(
+            question=str(queued["question"]),
+            options=_poll_options(queued),
+            correct_option=str(queued["correct_option"]),
+            explanation=str(queued.get("explanation") or ""),
         )
     try:
         message_id = await create_greenapi_client(settings).send_poll(
@@ -146,9 +333,15 @@ async def generate_and_send_poll(
     except Exception as exc:
         with db_session(database_url) as conn:
             mark_poll_failed(conn, poll_id, str(exc))
+            if used_pool:
+                compact_queued_poll_ranks(conn, text_id=text_id)
         raise
     with db_session(database_url) as conn:
-        mark_poll_sent(conn, poll_id, message_id)
+        mark_poll_sent(conn, poll_id, message_id, scheduled_slot=scheduled_slot)
+        if used_pool:
+            compact_queued_poll_ranks(conn, text_id=text_id)
+    if used_pool or settings.gemini_ready:
+        await _refill_pool_if_needed(settings=settings, database_url=database_url, text_id=text_id)
     return poll_id
 
 
