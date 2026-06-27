@@ -7,12 +7,10 @@ from typing import Any
 
 from app.database import (
     POLL_POOL_REFILL_BATCH_SIZE,
-    POLL_POOL_TARGET_SIZE,
     compact_queued_poll_ranks,
     count_queued_polls,
     create_poll,
     db_session,
-    get_effective_poll_pool_threshold_percent,
     get_next_queued_poll,
     get_contact_profile,
     get_poll_by_message_id,
@@ -23,7 +21,6 @@ from app.database import (
     get_text_poll_history,
     get_poll_pool_refill_threshold_count,
     get_text_pool_tail_rank,
-    list_queued_polls,
     list_pending_texts,
     list_unsummarized_polls,
     mark_poll_failed,
@@ -142,9 +139,7 @@ def _build_duplicate_context(rows: list[dict[str, Any]]) -> str:
             continue
         status = str(row.get("status") or "").strip() or "unknown"
         options_text = ", ".join(
-            option.strip()
-            for option in row.get("options", [])
-            if isinstance(option, str) and option.strip()
+            option.strip() for option in row.get("options", []) if isinstance(option, str) and option.strip()
         )
         if not options_text:
             lines.append(f"- [{status}] {question}")
@@ -367,14 +362,15 @@ def _parse_voter_record(value: Any) -> dict[str, str | None] | None:
     ).strip()
     if not voter_wid:
         return None
-    voter_name = str(
-        value.get("contactName")
-        or value.get("senderName")
-        or value.get("name")
-        or value.get("pushName")
-        or ""
-    ).strip() or None
-    phone_number = str(value.get("phoneNumber") or value.get("phone") or "").strip() or normalize_phone_number(voter_wid)
+    voter_name = (
+        str(
+            value.get("contactName") or value.get("senderName") or value.get("name") or value.get("pushName") or ""
+        ).strip()
+        or None
+    )
+    phone_number = str(value.get("phoneNumber") or value.get("phone") or "").strip() or normalize_phone_number(
+        voter_wid
+    )
     return {
         "voter_wid": voter_wid,
         "voter_name": voter_name,
@@ -462,7 +458,9 @@ async def _resolve_contact_name(
     return resolved_name
 
 
-async def handle_greenapi_webhook_async(*, database_url: str, payload: dict[str, Any], tenant_id: int | None = None) -> bool:
+async def handle_greenapi_webhook_async(
+    *, database_url: str, payload: dict[str, Any], tenant_id: int | None = None
+) -> bool:
     parsed = parse_poll_update(payload)
     if parsed is None:
         return False
@@ -561,6 +559,11 @@ def texts_due_now(database_url: str, minute_key: str) -> list[tuple[RuntimeConfi
             runtime = load_runtime_config(database_url, int(text["tenant_id"]))
             if not runtime.scheduler_enabled or not runtime.greenapi_ready or not runtime.gemini_ready:
                 continue
-            if text["enabled"] and minute_key in {text["morning_time"], text["evening_time"], text["summary_time_morning"], text["summary_time_evening"]}:
+            if text["enabled"] and minute_key in {
+                text["morning_time"],
+                text["evening_time"],
+                text["summary_time_morning"],
+                text["summary_time_evening"],
+            }:
                 due.append((runtime, text))
     return due

@@ -34,7 +34,6 @@ from app.database import (
     get_poll_vote_event,
     get_poll_vote,
     get_effective_poll_pool_threshold_percent,
-    get_next_queued_poll,
     get_poll_pool_refill_threshold_count,
     get_tenant_by_username,
     get_tenant,
@@ -58,8 +57,6 @@ from app.scheduler import build_scheduler
 from app.services import (
     fill_poll_pool,
     generate_and_send_poll,
-    generate_question,
-    handle_greenapi_webhook,
     handle_greenapi_webhook_async,
     load_runtime_config,
     preview_next_pooled_poll,
@@ -763,5 +760,7 @@ async def summary_now(payload: SendSummaryRequest, user: dict[str, Any] = Depend
 
 @app.post("/webhooks/greenapi/{tenant_id}")
 async def greenapi_webhook(tenant_id: int, payload: dict[str, Any]):
-    handled = await handle_greenapi_webhook_async(database_url=settings.database_url, payload=payload, tenant_id=tenant_id)
+    handled = await handle_greenapi_webhook_async(
+        database_url=settings.database_url, payload=payload, tenant_id=tenant_id
+    )
     return {"ok": True, "handled": handled}

@@ -79,11 +79,23 @@ def test_handle_greenapi_webhook_ignores_changes_after_change_window(monkeypatch
 
     first_payload = {
         "typeWebhook": "incomingMessageReceived",
-        "messageData": {"typeMessage": "pollUpdateMessage", "pollMessageData": {"stanzaId": "poll-message-id", "votes": [{"optionName": "A", "optionVoters": ["111@c.us"]}]}},
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "poll-message-id",
+                "votes": [{"optionName": "A", "optionVoters": ["111@c.us"]}],
+            },
+        },
     }
     second_payload = {
         "typeWebhook": "incomingMessageReceived",
-        "messageData": {"typeMessage": "pollUpdateMessage", "pollMessageData": {"stanzaId": "poll-message-id", "votes": [{"optionName": "B", "optionVoters": ["111@c.us"]}]}},
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "poll-message-id",
+                "votes": [{"optionName": "B", "optionVoters": ["111@c.us"]}],
+            },
+        },
     }
 
     values = iter(["2026-01-01T12:00:00+00:00", "2026-01-01T12:02:00+00:00"])
@@ -148,7 +160,9 @@ def test_handle_greenapi_webhook_fetches_contact_name_from_greenapi(monkeypatch)
             generated_from_text="text",
             scheduled_slot="manual",
         )
-        conn.execute("UPDATE polls SET greenapi_message_id = %s, status = 'sent' WHERE id = %s", ("poll-message-id", poll_id))
+        conn.execute(
+            "UPDATE polls SET greenapi_message_id = %s, status = 'sent' WHERE id = %s", ("poll-message-id", poll_id)
+        )
 
     async def fake_get_contact_name(self, *, chat_id: str):
         assert chat_id == "111@c.us"
@@ -158,14 +172,24 @@ def test_handle_greenapi_webhook_fetches_contact_name_from_greenapi(monkeypatch)
 
     payload = {
         "typeWebhook": "incomingMessageReceived",
-        "messageData": {"typeMessage": "pollUpdateMessage", "pollMessageData": {"stanzaId": "poll-message-id", "votes": [{"optionName": "A", "optionVoters": ["111@c.us"]}]}},
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "poll-message-id",
+                "votes": [{"optionName": "A", "optionVoters": ["111@c.us"]}],
+            },
+        },
     }
 
     assert handle_greenapi_webhook(database_url=TEST_DATABASE_URL, payload=payload) is True
 
     with db_session(TEST_DATABASE_URL) as conn:
-        row = conn.execute("SELECT voter_name FROM poll_votes WHERE poll_id = %s AND voter_wid = %s", (poll_id, "111@c.us")).fetchone()
-        cached = conn.execute("SELECT display_name FROM contact_profiles WHERE tenant_id = 1 AND voter_wid = %s", ("111@c.us",)).fetchone()
+        row = conn.execute(
+            "SELECT voter_name FROM poll_votes WHERE poll_id = %s AND voter_wid = %s", (poll_id, "111@c.us")
+        ).fetchone()
+        cached = conn.execute(
+            "SELECT display_name FROM contact_profiles WHERE tenant_id = 1 AND voter_wid = %s", ("111@c.us",)
+        ).fetchone()
 
     assert row == {"voter_name": "Dana Cohen"}
     assert cached == {"display_name": "Dana Cohen"}

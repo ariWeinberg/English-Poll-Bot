@@ -61,7 +61,9 @@ def validate_question(data: dict[str, Any]) -> GeneratedQuestion:
     )
 
 
-def validate_question_batch(data: Any, *, expected_count: int, existing_signatures: set[str] | None = None) -> list[GeneratedQuestion]:
+def validate_question_batch(
+    data: Any, *, expected_count: int, existing_signatures: set[str] | None = None
+) -> list[GeneratedQuestion]:
     if not isinstance(data, dict):
         raise QuestionGenerationError("Gemini JSON response must be an object")
     items = data.get("questions")
@@ -90,9 +92,7 @@ class GeminiQuestionGenerator:
         try:
             from google import genai
         except ModuleNotFoundError as exc:
-            raise QuestionGenerationError(
-                "google-genai is not installed. Run `pip install -e .` first."
-            ) from exc
+            raise QuestionGenerationError("google-genai is not installed. Run `pip install -e .` first.") from exc
         self.client = genai.Client(api_key=api_key)
         self.model = model
 
@@ -104,7 +104,11 @@ class GeminiQuestionGenerator:
         return _extract_json(response.text or "")
 
     def generate(self, source_text: str, *, duplicate_context: str = "") -> GeneratedQuestion:
-        duplicate_block = f"\nAvoid repeating or closely rewording these existing questions:\n{duplicate_context}\n" if duplicate_context else "\n"
+        duplicate_block = (
+            f"\nAvoid repeating or closely rewording these existing questions:\n{duplicate_context}\n"
+            if duplicate_context
+            else "\n"
+        )
         prompt = f"""
 Create one English multiple-choice comprehension question from the study text.
 Return only JSON with keys: question, options, correct_option, explanation.

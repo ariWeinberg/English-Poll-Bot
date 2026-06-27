@@ -213,7 +213,10 @@ def test_greenapi_webhook_is_tenant_scoped():
             generated_from_text="Body",
             scheduled_slot="manual",
         )
-        conn.execute("UPDATE polls SET greenapi_message_id = %s, status = 'sent' WHERE id IN (%s, %s)", ("same-id", poll_a, poll_b))
+        conn.execute(
+            "UPDATE polls SET greenapi_message_id = %s, status = 'sent' WHERE id IN (%s, %s)",
+            ("same-id", poll_a, poll_b),
+        )
 
     payload = {
         "typeWebhook": "incomingMessageReceived",
@@ -285,7 +288,18 @@ def test_poll_vote_status_route_returns_counted_and_ignored_state():
                 (poll_id, option_name, voter_wid, voter_name, phone_number, event_type, previous_option_name, accepted, ignored_reason, recorded_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (poll_id, "B", "111@c.us", "Dana Cohen", "111", "change", "A", False, "change_window_expired", "2026-01-01T12:02:00+00:00"),
+            (
+                poll_id,
+                "B",
+                "111@c.us",
+                "Dana Cohen",
+                "111",
+                "change",
+                "A",
+                False,
+                "change_window_expired",
+                "2026-01-01T12:02:00+00:00",
+            ),
         )
 
     with TestClient(app) as client:

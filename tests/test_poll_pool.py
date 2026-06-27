@@ -178,7 +178,9 @@ def test_empty_pool_falls_back_to_immediate_generation(monkeypatch):
     monkeypatch.setattr("app.greenapi.GreenAPIClient.send_poll", fake_send_poll)
     monkeypatch.setattr("app.services._refill_pool_if_needed", fake_refill_if_needed)
 
-    poll_id = asyncio.run(generate_and_send_poll(settings=runtime, database_url=database_url, text_id=1, scheduled_slot="manual"))
+    poll_id = asyncio.run(
+        generate_and_send_poll(settings=runtime, database_url=database_url, text_id=1, scheduled_slot="manual")
+    )
 
     with db_session(database_url) as conn:
         poll = get_poll(conn, poll_id)

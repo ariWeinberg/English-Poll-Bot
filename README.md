@@ -78,7 +78,16 @@ Enable these GreenAPI settings:
 ## Test
 
 ```bash
+python -m compileall app tests
+ruff check app tests
+ruff format --check app tests
 pytest
+cd web
+npm install
+npm run typecheck
+npm run build
+cd ..
+docker compose config --quiet
 ```
 
 Database integration tests require PostgreSQL:
@@ -91,9 +100,13 @@ TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/english_bot pyte
 
 Pushes and pull requests run:
 
+- Python compile checks
+- Ruff lint and format checks
 - backend tests
-- frontend builds
+- frontend type checks and builds
 - compose config validation
+
+Keep documentation current with behavior changes. Changes that alter setup, deployment, API behavior, scheduling, provider integrations, or user-visible workflows should update `README.md`, `docs/architecture.md`, or tests in the same pull request.
 
 Pushes to the `release` branch deploy to the production server by SSH. The deploy job reads `secrets.SSH_PRIVATE_KEY` from the GitHub `release` environment, writes it to a temporary key file on the runner, and SSHes into the server to run `docker-compose down --remove-orphans` followed by `docker-compose up -d --build --remove-orphans` in the checked-out repo.
 

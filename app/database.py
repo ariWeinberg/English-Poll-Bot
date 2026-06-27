@@ -817,7 +817,9 @@ def update_poll_pool_ranks(conn: psycopg.Connection[DbRow], *, text_id: int, ord
 
 
 def compact_queued_poll_ranks(conn: psycopg.Connection[DbRow], *, text_id: int) -> None:
-    update_poll_pool_ranks(conn, text_id=text_id, ordered_poll_ids=[int(item["id"]) for item in list_queued_polls(conn, text_id=text_id)])
+    update_poll_pool_ranks(
+        conn, text_id=text_id, ordered_poll_ids=[int(item["id"]) for item in list_queued_polls(conn, text_id=text_id)]
+    )
 
 
 def reorder_queued_poll(conn: psycopg.Connection[DbRow], *, poll_id: int, pool_rank: int) -> DbRow:
@@ -1357,7 +1359,9 @@ def poll_stats(conn: psycopg.Connection[DbRow], poll: DbRow) -> dict[str, Any]:
     }
 
 
-def all_poll_stats(conn: psycopg.Connection[DbRow], limit: int = 25, tenant_id: int | None = None) -> list[dict[str, Any]]:
+def all_poll_stats(
+    conn: psycopg.Connection[DbRow], limit: int = 25, tenant_id: int | None = None
+) -> list[dict[str, Any]]:
     return [poll_stats(conn, poll) for poll in list_polls(conn, limit, tenant_id)]
 
 

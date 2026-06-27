@@ -4,6 +4,7 @@
 - `app/`: FastAPI backend. Core files include [`app/main.py`](/home/ari/Desktop/english_bot/app/main.py) for routes, [`app/database.py`](/home/ari/Desktop/english_bot/app/database.py) for PostgreSQL access, [`app/services.py`](/home/ari/Desktop/english_bot/app/services.py) for webhook and poll workflows, and [`app/scheduler.py`](/home/ari/Desktop/english_bot/app/scheduler.py) for APScheduler jobs.
 - `web/`: React + TypeScript frontend. Main UI lives in [`web/src/main.tsx`](/home/ari/Desktop/english_bot/web/src/main.tsx) and styles in [`web/src/styles.css`](/home/ari/Desktop/english_bot/web/src/styles.css).
 - `tests/`: Pytest suite for API, services, config, scheduler, and UI asset smoke checks.
+- `docs/`: Architecture and maintenance notes. Keep [`docs/architecture.md`](/home/ari/Desktop/english_bot/docs/architecture.md) aligned with module boundaries and quality gates.
 - Root files: `docker-compose.yml`, backend `Dockerfile`, frontend `web/Dockerfile`, and `README.md`.
 
 ## Build, Test, and Development Commands
@@ -12,22 +13,33 @@
 - `uvicorn app.main:app --reload --port 8000`: run the API locally.
 - `cd web && npm install && npm run dev`: run the frontend with Vite.
 - `pytest`: run the default Python test suite.
+- `ruff check app tests`: run Python lint checks.
+- `ruff format --check app tests`: verify Python formatting without rewriting files.
 - `TEST_DATABASE_URL=postgresql://... pytest`: run integration tests that require PostgreSQL.
+- `cd web && npm run typecheck`: run TypeScript checks without building assets.
 - `cd web && npm run build`: verify the production frontend bundle.
+- `docker compose config --quiet`: validate the Compose file.
 
 ## Coding Style & Naming Conventions
 - Python: 4-space indentation, type hints where practical, snake_case for functions, variables, and module-level helpers.
 - TypeScript/React: follow the existing single-file UI style in `web/src/main.tsx`; use PascalCase for components and camelCase for helpers/state.
 - Keep changes ASCII unless the file already requires Unicode.
 - Prefer small, direct functions over framework-heavy abstractions.
+- Keep route handlers thin. Put backend business rules in service functions and SQL behind database helpers.
+- Extract reusable or stateful frontend behavior into focused helpers/components instead of expanding large view branches.
 
 ## Testing Guidelines
 - Add or update pytest coverage for backend behavior changes in `tests/test_*.py`.
 - Keep UI smoke assertions in [`tests/test_ui_assets.py`](/home/ari/Desktop/english_bot/tests/test_ui_assets.py) aligned with visible feature changes.
 - Before pushing, run:
   - `python -m compileall app tests`
+  - `ruff check app tests`
+  - `ruff format --check app tests`
   - `pytest`
+  - `cd web && npm run typecheck`
   - `cd web && npm run build`
+  - `docker compose config --quiet`
+- Update `README.md`, [`docs/architecture.md`](/home/ari/Desktop/english_bot/docs/architecture.md), or tests in the same PR when setup, deployment, API behavior, scheduling, provider integrations, or user-visible workflows change.
 
 ## Commit & Pull Request Guidelines
 - Match the existing commit style: short imperative summaries, e.g. `Fix scheduler lifecycle` or `Show poll events per poll with contact details`.
