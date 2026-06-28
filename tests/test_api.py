@@ -18,7 +18,7 @@ def reset_db() -> str:
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
-            "TRUNCATE chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+            "TRUNCATE text_schedule_rule_random_plans, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
         )
     init_db(TEST_DATABASE_URL)
     return TEST_DATABASE_URL
@@ -292,6 +292,86 @@ def test_auth_and_text_pagination_filtering():
         response = client.get("/api/v1/texts?tenant_id=1&enabled=false", headers=headers)
         assert response.status_code == 200
         assert [item["title"] for item in response.json()["items"]] == ["Lesson 2"]
+
+
+def test_text_schedule_rule_crud_and_validation():
+    reset_db()
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+
+        created = client.post(
+            "/api/v1/texts",
+            headers=headers,
+            data={"tenant_id": "1", "title": "Rules", "body": "Body", "chat_id": "group@g.us", "enabled": "true"},
+        )
+        assert created.status_code == 201
+        text_id = created.json()["id"]
+        assert created.json()["schedule_rules"] == []
+
+        created_rule = client.post(
+            f"/api/v1/texts/{text_id}/schedule-rules",
+            headers=headers,
+            json={
+                "delivery_type": "poll",
+                "rule_type": "weekday_time",
+                "enabled": True,
+                "time": "08:30",
+                "weekdays": [0, 2, 4],
+                "count_mode": "range",
+                "count_min": 1,
+                "count_max": 3,
+                "label": "Weekday drill",
+            },
+        )
+        assert created_rule.status_code == 201
+        rule_id = created_rule.json()["id"]
+        assert created_rule.json()["weekdays"] == [0, 2, 4]
+
+        listed = client.get(f"/api/v1/texts/{text_id}/schedule-rules", headers=headers)
+        assert listed.status_code == 200
+        assert len(listed.json()) == 1
+
+        patched = client.patch(
+            f"/api/v1/texts/{text_id}/schedule-rules/{rule_id}",
+            headers=headers,
+            json={"rule_type": "month_date_time", "weekdays": [], "month_dates": [1, 15], "time": "09:00"},
+        )
+        assert patched.status_code == 200
+        assert patched.json()["rule_type"] == "month_date_time"
+        assert patched.json()["month_dates"] == [1, 15]
+
+        invalid = client.post(
+            f"/api/v1/texts/{text_id}/schedule-rules",
+            headers=headers,
+            json={
+                "delivery_type": "poll",
+                "rule_type": "random_window",
+                "enabled": True,
+                "window_start": "10:00",
+                "window_end": "09:00",
+                "count_mode": "fixed",
+                "count_value": 1,
+            },
+        )
+        assert invalid.status_code == 422
+
+        bad_weekday = client.post(
+            f"/api/v1/texts/{text_id}/schedule-rules",
+            headers=headers,
+            json={
+                "delivery_type": "poll",
+                "rule_type": "weekday_time",
+                "enabled": True,
+                "time": "08:30",
+                "weekdays": [7],
+                "count_mode": "fixed",
+                "count_value": 1,
+            },
+        )
+        assert bad_weekday.status_code == 422
+
+        deleted = client.delete(f"/api/v1/texts/{text_id}/schedule-rules/{rule_id}", headers=headers)
+        assert deleted.status_code == 204
 
 
 def test_tenant_routes_hide_password_and_blank_update_keeps_existing_login():

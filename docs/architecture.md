@@ -8,8 +8,8 @@ English WhatsApp Poll Bot is a split FastAPI and React application. Keep changes
 - `app/core/docs.py` owns short-lived signed tokens for protected Swagger and OpenAPI access.
 - `app/core/logging.py` owns JSON/human logging setup, request IDs, request lifecycle logging, and secret redaction.
 - `app/services.py` owns workflow orchestration for question generation, poll sending, pool refill, webhook processing, and summaries.
-- `app/database.py` owns SQL, row serialization, persistence helpers, learner analytics aggregation, roster snapshots, and database initialization.
-- `app/scheduler.py` owns APScheduler job registration and lifecycle integration.
+- `app/database.py` owns SQL, row serialization, text schedule-rule persistence, learner analytics aggregation, roster snapshots, random-rule daily plans, and database initialization.
+- `app/scheduler.py` owns APScheduler job registration, schedule-rule evaluation, and lifecycle integration.
 - `app/greenapi.py` and `app/question_generator.py` own external service clients and provider-specific payload handling.
 
 Route handlers should stay thin. New business rules belong in service functions. New SQL belongs behind database helper functions rather than directly in routes or frontend code.
@@ -18,7 +18,7 @@ Route handlers should stay thin. New business rules belong in service functions.
 
 - `web/src/App.tsx` currently owns the main dashboard shell, route state, API types, and views.
 - The authenticated `/learners` route renders the learner progress dashboard and uses tenant-scoped analytics and missed-response endpoints.
-- The authenticated text and poll detail routes render roster sync controls and poll coverage summaries on top of the existing delivery views.
+- The authenticated text and poll detail routes render roster sync controls, schedule-rule summaries, and poll coverage summaries on top of the existing delivery views.
 - The authenticated `/doc` route renders operational guidance and opens Swagger through `POST /api/v1/docs/session`.
 - `web/src/main.tsx` only mounts React.
 - `web/src/styles.css` owns global styling and page-specific class rules.

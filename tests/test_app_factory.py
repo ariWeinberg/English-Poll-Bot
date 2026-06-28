@@ -16,6 +16,8 @@ def test_create_app_registers_expected_routes():
         "/api/v1/tenants/{tenant_id}/activate",
         "/api/v1/texts",
         "/api/v1/texts/{text_id}",
+        "/api/v1/texts/{text_id}/schedule-rules",
+        "/api/v1/texts/{text_id}/schedule-rules/{rule_id}",
         "/api/v1/texts/{text_id}/roster",
         "/api/v1/texts/{text_id}/roster/sync",
         "/api/v1/texts/{text_id}/roster/{voter_wid}",

@@ -40,6 +40,9 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Preview next poll" in app
     assert "Lock poll manually" in app
     assert "Edit Text" in app
+    assert "Schedule rules" in app
+    assert "Auto-create matching summary rule" in app
+    assert "Manual only" in app
     assert "Edit Poll" in app
     assert "Edit Workspace" in app
     assert "Leave blank to keep current password" in app

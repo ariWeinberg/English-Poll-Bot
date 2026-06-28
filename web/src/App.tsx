@@ -52,14 +52,29 @@ type Text = {
   title: string;
   body: string;
   chat_id: string;
-  morning_time: string;
-  evening_time: string;
-  summary_time_morning: string;
-  summary_time_evening: string;
   poll_pool_threshold_percent?: number | null;
   tenant_poll_pool_threshold_percent?: number;
   enabled: boolean;
   attachment_name?: string | null;
+  schedule_rules: ScheduleRule[];
+};
+
+type ScheduleRule = {
+  id?: number;
+  text_id?: number;
+  delivery_type: "poll" | "summary";
+  rule_type: "daily_time" | "weekday_time" | "month_date_time" | "random_window";
+  enabled: boolean;
+  time?: string | null;
+  weekdays?: number[];
+  month_dates?: number[];
+  window_start?: string | null;
+  window_end?: string | null;
+  count_mode: "fixed" | "range";
+  count_value?: number | null;
+  count_min?: number | null;
+  count_max?: number | null;
+  label?: string | null;
 };
 
 type Poll = {
@@ -250,7 +265,15 @@ type DocsSession = {
 
 type Toast = { kind: "success" | "error"; message: string } | null;
 
-type TextFormState = Omit<Text, "id" | "tenant_name" | "attachment_name">;
+type TextFormState = {
+  tenant_id: number;
+  title: string;
+  body: string;
+  chat_id: string;
+  poll_pool_threshold_percent?: number | null;
+  enabled: boolean;
+  schedule_rules: ScheduleRule[];
+};
 type PollFormState = Omit<Poll, "id" | "created_at">;
 type TenantFormState = Omit<Tenant, "id"> & { password: string };
 type RegisterFormState = { name: string; username: string; password: string; confirmPassword: string; timezone: string };
@@ -356,12 +379,9 @@ function blankText(tenantId: number): TextFormState {
     title: "",
     body: "",
     chat_id: "",
-    morning_time: "08:30",
-    evening_time: "18:00",
-    summary_time_morning: "08:25",
-    summary_time_evening: "17:55",
     poll_pool_threshold_percent: null,
     enabled: true,
+    schedule_rules: [],
   };
 }
 
@@ -400,12 +420,27 @@ function textToForm(text: Text): TextFormState {
     title: text.title,
     body: text.body,
     chat_id: text.chat_id,
-    morning_time: text.morning_time,
-    evening_time: text.evening_time,
-    summary_time_morning: text.summary_time_morning,
-    summary_time_evening: text.summary_time_evening,
     poll_pool_threshold_percent: text.poll_pool_threshold_percent ?? null,
     enabled: text.enabled,
+    schedule_rules: text.schedule_rules.map((rule) => ({ ...rule })),
+  };
+}
+
+function blankScheduleRule(deliveryType: "poll" | "summary" = "poll"): ScheduleRule {
+  return {
+    delivery_type: deliveryType,
+    rule_type: "daily_time",
+    enabled: true,
+    time: deliveryType === "summary" ? "08:29" : "08:30",
+    weekdays: [0, 1, 2, 3, 4],
+    month_dates: [1],
+    window_start: "08:00",
+    window_end: "09:00",
+    count_mode: "fixed",
+    count_value: 1,
+    count_min: 1,
+    count_max: 2,
+    label: "",
   };
 }
 
@@ -538,6 +573,79 @@ function formatSnapshotSource(value?: string | null) {
   if (value === "cached_roster") return "Cached roster";
   if (value === "unavailable") return "Unavailable";
   return value || "Unavailable";
+}
+
+const WEEKDAY_OPTIONS = [
+  { value: 0, label: "Mon" },
+  { value: 1, label: "Tue" },
+  { value: 2, label: "Wed" },
+  { value: 3, label: "Thu" },
+  { value: 4, label: "Fri" },
+  { value: 5, label: "Sat" },
+  { value: 6, label: "Sun" },
+];
+
+function ruleCountLabel(rule: ScheduleRule) {
+  if (rule.count_mode === "range") return `${rule.count_min ?? 1}-${rule.count_max ?? 1}x`;
+  return `${rule.count_value ?? 1}x`;
+}
+
+function describeRule(rule: ScheduleRule) {
+  const prefix = `${rule.delivery_type === "summary" ? "Summary" : "Poll"} ${rule.enabled ? "" : "(disabled) "}`.trim();
+  const countText = rule.delivery_type === "poll" ? ` • ${ruleCountLabel(rule)}` : "";
+  const label = rule.label?.trim();
+  if (rule.rule_type === "daily_time") return `${label ? `${label}: ` : ""}${prefix} daily at ${rule.time}${countText}`;
+  if (rule.rule_type === "weekday_time") {
+    const days = (rule.weekdays || []).map((day) => WEEKDAY_OPTIONS.find((item) => item.value === day)?.label || String(day)).join(", ");
+    return `${label ? `${label}: ` : ""}${prefix} on ${days} at ${rule.time}${countText}`;
+  }
+  if (rule.rule_type === "month_date_time") {
+    return `${label ? `${label}: ` : ""}${prefix} on days ${(rule.month_dates || []).join(", ")} at ${rule.time}${countText}`;
+  }
+  return `${label ? `${label}: ` : ""}${prefix} random ${rule.window_start}-${rule.window_end}${countText}`;
+}
+
+function scheduleSummary(text: Text | TextFormState) {
+  const rules = text.schedule_rules || [];
+  const pollRules = rules.filter((rule) => rule.delivery_type === "poll" && rule.enabled);
+  if (pollRules.length === 0) return "Manual only";
+  return pollRules.map(describeRule).join(" | ");
+}
+
+function shiftMinuteEarlier(value: string) {
+  const [hoursText, minutesText] = value.split(":");
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText);
+  const total = Math.max(0, hours * 60 + minutes - 1);
+  const nextHours = String(Math.floor(total / 60)).padStart(2, "0");
+  const nextMinutes = String(total % 60).padStart(2, "0");
+  return `${nextHours}:${nextMinutes}`;
+}
+
+function autoSummaryRuleFor(rule: ScheduleRule): ScheduleRule {
+  if (rule.rule_type === "random_window") {
+    const nextStart = rule.window_start ? shiftMinuteEarlier(rule.window_start) : "00:00";
+    const nextEnd = rule.window_end ? shiftMinuteEarlier(rule.window_end) : "00:01";
+    return {
+      ...blankScheduleRule("summary"),
+      delivery_type: "summary",
+      rule_type: "random_window",
+      enabled: rule.enabled,
+      window_start: nextStart,
+      window_end: nextEnd > nextStart ? nextEnd : rule.window_end || "00:01",
+      label: rule.label ? `${rule.label} summary` : "Auto summary",
+    };
+  }
+  return {
+    ...blankScheduleRule("summary"),
+    delivery_type: "summary",
+    rule_type: rule.rule_type,
+    enabled: rule.enabled,
+    time: rule.time ? shiftMinuteEarlier(rule.time) : "00:00",
+    weekdays: [...(rule.weekdays || [])],
+    month_dates: [...(rule.month_dates || [])],
+    label: rule.label ? `${rule.label} summary` : "Auto summary",
+  };
 }
 
 function learnerQueryString(tenantId: number, filters: LearnerFilters, extra?: Record<string, string | number | undefined>) {
@@ -1739,7 +1847,7 @@ function TextsPage({
               <p>{excerpt(text.body, 190)}</p>
               <div className="meta-row">
                 <span>{text.chat_id || "No chat ID"}</span>
-                <span>{text.morning_time} / {text.evening_time}</span>
+                <span>{scheduleSummary(text)}</span>
               </div>
             </button>
             <div className="card-actions">
@@ -1839,10 +1947,14 @@ function TextDetailPage({
               <h3>Schedule</h3>
             </div>
           </div>
-          <DetailRow label="Morning" value={text.morning_time} />
-          <DetailRow label="Evening" value={text.evening_time} />
-          <DetailRow label="AM summary" value={text.summary_time_morning} />
-          <DetailRow label="PM summary" value={text.summary_time_evening} />
+          <DetailRow label="Delivery rules" value={scheduleSummary(text)} />
+          <div className="stack">
+            {text.schedule_rules.length > 0 ? (
+              text.schedule_rules.map((rule, index) => <div key={rule.id || `${rule.delivery_type}-${index}`}>{describeRule(rule)}</div>)
+            ) : (
+              <div>Manual only</div>
+            )}
+          </div>
           <DetailRow
             label="Pool threshold"
             value={
@@ -2412,6 +2524,9 @@ function TextModal({
   const editing = Boolean(initialText);
   const [form, setForm] = useState<TextFormState>(initialText ? textToForm(initialText) : blankText(tenant.id));
   const [attachment, setAttachment] = useState<File | null>(null);
+  const [draftRule, setDraftRule] = useState<ScheduleRule>(blankScheduleRule());
+  const [editingRuleIndex, setEditingRuleIndex] = useState<number | null>(null);
+  const [autoSummary, setAutoSummary] = useState(true);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2426,10 +2541,7 @@ function TextModal({
       data.set("title", form.title);
       data.set("body", form.body);
       data.set("chat_id", form.chat_id);
-      data.set("morning_time", form.morning_time);
-      data.set("evening_time", form.evening_time);
-      data.set("summary_time_morning", form.summary_time_morning);
-      data.set("summary_time_evening", form.summary_time_evening);
+      data.set("schedule_rules_json", JSON.stringify(form.schedule_rules));
       if (form.poll_pool_threshold_percent != null) data.set("poll_pool_threshold_percent", String(form.poll_pool_threshold_percent));
       data.set("enabled", String(form.enabled));
       if (attachment) data.set("attachment", attachment);
@@ -2437,6 +2549,38 @@ function TextModal({
       onSaved("Text created");
     } catch (err) {
       onError(err instanceof Error ? err.message : "Failed to save text");
+    }
+  }
+
+  function saveRule() {
+    const rule: ScheduleRule = {
+      ...draftRule,
+      weekdays: draftRule.rule_type === "weekday_time" ? draftRule.weekdays || [] : [],
+      month_dates: draftRule.rule_type === "month_date_time" ? draftRule.month_dates || [] : [],
+    };
+    const nextRules = [...form.schedule_rules];
+    if (editingRuleIndex == null) nextRules.push(rule);
+    else nextRules[editingRuleIndex] = rule;
+    if (autoSummary && rule.delivery_type === "poll" && editingRuleIndex == null) {
+      nextRules.push(autoSummaryRuleFor(rule));
+    }
+    setForm({ ...form, schedule_rules: nextRules });
+    setDraftRule(blankScheduleRule());
+    setEditingRuleIndex(null);
+    setAutoSummary(true);
+  }
+
+  function editRule(index: number) {
+    setDraftRule({ ...form.schedule_rules[index] });
+    setEditingRuleIndex(index);
+    setAutoSummary(false);
+  }
+
+  function removeRule(index: number) {
+    setForm({ ...form, schedule_rules: form.schedule_rules.filter((_, ruleIndex) => ruleIndex !== index) });
+    if (editingRuleIndex === index) {
+      setDraftRule(blankScheduleRule());
+      setEditingRuleIndex(null);
     }
   }
 
@@ -2449,19 +2593,147 @@ function TextModal({
           <textarea rows={8} value={form.body} onChange={(event) => setForm({ ...form, body: event.target.value })} />
         </label>
         <TextInput label="WhatsApp group chat ID" value={form.chat_id} onChange={(value) => setForm({ ...form, chat_id: value })} />
-        <div className="time-grid">
-          <TextInput label="Morning" value={form.morning_time} onChange={(value) => setForm({ ...form, morning_time: value })} />
-          <TextInput label="Evening" value={form.evening_time} onChange={(value) => setForm({ ...form, evening_time: value })} />
-          <TextInput
-            label="AM summary"
-            value={form.summary_time_morning}
-            onChange={(value) => setForm({ ...form, summary_time_morning: value })}
-          />
-          <TextInput
-            label="PM summary"
-            value={form.summary_time_evening}
-            onChange={(value) => setForm({ ...form, summary_time_evening: value })}
-          />
+        <div className="surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Schedule rules</p>
+              <h3>{form.schedule_rules.some((rule) => rule.delivery_type === "poll" && rule.enabled) ? "Rules configured" : "Manual only"}</h3>
+            </div>
+          </div>
+          <div className="stack">
+            {form.schedule_rules.length > 0 ? (
+              form.schedule_rules.map((rule, index) => (
+                <div className="result-row" key={rule.id || `${rule.delivery_type}-${index}`}>
+                  <span>{describeRule(rule)}</span>
+                  <span>
+                    <button className="button button-ghost" type="button" onClick={() => editRule(index)}>
+                      Edit
+                    </button>
+                    <button className="button button-ghost" type="button" onClick={() => removeRule(index)}>
+                      Delete
+                    </button>
+                  </span>
+                </div>
+              ))
+            ) : (
+              <div>No enabled poll rules yet. This text will stay manual-only.</div>
+            )}
+          </div>
+          <div className="time-grid">
+            <label>
+              Delivery type
+              <select
+                value={draftRule.delivery_type}
+                onChange={(event) => setDraftRule({ ...draftRule, delivery_type: event.target.value as ScheduleRule["delivery_type"] })}
+              >
+                <option value="poll">Poll</option>
+                <option value="summary">Summary</option>
+              </select>
+            </label>
+            <label>
+              Rule type
+              <select
+                value={draftRule.rule_type}
+                onChange={(event) => setDraftRule({ ...draftRule, rule_type: event.target.value as ScheduleRule["rule_type"] })}
+              >
+                <option value="daily_time">Daily time</option>
+                <option value="weekday_time">Weekday time</option>
+                <option value="month_date_time">Month date time</option>
+                <option value="random_window">Random window</option>
+              </select>
+            </label>
+            {draftRule.rule_type === "random_window" ? (
+              <>
+                <TextInput label="Window start" value={draftRule.window_start || ""} onChange={(value) => setDraftRule({ ...draftRule, window_start: value })} />
+                <TextInput label="Window end" value={draftRule.window_end || ""} onChange={(value) => setDraftRule({ ...draftRule, window_end: value })} />
+              </>
+            ) : (
+              <TextInput label="Time" value={draftRule.time || ""} onChange={(value) => setDraftRule({ ...draftRule, time: value })} />
+            )}
+            {draftRule.rule_type === "weekday_time" && (
+              <label>
+                Weekdays
+                <select
+                  multiple
+                  value={(draftRule.weekdays || []).map(String)}
+                  onChange={(event) =>
+                    setDraftRule({
+                      ...draftRule,
+                      weekdays: Array.from(event.target.selectedOptions).map((option) => Number(option.value)),
+                    })
+                  }
+                >
+                  {WEEKDAY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {draftRule.rule_type === "month_date_time" && (
+              <TextInput
+                label="Month dates"
+                value={(draftRule.month_dates || []).join(",")}
+                onChange={(value) =>
+                  setDraftRule({
+                    ...draftRule,
+                    month_dates: value
+                      .split(",")
+                      .map((item) => Number(item.trim()))
+                      .filter((item) => Number.isFinite(item) && item > 0),
+                  })
+                }
+              />
+            )}
+            <label>
+              Count mode
+              <select
+                value={draftRule.count_mode}
+                onChange={(event) => setDraftRule({ ...draftRule, count_mode: event.target.value as ScheduleRule["count_mode"] })}
+              >
+                <option value="fixed">Fixed</option>
+                <option value="range">Range</option>
+              </select>
+            </label>
+            {draftRule.count_mode === "fixed" ? (
+              <TextInput
+                label="Count"
+                type="number"
+                value={String(draftRule.count_value ?? 1)}
+                onChange={(value) => setDraftRule({ ...draftRule, count_value: Number(value) || 1 })}
+              />
+            ) : (
+              <>
+                <TextInput
+                  label="Min count"
+                  type="number"
+                  value={String(draftRule.count_min ?? 1)}
+                  onChange={(value) => setDraftRule({ ...draftRule, count_min: Number(value) || 1 })}
+                />
+                <TextInput
+                  label="Max count"
+                  type="number"
+                  value={String(draftRule.count_max ?? 2)}
+                  onChange={(value) => setDraftRule({ ...draftRule, count_max: Number(value) || 2 })}
+                />
+              </>
+            )}
+            <TextInput label="Label" value={draftRule.label || ""} onChange={(value) => setDraftRule({ ...draftRule, label: value })} />
+          </div>
+          {draftRule.delivery_type === "poll" && (
+            <label className="check">
+              <input type="checkbox" checked={autoSummary} onChange={(event) => setAutoSummary(event.target.checked)} />
+              Auto-create matching summary rule
+            </label>
+          )}
+          <label className="check">
+            <input type="checkbox" checked={draftRule.enabled} onChange={(event) => setDraftRule({ ...draftRule, enabled: event.target.checked })} />
+            Enable this rule
+          </label>
+          <button className="button button-secondary" type="button" onClick={saveRule}>
+            {editingRuleIndex == null ? "Add rule" : "Save rule"}
+          </button>
         </div>
         <TextInput
           label="Pool threshold percent used"

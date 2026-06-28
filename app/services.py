@@ -87,17 +87,21 @@ def load_runtime_config(database_url: str, tenant_id: int | None = None) -> Runt
             from app.database import get_active_tenant
 
             tenant = get_active_tenant(conn)
+    return runtime_config_from_row(tenant)
+
+
+def runtime_config_from_row(tenant: dict[str, Any]) -> RuntimeConfig:
     return RuntimeConfig(
         tenant_id=int(tenant["id"]),
-        tenant_name=tenant["name"],
+        tenant_name=str(tenant["name"]),
         greenapi_api_url=str(tenant["greenapi_api_url"]).rstrip("/"),
         greenapi_id_instance=str(tenant["greenapi_id_instance"]),
         greenapi_api_token_instance=str(tenant["greenapi_api_token_instance"]),
         gemini_api_key=str(tenant["gemini_api_key"]),
         gemini_model=str(tenant["gemini_model"]),
         timezone=str(tenant["timezone"]),
-        summary_enabled=_as_bool(tenant["summary_enabled"], True),
-        scheduler_enabled=_as_bool(tenant["scheduler_enabled"], True),
+        summary_enabled=_as_bool(tenant.get("summary_enabled"), True),
+        scheduler_enabled=_as_bool(tenant.get("scheduler_enabled"), True),
     )
 
 
@@ -563,18 +567,7 @@ async def _resolve_contact_name(
         tenant = get_tenant(conn, tenant_id)
     if tenant is None:
         return None
-    settings = RuntimeConfig(
-        tenant_id=int(tenant["id"]),
-        tenant_name=str(tenant["name"]),
-        greenapi_api_url=str(tenant["greenapi_api_url"]).rstrip("/"),
-        greenapi_id_instance=str(tenant["greenapi_id_instance"]),
-        greenapi_api_token_instance=str(tenant["greenapi_api_token_instance"]),
-        gemini_api_key=str(tenant["gemini_api_key"]),
-        gemini_model=str(tenant["gemini_model"]),
-        timezone=str(tenant["timezone"]),
-        summary_enabled=_as_bool(tenant["summary_enabled"], True),
-        scheduler_enabled=_as_bool(tenant["scheduler_enabled"], True),
-    )
+    settings = runtime_config_from_row(tenant)
     resolved_name: str | None = None
     if settings.greenapi_ready:
         try:
@@ -724,18 +717,18 @@ async def send_pending_summaries(*, settings: RuntimeConfig, database_url: str, 
 
 
 def texts_due_now(database_url: str, minute_key: str) -> list[tuple[RuntimeConfig, Any]]:
+    from app.database import list_text_schedule_rules
+
     due: list[tuple[RuntimeConfig, Any]] = []
     with db_session(database_url) as conn:
         texts = list_pending_texts(conn)
         for text in texts:
-            runtime = load_runtime_config(database_url, int(text["tenant_id"]))
+            runtime = runtime_config_from_row(text)
             if not runtime.scheduler_enabled or not runtime.greenapi_ready or not runtime.gemini_ready:
                 continue
-            if text["enabled"] and minute_key in {
-                text["morning_time"],
-                text["evening_time"],
-                text["summary_time_morning"],
-                text["summary_time_evening"],
-            }:
+            rules = list_text_schedule_rules(conn, text_id=int(text["id"]), enabled_only=True)
+            if any(
+                str(rule.get("time") or "") == minute_key for rule in rules if rule.get("rule_type") != "random_window"
+            ):
                 due.append((runtime, text))
     return due

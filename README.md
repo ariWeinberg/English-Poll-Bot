@@ -1,6 +1,6 @@
 # English WhatsApp Poll Bot
 
-A split FastAPI + React app for multi-tenant WhatsApp learning polls. Each tenant can manage its own GreenAPI and Gemini settings, and each tenant can create multiple texts with their own WhatsApp chat, schedule, and attachment.
+A split FastAPI + React app for multi-tenant WhatsApp learning polls. Each tenant can manage its own GreenAPI and Gemini settings, and each tenant can create multiple texts with their own WhatsApp chat, schedule rules, and attachment.
 
 ## Run With Docker
 
@@ -47,6 +47,7 @@ Authenticated API routes live under `/api/v1` and use `Authorization: Bearer <to
 
 - `POST /api/v1/auth/login`
 - CRUD: `/api/v1/tenants`, `/api/v1/texts`, `/api/v1/polls`, `/api/v1/poll-votes`
+- Text schedule rules: `GET|POST /api/v1/texts/{text_id}/schedule-rules`, `PATCH|DELETE /api/v1/texts/{text_id}/schedule-rules/{rule_id}`
 - Learner analytics: `GET /api/v1/learners`, `GET /api/v1/learners/{voter_wid}`
 - Roster and coverage: `GET|POST|PATCH /api/v1/texts/{text_id}/roster...`, `GET /api/v1/polls/{poll_id}/coverage`
 - Actions: `/api/v1/questions/preview`, `/api/v1/polls/send-now`, `/api/v1/summaries/send-now`
@@ -74,8 +75,8 @@ Logs include request IDs, request lifecycle events, scheduler decisions, webhook
 - Tenants with their own GreenAPI and Gemini settings
 - Multiple texts per tenant
 - Per-text WhatsApp group chat ID
-- Per-text morning/evening poll times
-- Per-text morning/evening summary times
+- Per-text schedule rules for poll and summary delivery
+- Daily, weekday, month-date, and random-window scheduling with fixed or ranged send counts
 - Optional file attachment for each text
 - Learner progress dashboard with tenant-scoped leaderboard, missed-response tracking, and per-contact answer history
 - Text-level WhatsApp group roster sync with coverage exclusions

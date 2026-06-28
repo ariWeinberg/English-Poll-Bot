@@ -327,6 +327,9 @@ def now_iso() -> str:
 POLL_POOL_TARGET_SIZE = 10
 POLL_POOL_REFILL_BATCH_SIZE = 5
 DEFAULT_POLL_POOL_THRESHOLD_PERCENT = 80
+SCHEDULE_RULE_TYPES = {"daily_time", "weekday_time", "month_date_time", "random_window"}
+SCHEDULE_DELIVERY_TYPES = {"poll", "summary"}
+SCHEDULE_COUNT_MODES = {"fixed", "range"}
 
 
 def normalize_phone_number(value: str) -> str:
@@ -336,6 +339,123 @@ def normalize_phone_number(value: str) -> str:
     base = stripped.split("@", 1)[0]
     digits = "".join(ch for ch in base if ch.isdigit())
     return digits or base
+
+
+def _parse_json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _validate_hhmm(value: str | None, *, field: str) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    try:
+        datetime.strptime(cleaned, "%H:%M")
+    except ValueError as exc:
+        raise ValueError(f"{field} must use HH:MM format") from exc
+    return cleaned
+
+
+def _normalize_schedule_rule_input(
+    *,
+    delivery_type: str,
+    rule_type: str,
+    enabled: bool = True,
+    time: str | None = None,
+    weekdays: list[int] | None = None,
+    month_dates: list[int] | None = None,
+    window_start: str | None = None,
+    window_end: str | None = None,
+    count_mode: str = "fixed",
+    count_value: int | None = 1,
+    count_min: int | None = None,
+    count_max: int | None = None,
+    label: str | None = None,
+) -> dict[str, Any]:
+    normalized_delivery_type = delivery_type.strip()
+    normalized_rule_type = rule_type.strip()
+    normalized_count_mode = count_mode.strip()
+    if normalized_delivery_type not in SCHEDULE_DELIVERY_TYPES:
+        raise ValueError("delivery_type must be poll or summary")
+    if normalized_rule_type not in SCHEDULE_RULE_TYPES:
+        raise ValueError("rule_type is invalid")
+    if normalized_count_mode not in SCHEDULE_COUNT_MODES:
+        raise ValueError("count_mode must be fixed or range")
+
+    normalized_time = _validate_hhmm(time, field="time")
+    normalized_window_start = _validate_hhmm(window_start, field="window_start")
+    normalized_window_end = _validate_hhmm(window_end, field="window_end")
+
+    normalized_weekdays: list[int] = []
+    if weekdays:
+        normalized_weekdays = sorted({int(day) for day in weekdays})
+        if any(day < 0 or day > 6 for day in normalized_weekdays):
+            raise ValueError("weekdays must use values from 0 to 6")
+
+    normalized_month_dates: list[int] = []
+    if month_dates:
+        normalized_month_dates = sorted({int(day) for day in month_dates})
+        if any(day < 1 or day > 31 for day in normalized_month_dates):
+            raise ValueError("month_dates must use values from 1 to 31")
+
+    if normalized_rule_type == "daily_time":
+        if normalized_time is None:
+            raise ValueError("time is required for daily_time rules")
+    elif normalized_rule_type == "weekday_time":
+        if normalized_time is None:
+            raise ValueError("time is required for weekday_time rules")
+        if not normalized_weekdays:
+            raise ValueError("weekdays are required for weekday_time rules")
+    elif normalized_rule_type == "month_date_time":
+        if normalized_time is None:
+            raise ValueError("time is required for month_date_time rules")
+        if not normalized_month_dates:
+            raise ValueError("month_dates are required for month_date_time rules")
+    elif normalized_rule_type == "random_window":
+        if normalized_window_start is None or normalized_window_end is None:
+            raise ValueError("window_start and window_end are required for random_window rules")
+        if normalized_window_start >= normalized_window_end:
+            raise ValueError("window_end must be later than window_start")
+
+    normalized_count_value = int(count_value) if count_value is not None else None
+    normalized_count_min = int(count_min) if count_min is not None else None
+    normalized_count_max = int(count_max) if count_max is not None else None
+    if normalized_count_mode == "fixed":
+        if normalized_count_value is None or normalized_count_value < 1:
+            raise ValueError("count_value must be at least 1")
+    else:
+        if normalized_count_min is None or normalized_count_max is None:
+            raise ValueError("count_min and count_max are required for range count mode")
+        if normalized_count_min < 1 or normalized_count_max < 1:
+            raise ValueError("count range must be at least 1")
+        if normalized_count_min > normalized_count_max:
+            raise ValueError("count_min must be less than or equal to count_max")
+
+    return {
+        "delivery_type": normalized_delivery_type,
+        "rule_type": normalized_rule_type,
+        "enabled": bool(enabled),
+        "time": normalized_time,
+        "weekdays": normalized_weekdays,
+        "month_dates": normalized_month_dates,
+        "window_start": normalized_window_start,
+        "window_end": normalized_window_end,
+        "count_mode": normalized_count_mode,
+        "count_value": normalized_count_value if normalized_count_mode == "fixed" else None,
+        "count_min": normalized_count_min if normalized_count_mode == "range" else None,
+        "count_max": normalized_count_max if normalized_count_mode == "range" else None,
+        "label": label.strip() if label and label.strip() else None,
+    }
 
 
 def connect(database_url: str) -> psycopg.Connection[DbRow]:
@@ -394,6 +514,38 @@ def init_db(database_url: str) -> None:
                 enabled BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS text_schedule_rules (
+                id SERIAL PRIMARY KEY,
+                text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+                delivery_type TEXT NOT NULL,
+                rule_type TEXT NOT NULL,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                time TEXT,
+                weekdays_json TEXT NOT NULL DEFAULT '[]',
+                month_dates_json TEXT NOT NULL DEFAULT '[]',
+                window_start TEXT,
+                window_end TEXT,
+                count_mode TEXT NOT NULL DEFAULT 'fixed',
+                count_value INTEGER,
+                count_min INTEGER,
+                count_max INTEGER,
+                label TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS text_schedule_rule_random_plans (
+                id SERIAL PRIMARY KEY,
+                text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+                rule_id INTEGER NOT NULL REFERENCES text_schedule_rules(id) ON DELETE CASCADE,
+                local_date TEXT NOT NULL,
+                planned_times_json TEXT NOT NULL DEFAULT '[]',
+                executed_times_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (rule_id, local_date)
             );
 
             CREATE TABLE IF NOT EXISTS app_config (
@@ -510,6 +662,10 @@ def init_db(database_url: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_tenants_active ON tenants(is_active);
             CREATE INDEX IF NOT EXISTS idx_tenants_username ON tenants(username);
             CREATE INDEX IF NOT EXISTS idx_texts_tenant ON texts(tenant_id);
+            CREATE INDEX IF NOT EXISTS idx_text_schedule_rules_text ON text_schedule_rules(text_id);
+            CREATE INDEX IF NOT EXISTS idx_text_schedule_rules_enabled ON text_schedule_rules(text_id, enabled);
+            CREATE INDEX IF NOT EXISTS idx_text_schedule_rule_random_plans_rule_date
+                ON text_schedule_rule_random_plans(rule_id, local_date);
             CREATE INDEX IF NOT EXISTS idx_polls_tenant ON polls(tenant_id);
             CREATE INDEX IF NOT EXISTS idx_polls_text ON polls(text_id);
             CREATE INDEX IF NOT EXISTS idx_polls_status ON polls(status);
@@ -566,8 +722,320 @@ def init_db(database_url: str) -> None:
             """,
             (timestamp, timestamp),
         )
+        _migrate_legacy_text_schedule_rules(conn)
         conn.execute("SELECT setval(pg_get_serial_sequence('tenants', 'id'), COALESCE(MAX(id), 1)) FROM tenants")
         conn.execute("SELECT setval(pg_get_serial_sequence('texts', 'id'), COALESCE(MAX(id), 1)) FROM texts")
+        conn.execute(
+            "SELECT setval(pg_get_serial_sequence('text_schedule_rules', 'id'), COALESCE(MAX(id), 1)) FROM text_schedule_rules"
+        )
+
+
+def _migrate_legacy_text_schedule_rules(conn: psycopg.Connection[DbRow]) -> None:
+    rows = conn.execute(
+        """
+        SELECT
+            texts.id,
+            texts.morning_time,
+            texts.evening_time,
+            texts.summary_time_morning,
+            texts.summary_time_evening
+        FROM texts
+        LEFT JOIN text_schedule_rules ON text_schedule_rules.text_id = texts.id
+        GROUP BY texts.id
+        HAVING COUNT(text_schedule_rules.id) = 0
+        """
+    ).fetchall()
+    for row in rows:
+        legacy_rules = [
+            {
+                "delivery_type": "poll",
+                "rule_type": "daily_time",
+                "time": str(row["morning_time"] or "08:30"),
+                "count_mode": "fixed",
+                "count_value": 1,
+                "label": "Migrated morning poll",
+            },
+            {
+                "delivery_type": "poll",
+                "rule_type": "daily_time",
+                "time": str(row["evening_time"] or "18:00"),
+                "count_mode": "fixed",
+                "count_value": 1,
+                "label": "Migrated evening poll",
+            },
+            {
+                "delivery_type": "summary",
+                "rule_type": "daily_time",
+                "time": str(row["summary_time_morning"] or "08:25"),
+                "count_mode": "fixed",
+                "count_value": 1,
+                "label": "Migrated morning summary",
+            },
+            {
+                "delivery_type": "summary",
+                "rule_type": "daily_time",
+                "time": str(row["summary_time_evening"] or "17:55"),
+                "count_mode": "fixed",
+                "count_value": 1,
+                "label": "Migrated evening summary",
+            },
+        ]
+        for payload in legacy_rules:
+            create_text_schedule_rule(conn, text_id=int(row["id"]), **payload)
+
+
+def _serialize_schedule_rule(row: DbRow) -> DbRow:
+    item = dict(row)
+    item["weekdays"] = [int(day) for day in _parse_json_list(item.pop("weekdays_json", "[]"))]
+    item["month_dates"] = [int(day) for day in _parse_json_list(item.pop("month_dates_json", "[]"))]
+    return item
+
+
+def list_text_schedule_rules(
+    conn: psycopg.Connection[DbRow], *, text_id: int, enabled_only: bool = False
+) -> list[DbRow]:
+    sql = "SELECT * FROM text_schedule_rules WHERE text_id = %s"
+    params: list[Any] = [text_id]
+    if enabled_only:
+        sql += " AND enabled = TRUE"
+    sql += " ORDER BY created_at ASC, id ASC"
+    rows = conn.execute(sql, params).fetchall()
+    return [_serialize_schedule_rule(row) for row in rows]
+
+
+def get_text_schedule_rule(conn: psycopg.Connection[DbRow], *, text_id: int, rule_id: int) -> DbRow | None:
+    row = conn.execute(
+        "SELECT * FROM text_schedule_rules WHERE text_id = %s AND id = %s", (text_id, rule_id)
+    ).fetchone()
+    return _serialize_schedule_rule(row) if row else None
+
+
+def create_text_schedule_rule(
+    conn: psycopg.Connection[DbRow],
+    *,
+    text_id: int,
+    delivery_type: str,
+    rule_type: str,
+    enabled: bool = True,
+    time: str | None = None,
+    weekdays: list[int] | None = None,
+    month_dates: list[int] | None = None,
+    window_start: str | None = None,
+    window_end: str | None = None,
+    count_mode: str = "fixed",
+    count_value: int | None = 1,
+    count_min: int | None = None,
+    count_max: int | None = None,
+    label: str | None = None,
+) -> int:
+    normalized = _normalize_schedule_rule_input(
+        delivery_type=delivery_type,
+        rule_type=rule_type,
+        enabled=enabled,
+        time=time,
+        weekdays=weekdays,
+        month_dates=month_dates,
+        window_start=window_start,
+        window_end=window_end,
+        count_mode=count_mode,
+        count_value=count_value,
+        count_min=count_min,
+        count_max=count_max,
+        label=label,
+    )
+    timestamp = now_iso()
+    row = conn.execute(
+        """
+        INSERT INTO text_schedule_rules (
+            text_id, delivery_type, rule_type, enabled, time, weekdays_json, month_dates_json,
+            window_start, window_end, count_mode, count_value, count_min, count_max, label, created_at, updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            text_id,
+            normalized["delivery_type"],
+            normalized["rule_type"],
+            normalized["enabled"],
+            normalized["time"],
+            json.dumps(normalized["weekdays"]),
+            json.dumps(normalized["month_dates"]),
+            normalized["window_start"],
+            normalized["window_end"],
+            normalized["count_mode"],
+            normalized["count_value"],
+            normalized["count_min"],
+            normalized["count_max"],
+            normalized["label"],
+            timestamp,
+            timestamp,
+        ),
+    ).fetchone()
+    return int(row["id"])
+
+
+def update_text_schedule_rule(
+    conn: psycopg.Connection[DbRow],
+    *,
+    text_id: int,
+    rule_id: int,
+    delivery_type: str,
+    rule_type: str,
+    enabled: bool = True,
+    time: str | None = None,
+    weekdays: list[int] | None = None,
+    month_dates: list[int] | None = None,
+    window_start: str | None = None,
+    window_end: str | None = None,
+    count_mode: str = "fixed",
+    count_value: int | None = 1,
+    count_min: int | None = None,
+    count_max: int | None = None,
+    label: str | None = None,
+) -> None:
+    normalized = _normalize_schedule_rule_input(
+        delivery_type=delivery_type,
+        rule_type=rule_type,
+        enabled=enabled,
+        time=time,
+        weekdays=weekdays,
+        month_dates=month_dates,
+        window_start=window_start,
+        window_end=window_end,
+        count_mode=count_mode,
+        count_value=count_value,
+        count_min=count_min,
+        count_max=count_max,
+        label=label,
+    )
+    conn.execute(
+        """
+        UPDATE text_schedule_rules
+        SET delivery_type = %s,
+            rule_type = %s,
+            enabled = %s,
+            time = %s,
+            weekdays_json = %s,
+            month_dates_json = %s,
+            window_start = %s,
+            window_end = %s,
+            count_mode = %s,
+            count_value = %s,
+            count_min = %s,
+            count_max = %s,
+            label = %s,
+            updated_at = %s
+        WHERE text_id = %s AND id = %s
+        """,
+        (
+            normalized["delivery_type"],
+            normalized["rule_type"],
+            normalized["enabled"],
+            normalized["time"],
+            json.dumps(normalized["weekdays"]),
+            json.dumps(normalized["month_dates"]),
+            normalized["window_start"],
+            normalized["window_end"],
+            normalized["count_mode"],
+            normalized["count_value"],
+            normalized["count_min"],
+            normalized["count_max"],
+            normalized["label"],
+            now_iso(),
+            text_id,
+            rule_id,
+        ),
+    )
+    conn.execute("DELETE FROM text_schedule_rule_random_plans WHERE rule_id = %s", (rule_id,))
+
+
+def delete_text_schedule_rule(conn: psycopg.Connection[DbRow], *, text_id: int, rule_id: int) -> None:
+    conn.execute("DELETE FROM text_schedule_rules WHERE text_id = %s AND id = %s", (text_id, rule_id))
+
+
+def replace_text_schedule_rules(conn: psycopg.Connection[DbRow], *, text_id: int, rules: list[dict[str, Any]]) -> None:
+    conn.execute("DELETE FROM text_schedule_rules WHERE text_id = %s", (text_id,))
+    for rule in rules:
+        create_text_schedule_rule(conn, text_id=text_id, **rule)
+
+
+def get_random_rule_plan(conn: psycopg.Connection[DbRow], *, rule_id: int, local_date: str) -> DbRow | None:
+    row = conn.execute(
+        "SELECT * FROM text_schedule_rule_random_plans WHERE rule_id = %s AND local_date = %s",
+        (rule_id, local_date),
+    ).fetchone()
+    if row is None:
+        return None
+    item = dict(row)
+    item["planned_times"] = [str(value) for value in _parse_json_list(item.pop("planned_times_json", "[]"))]
+    item["executed_times"] = [str(value) for value in _parse_json_list(item.pop("executed_times_json", "[]"))]
+    return item
+
+
+def upsert_random_rule_plan(
+    conn: psycopg.Connection[DbRow],
+    *,
+    text_id: int,
+    rule_id: int,
+    local_date: str,
+    planned_times: list[str],
+    executed_times: list[str] | None = None,
+) -> DbRow:
+    timestamp = now_iso()
+    row = conn.execute(
+        """
+        INSERT INTO text_schedule_rule_random_plans (
+            text_id, rule_id, local_date, planned_times_json, executed_times_json, created_at, updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (rule_id, local_date) DO UPDATE SET
+            planned_times_json = EXCLUDED.planned_times_json,
+            executed_times_json = EXCLUDED.executed_times_json,
+            updated_at = EXCLUDED.updated_at
+        RETURNING *
+        """,
+        (
+            text_id,
+            rule_id,
+            local_date,
+            json.dumps(planned_times),
+            json.dumps(executed_times or []),
+            timestamp,
+            timestamp,
+        ),
+    ).fetchone()
+    return get_random_rule_plan(conn, rule_id=rule_id, local_date=local_date) or dict(row)
+
+
+def mark_random_rule_plan_executed(
+    conn: psycopg.Connection[DbRow], *, rule_id: int, local_date: str, executed_times: list[str]
+) -> None:
+    conn.execute(
+        """
+        UPDATE text_schedule_rule_random_plans
+        SET executed_times_json = %s, updated_at = %s
+        WHERE rule_id = %s AND local_date = %s
+        """,
+        (json.dumps(executed_times), now_iso(), rule_id, local_date),
+    )
+
+
+def attach_schedule_rules(conn: psycopg.Connection[DbRow], rows: list[DbRow]) -> list[DbRow]:
+    if not rows:
+        return rows
+    text_ids = [int(row["id"]) for row in rows]
+    placeholders = ", ".join(["%s"] * len(text_ids))
+    rules = conn.execute(
+        f"SELECT * FROM text_schedule_rules WHERE text_id IN ({placeholders}) ORDER BY created_at ASC, id ASC",
+        text_ids,
+    ).fetchall()
+    grouped: dict[int, list[DbRow]] = {text_id: [] for text_id in text_ids}
+    for rule in rules:
+        grouped.setdefault(int(rule["text_id"]), []).append(_serialize_schedule_rule(rule))
+    for row in rows:
+        row["schedule_rules"] = grouped.get(int(row["id"]), [])
+    return rows
 
 
 def list_tenants(conn: psycopg.Connection[DbRow]) -> list[DbRow]:
@@ -619,7 +1087,7 @@ def get_tenant_by_username(conn: psycopg.Connection[DbRow], username: str) -> Db
 
 def list_texts(conn: psycopg.Connection[DbRow], tenant_id: int | None = None) -> list[DbRow]:
     if tenant_id is None:
-        return conn.execute(
+        rows = conn.execute(
             """
             SELECT texts.*, tenants.name AS tenant_name
             FROM texts
@@ -627,7 +1095,8 @@ def list_texts(conn: psycopg.Connection[DbRow], tenant_id: int | None = None) ->
             ORDER BY texts.updated_at DESC
             """
         ).fetchall()
-    return conn.execute(
+        return attach_schedule_rules(conn, rows)
+    rows = conn.execute(
         """
         SELECT texts.*, tenants.name AS tenant_name
             , tenants.poll_pool_threshold_percent AS tenant_poll_pool_threshold_percent
@@ -638,6 +1107,7 @@ def list_texts(conn: psycopg.Connection[DbRow], tenant_id: int | None = None) ->
         """,
         (tenant_id,),
     ).fetchall()
+    return attach_schedule_rules(conn, rows)
 
 
 def list_texts_page(
@@ -678,11 +1148,12 @@ def list_texts_page(
         """,
         [*params, page_size, offset],
     ).fetchall()
+    items = attach_schedule_rules(conn, items)
     return paginated_response(items, int(total), page, page_size)
 
 
 def get_text(conn: psycopg.Connection[DbRow], text_id: int) -> DbRow | None:
-    return conn.execute(
+    row = conn.execute(
         """
         SELECT texts.*, tenants.name AS tenant_name
             , tenants.poll_pool_threshold_percent AS tenant_poll_pool_threshold_percent
@@ -692,6 +1163,10 @@ def get_text(conn: psycopg.Connection[DbRow], text_id: int) -> DbRow | None:
         """,
         (text_id,),
     ).fetchone()
+    if row is None:
+        return None
+    row["schedule_rules"] = list_text_schedule_rules(conn, text_id=text_id)
+    return row
 
 
 def upsert_tenant(
@@ -796,14 +1271,11 @@ def upsert_text(
     title: str,
     body: str,
     chat_id: str,
-    morning_time: str,
-    evening_time: str,
-    summary_time_morning: str,
-    summary_time_evening: str,
     poll_pool_threshold_percent: int | None = None,
     enabled: bool = True,
     attachment_name: str | None = None,
     attachment_path: str | None = None,
+    schedule_rules: list[dict[str, Any]] | None = None,
 ) -> int:
     timestamp = now_iso()
     if text_id is None:
@@ -811,10 +1283,9 @@ def upsert_text(
             """
             INSERT INTO texts (
                 tenant_id, title, body, attachment_name, attachment_path, chat_id,
-                morning_time, evening_time, summary_time_morning, summary_time_evening, poll_pool_threshold_percent,
-                enabled, created_at, updated_at
+                poll_pool_threshold_percent, enabled, created_at, updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -824,25 +1295,23 @@ def upsert_text(
                 attachment_name,
                 attachment_path,
                 chat_id.strip(),
-                morning_time or "08:30",
-                evening_time or "18:00",
-                summary_time_morning or "08:25",
-                summary_time_evening or "17:55",
                 max(0, min(100, int(poll_pool_threshold_percent))) if poll_pool_threshold_percent is not None else None,
                 enabled,
                 timestamp,
                 timestamp,
             ),
         ).fetchone()
-        return int(row["id"])
+        created_id = int(row["id"])
+        if schedule_rules is not None:
+            replace_text_schedule_rules(conn, text_id=created_id, rules=schedule_rules)
+        return created_id
 
     existing = get_text(conn, text_id)
     conn.execute(
         """
         UPDATE texts
         SET tenant_id = %s, title = %s, body = %s, attachment_name = %s, attachment_path = %s,
-            chat_id = %s, morning_time = %s, evening_time = %s, summary_time_morning = %s,
-            summary_time_evening = %s, poll_pool_threshold_percent = %s, enabled = %s, updated_at = %s
+            chat_id = %s, poll_pool_threshold_percent = %s, enabled = %s, updated_at = %s
         WHERE id = %s
         """,
         (
@@ -852,16 +1321,14 @@ def upsert_text(
             attachment_name if attachment_name is not None else existing["attachment_name"] if existing else None,
             attachment_path if attachment_path is not None else existing["attachment_path"] if existing else None,
             chat_id.strip(),
-            morning_time or "08:30",
-            evening_time or "18:00",
-            summary_time_morning or "08:25",
-            summary_time_evening or "17:55",
             max(0, min(100, int(poll_pool_threshold_percent))) if poll_pool_threshold_percent is not None else None,
             enabled,
             timestamp,
             text_id,
         ),
     )
+    if schedule_rules is not None:
+        replace_text_schedule_rules(conn, text_id=text_id, rules=schedule_rules)
     return text_id
 
 

@@ -1,20 +1,27 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from pydantic import ValidationError
 
 from app.api.files import save_attachment
 from app.api.helpers import parse_bool
-from app.api.models import RosterMemberUpdatePayload, TextPayload
+from app.api.models import RosterMemberUpdatePayload, ScheduleRulePayload, ScheduleRuleUpdatePayload, TextPayload
 from app.config import settings
 from app.core.auth import current_user
 from app.database import (
+    create_text_schedule_rule,
     db_session,
+    delete_text_schedule_rule,
     delete_text,
     get_text,
+    get_text_schedule_rule,
     list_chat_participants,
+    list_text_schedule_rules,
     list_texts_page,
+    update_text_schedule_rule,
     update_chat_participant_exclusion,
     upsert_text,
 )
@@ -50,33 +57,46 @@ async def create_text(
     title: str = Form(...),
     body: str = Form(...),
     chat_id: str = Form(...),
-    morning_time: str = Form("08:30"),
-    evening_time: str = Form("18:00"),
-    summary_time_morning: str = Form("08:25"),
-    summary_time_evening: str = Form("17:55"),
+    schedule_rules_json: str | None = Form(None),
     poll_pool_threshold_percent: int | None = Form(None),
     enabled: bool = Form(True),
     attachment: UploadFile | None = File(None),
     _: dict[str, Any] = Depends(current_user),
 ):
     attachment_name, attachment_path = await save_attachment(attachment)
+    schedule_rules: list[dict[str, Any]] | None = None
+    if schedule_rules_json and schedule_rules_json.strip():
+        try:
+            payload = json.loads(schedule_rules_json)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="schedule_rules_json must be valid JSON"
+            ) from exc
+        if not isinstance(payload, list):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="schedule_rules_json must be a JSON array"
+            )
+        try:
+            schedule_rules = [ScheduleRulePayload.model_validate(item).model_dump() for item in payload]
+        except ValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors()) from exc
     with db_session(settings.database_url) as conn:
-        text_id = upsert_text(
-            conn,
-            text_id=None,
-            tenant_id=tenant_id,
-            title=title,
-            body=body,
-            chat_id=chat_id,
-            morning_time=morning_time,
-            evening_time=evening_time,
-            summary_time_morning=summary_time_morning,
-            summary_time_evening=summary_time_evening,
-            poll_pool_threshold_percent=poll_pool_threshold_percent,
-            enabled=enabled,
-            attachment_name=attachment_name,
-            attachment_path=attachment_path,
-        )
+        try:
+            text_id = upsert_text(
+                conn,
+                text_id=None,
+                tenant_id=tenant_id,
+                title=title,
+                body=body,
+                chat_id=chat_id,
+                poll_pool_threshold_percent=poll_pool_threshold_percent,
+                enabled=enabled,
+                attachment_name=attachment_name,
+                attachment_path=attachment_path,
+                schedule_rules=schedule_rules,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         return get_text(conn, text_id)
 
 
@@ -94,8 +114,84 @@ async def update_text_route(payload: TextPayload, text_id: int, _: dict[str, Any
     with db_session(settings.database_url) as conn:
         if get_text(conn, text_id) is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Text not found")
-        upsert_text(conn, text_id=text_id, attachment_name=None, attachment_path=None, **payload.model_dump())
+        try:
+            upsert_text(conn, text_id=text_id, attachment_name=None, attachment_path=None, **payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         return get_text(conn, text_id)
+
+
+@router.get("/{text_id}/schedule-rules")
+async def text_schedule_rules(text_id: int, _: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        if get_text(conn, text_id) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Text not found")
+        return list_text_schedule_rules(conn, text_id=text_id)
+
+
+@router.post("/{text_id}/schedule-rules", status_code=status.HTTP_201_CREATED)
+async def create_text_schedule_rule_route(
+    text_id: int,
+    payload: ScheduleRulePayload,
+    _: dict[str, Any] = Depends(current_user),
+):
+    with db_session(settings.database_url) as conn:
+        if get_text(conn, text_id) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Text not found")
+        try:
+            rule_id = create_text_schedule_rule(conn, text_id=text_id, **payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        rule = get_text_schedule_rule(conn, text_id=text_id, rule_id=rule_id)
+    return rule
+
+
+@router.patch("/{text_id}/schedule-rules/{rule_id}")
+async def update_text_schedule_rule_route(
+    text_id: int,
+    rule_id: int,
+    payload: ScheduleRuleUpdatePayload,
+    _: dict[str, Any] = Depends(current_user),
+):
+    with db_session(settings.database_url) as conn:
+        existing = get_text_schedule_rule(conn, text_id=text_id, rule_id=rule_id)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule rule not found")
+        merged = {
+            key: value
+            for key, value in {**existing, **payload.model_dump(exclude_unset=True)}.items()
+            if key
+            in {
+                "delivery_type",
+                "rule_type",
+                "enabled",
+                "time",
+                "weekdays",
+                "month_dates",
+                "window_start",
+                "window_end",
+                "count_mode",
+                "count_value",
+                "count_min",
+                "count_max",
+                "label",
+            }
+        }
+        try:
+            update_text_schedule_rule(conn, text_id=text_id, rule_id=rule_id, **merged)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        return get_text_schedule_rule(conn, text_id=text_id, rule_id=rule_id)
+
+
+@router.delete("/{text_id}/schedule-rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_text_schedule_rule_route(text_id: int, rule_id: int, _: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        existing = get_text_schedule_rule(conn, text_id=text_id, rule_id=rule_id)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule rule not found")
+        delete_text_schedule_rule(conn, text_id=text_id, rule_id=rule_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete("/{text_id}", status_code=status.HTTP_204_NO_CONTENT)

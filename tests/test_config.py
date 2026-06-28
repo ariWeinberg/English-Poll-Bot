@@ -15,7 +15,7 @@ def reset_db() -> str:
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
-            "TRUNCATE chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+            "TRUNCATE text_schedule_rule_random_plans, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
         )
     init_db(TEST_DATABASE_URL)
     return TEST_DATABASE_URL
@@ -35,6 +35,7 @@ def test_init_db_seeds_default_tenant_and_text():
 
     assert tenant["name"] == "Default tenant"
     assert len(texts) == 1
+    assert len(texts[0]["schedule_rules"]) == 4
 
 
 def test_tenant_and_text_can_be_updated_in_db():
@@ -63,11 +64,16 @@ def test_tenant_and_text_can_be_updated_in_db():
             title="Text A",
             body="Body",
             chat_id="group@g.us",
-            morning_time="08:30",
-            evening_time="18:00",
-            summary_time_morning="08:25",
-            summary_time_evening="17:55",
             enabled=True,
+            schedule_rules=[
+                {
+                    "delivery_type": "poll",
+                    "rule_type": "daily_time",
+                    "time": "08:30",
+                    "count_mode": "fixed",
+                    "count_value": 1,
+                }
+            ],
         )
 
     runtime = load_runtime_config(database_url, tenant_id)
@@ -76,4 +82,6 @@ def test_tenant_and_text_can_be_updated_in_db():
     assert runtime.gemini_ready is True
     with db_session(database_url) as conn:
         text = conn.execute("SELECT * FROM texts WHERE id = %s", (text_id,)).fetchone()
+        rules = conn.execute("SELECT * FROM text_schedule_rules WHERE text_id = %s", (text_id,)).fetchall()
     assert text["title"] == "Text A"
+    assert len(rules) == 1
