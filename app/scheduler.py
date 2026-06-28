@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -27,8 +28,6 @@ def build_scheduler(database_url: str) -> AsyncIOScheduler:
 
 
 async def run_due_jobs(*, database_url: str) -> int:
-    from zoneinfo import ZoneInfo
-
     from app.database import (
         db_session,
         get_random_rule_plan,
@@ -56,34 +55,74 @@ async def run_due_jobs(*, database_url: str) -> int:
                 },
             )
             continue
-        now_local = datetime.now(ZoneInfo(runtime.timezone))
-        minute_key = now_local.strftime("%H:%M")
-        local_date = now_local.date()
-        with db_session(database_url) as conn:
-            rules = list_text_schedule_rules(conn, text_id=int(text["id"]), enabled_only=True)
-        for rule in rules:
-            if rule["rule_type"] == "random_window":
-                with db_session(database_url) as conn:
-                    plan = get_random_rule_plan(
-                        conn, text_id=int(text["id"]), rule_id=int(rule["id"]), local_date=local_date.isoformat()
+        try:
+            now_local = datetime.now(ZoneInfo(runtime.timezone))
+            minute_key = now_local.strftime("%H:%M")
+            local_date = now_local.date()
+            with db_session(database_url) as conn:
+                rules = list_text_schedule_rules(conn, text_id=int(text["id"]), enabled_only=True)
+            for rule in rules:
+                if rule["rule_type"] == "random_window":
+                    with db_session(database_url) as conn:
+                        plan = get_random_rule_plan(
+                            conn, text_id=int(text["id"]), rule_id=int(rule["id"]), local_date=local_date.isoformat()
+                        )
+                        if plan is None:
+                            planned_times = _build_random_plan(rule, local_date)
+                            plan = upsert_random_rule_plan(
+                                conn,
+                                text_id=int(text["id"]),
+                                rule_id=int(rule["id"]),
+                                local_date=local_date.isoformat(),
+                                planned_times=planned_times,
+                            )
+                    due_count = _planned_occurrences(plan["planned_times"], minute_key) - _planned_occurrences(
+                        plan["executed_times"], minute_key
                     )
-                    if plan is None:
-                        planned_times = _build_random_plan(rule, local_date)
-                        plan = upsert_random_rule_plan(
+                    if due_count <= 0:
+                        continue
+                    actual_count = due_count
+                    if rule["delivery_type"] == "poll":
+                        for _ in range(actual_count):
+                            slot = _rule_execution_label(rule, minute_key)
+                            logger.info(
+                                "scheduler.send_poll_due",
+                                extra={
+                                    "tenant_id": runtime.tenant_id,
+                                    "text_id": int(text["id"]),
+                                    "scheduled_slot": slot,
+                                },
+                            )
+                            await generate_and_send_poll(
+                                settings=runtime,
+                                database_url=database_url,
+                                text_id=int(text["id"]),
+                                scheduled_slot=slot,
+                            )
+                            sent += 1
+                    else:
+                        for _ in range(actual_count):
+                            summary_count = await send_pending_summaries(
+                                settings=runtime, database_url=database_url, text_id=int(text["id"])
+                            )
+                            summary_sent += summary_count
+                    with db_session(database_url) as conn:
+                        mark_random_rule_plan_executed(
                             conn,
                             text_id=int(text["id"]),
                             rule_id=int(rule["id"]),
                             local_date=local_date.isoformat(),
-                            planned_times=planned_times,
+                            executed_times=[*plan["executed_times"], *([minute_key] * actual_count)],
                         )
-                due_count = _planned_occurrences(plan["planned_times"], minute_key) - _planned_occurrences(
-                    plan["executed_times"], minute_key
-                )
-                if due_count <= 0:
                     continue
-                actual_count = due_count
+
+                trigger_count = _scheduled_count_for_rule(rule)
+                if trigger_count < 1:
+                    continue
+                if not _fixed_rule_matches(rule, now_local):
+                    continue
                 if rule["delivery_type"] == "poll":
-                    for _ in range(actual_count):
+                    for _ in range(trigger_count):
                         slot = _rule_execution_label(rule, minute_key)
                         logger.info(
                             "scheduler.send_poll_due",
@@ -97,50 +136,29 @@ async def run_due_jobs(*, database_url: str) -> int:
                         )
                         sent += 1
                 else:
-                    for _ in range(actual_count):
+                    for _ in range(trigger_count):
                         summary_count = await send_pending_summaries(
                             settings=runtime, database_url=database_url, text_id=int(text["id"])
                         )
                         summary_sent += summary_count
-                with db_session(database_url) as conn:
-                    mark_random_rule_plan_executed(
-                        conn,
-                        text_id=int(text["id"]),
-                        rule_id=int(rule["id"]),
-                        local_date=local_date.isoformat(),
-                        executed_times=[*plan["executed_times"], *([minute_key] * actual_count)],
-                    )
-                continue
-
-            trigger_count = _scheduled_count_for_rule(rule)
-            if trigger_count < 1:
-                continue
-            if not _fixed_rule_matches(rule, now_local):
-                continue
-            if rule["delivery_type"] == "poll":
-                for _ in range(trigger_count):
-                    slot = _rule_execution_label(rule, minute_key)
-                    logger.info(
-                        "scheduler.send_poll_due",
-                        extra={"tenant_id": runtime.tenant_id, "text_id": int(text["id"]), "scheduled_slot": slot},
-                    )
-                    await generate_and_send_poll(
-                        settings=runtime,
-                        database_url=database_url,
-                        text_id=int(text["id"]),
-                        scheduled_slot=slot,
-                    )
-                    sent += 1
-            else:
-                for _ in range(trigger_count):
-                    summary_count = await send_pending_summaries(
-                        settings=runtime, database_url=database_url, text_id=int(text["id"])
-                    )
-                    summary_sent += summary_count
-                    logger.info(
-                        "scheduler.summary_due",
-                        extra={"tenant_id": runtime.tenant_id, "text_id": int(text["id"]), "sent_count": summary_count},
-                    )
+                        logger.info(
+                            "scheduler.summary_due",
+                            extra={
+                                "tenant_id": runtime.tenant_id,
+                                "text_id": int(text["id"]),
+                                "sent_count": summary_count,
+                            },
+                        )
+        except Exception:
+            logger.exception(
+                "scheduler.text_failed",
+                extra={
+                    "tenant_id": runtime.tenant_id,
+                    "text_id": int(text["id"]),
+                    "timezone": runtime.timezone,
+                },
+            )
+            continue
     logger.info("scheduler.tick_complete", extra={"polls_sent": sent, "summaries_sent": summary_sent})
     return sent
 

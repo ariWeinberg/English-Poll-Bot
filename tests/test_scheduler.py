@@ -230,3 +230,97 @@ async def test_random_window_rules_plan_once_per_day(monkeypatch):
 
     assert len(calls) == 2
     assert len(plans) == 1
+
+
+@pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
+@pytest.mark.asyncio
+async def test_run_due_jobs_continues_after_text_timezone_failure(monkeypatch):
+    database_url = reset_db()
+    with db_session(database_url) as conn:
+        broken_tenant_id = upsert_tenant(
+            conn,
+            tenant_id=1,
+            name="Broken Tenant",
+            username="broken-tenant",
+            password="secret",
+            greenapi_api_url="https://api.green-api.com",
+            greenapi_id_instance="7103000000",
+            greenapi_api_token_instance="abc123",
+            gemini_api_key="gemini-key",
+            gemini_model="gemini-3.5-flash",
+            timezone="Bad/Timezone",
+            summary_enabled=True,
+            scheduler_enabled=True,
+            is_active=True,
+        )
+        upsert_text(
+            conn,
+            text_id=None,
+            tenant_id=broken_tenant_id,
+            title="Broken Text",
+            body="Body",
+            chat_id="broken@g.us",
+            enabled=True,
+            new_rules=[
+                {
+                    "delivery_type": "poll",
+                    "rule_type": "daily_time",
+                    "time": "08:30",
+                    "count_mode": "fixed",
+                    "count_value": 1,
+                }
+            ],
+        )
+        working_tenant_id = upsert_tenant(
+            conn,
+            tenant_id=2,
+            name="Working Tenant",
+            username="working-tenant",
+            password="secret",
+            greenapi_api_url="https://api.green-api.com",
+            greenapi_id_instance="7103000001",
+            greenapi_api_token_instance="abc124",
+            gemini_api_key="gemini-key",
+            gemini_model="gemini-3.5-flash",
+            timezone="UTC",
+            summary_enabled=True,
+            scheduler_enabled=True,
+            is_active=True,
+        )
+        working_text_id = upsert_text(
+            conn,
+            text_id=None,
+            tenant_id=working_tenant_id,
+            title="Working Text",
+            body="Body",
+            chat_id="working@g.us",
+            enabled=True,
+            new_rules=[
+                {
+                    "delivery_type": "poll",
+                    "rule_type": "daily_time",
+                    "time": "08:30",
+                    "count_mode": "fixed",
+                    "count_value": 1,
+                }
+            ],
+        )
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 6, 29, 8, 30, tzinfo=tz)
+
+    sent_text_ids: list[int] = []
+
+    async def fake_send_poll(*, text_id=None, **kwargs):
+        sent_text_ids.append(text_id)
+        return 1
+
+    monkeypatch.setattr("app.scheduler.datetime", FrozenDateTime)
+    monkeypatch.setattr("app.scheduler.generate_and_send_poll", fake_send_poll)
+
+    sent = await run_due_jobs(database_url=database_url)
+
+    assert sent == 1
+    assert sent_text_ids == [working_text_id]
