@@ -38,6 +38,18 @@ services:
     volumes:
       - uploads_data:/app/uploads
 
+  scheduler:
+    build: .
+    command: ["python", "-m", "app.scheduler_worker"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/english_bot
+      SESSION_SECRET: change-this-before-production
+      JWT_SECRET: change-this-before-production
+    depends_on:
+      db:
+        condition: service_healthy
+
   ui:
     build: ./web
     restart: unless-stopped

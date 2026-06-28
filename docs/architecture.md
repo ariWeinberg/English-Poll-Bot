@@ -2,6 +2,13 @@
 
 English WhatsApp Poll Bot is a split FastAPI and React application. Keep changes small, typed, and isolated behind the boundaries below.
 
+## Runtime Services
+
+- `api` serves HTTP requests and manual operator actions.
+- `scheduler` runs minute-based schedule evaluation in a dedicated container against the shared database.
+- `ui` serves the React bundle.
+- `db` stores tenants, texts, rules, polls, chat catalogs, roster snapshots, and scheduler planning state.
+
 ## Backend Boundaries
 
 - `app/main.py` owns the FastAPI app factory, HTTP routes, request and response models, auth dependencies, and route-level validation.
@@ -9,7 +16,8 @@ English WhatsApp Poll Bot is a split FastAPI and React application. Keep changes
 - `app/core/logging.py` owns JSON/human logging setup, request IDs, request lifecycle logging, and secret redaction.
 - `app/services.py` owns workflow orchestration for question generation, poll sending, pool refill, webhook processing, and summaries.
 - `app/database.py` owns SQL, row serialization, text schedule-rule persistence, learner analytics aggregation, roster snapshots, random-rule daily plans, and database initialization.
-- `app/scheduler.py` owns APScheduler job registration, schedule-rule evaluation, and lifecycle integration.
+- `app/scheduler.py` owns APScheduler job registration and schedule-rule evaluation.
+- `app/scheduler_worker.py` owns the dedicated scheduler process lifecycle used by the deployed `scheduler` service.
 - `app/greenapi.py` and `app/question_generator.py` own external service clients and provider-specific payload handling.
 
 Route handlers should stay thin. New business rules belong in service functions. New SQL belongs behind database helper functions rather than directly in routes or frontend code.
