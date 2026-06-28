@@ -7,7 +7,14 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from app.api.models import ScheduleRulePayload, ScheduleRuleUpdatePayload
 from app.config import settings
 from app.core.auth import current_user
-from app.database import create_schedule_rule, db_session, delete_schedule_rule, get_schedule_rule, list_schedule_rules, update_schedule_rule
+from app.database import (
+    create_schedule_rule,
+    db_session,
+    delete_schedule_rule,
+    get_schedule_rule,
+    list_schedule_rules,
+    update_schedule_rule,
+)
 
 
 router = APIRouter(prefix="/api/v1/schedule-rules", tags=["schedule-rules"])

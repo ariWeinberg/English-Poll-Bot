@@ -793,7 +793,9 @@ def init_db(database_url: str) -> None:
         conn.execute(
             "SELECT setval(pg_get_serial_sequence('text_schedule_rules', 'id'), COALESCE(MAX(id), 1)) FROM text_schedule_rules"
         )
-        conn.execute("SELECT setval(pg_get_serial_sequence('schedule_rules', 'id'), COALESCE(MAX(id), 1)) FROM schedule_rules")
+        conn.execute(
+            "SELECT setval(pg_get_serial_sequence('schedule_rules', 'id'), COALESCE(MAX(id), 1)) FROM schedule_rules"
+        )
         conn.execute(
             "SELECT setval(pg_get_serial_sequence('text_schedule_rule_assignments', 'id'), COALESCE(MAX(id), 1)) FROM text_schedule_rule_assignments"
         )
@@ -905,9 +907,7 @@ def _serialize_schedule_rule(row: DbRow) -> DbRow:
     return item
 
 
-def list_schedule_rules(
-    conn: psycopg.Connection[DbRow], *, tenant_id: int, enabled_only: bool = False
-) -> list[DbRow]:
+def list_schedule_rules(conn: psycopg.Connection[DbRow], *, tenant_id: int, enabled_only: bool = False) -> list[DbRow]:
     sql = "SELECT * FROM schedule_rules WHERE tenant_id = %s"
     params: list[Any] = [tenant_id]
     if enabled_only:
@@ -1291,7 +1291,9 @@ def replace_text_schedule_rules(conn: psycopg.Connection[DbRow], *, text_id: int
         assign_schedule_rule_to_text(conn, text_id=text_id, rule_id=rule_id)
 
 
-def get_random_rule_plan(conn: psycopg.Connection[DbRow], *, text_id: int, rule_id: int, local_date: str) -> DbRow | None:
+def get_random_rule_plan(
+    conn: psycopg.Connection[DbRow], *, text_id: int, rule_id: int, local_date: str
+) -> DbRow | None:
     row = conn.execute(
         "SELECT * FROM text_schedule_rule_random_plans WHERE text_id = %s AND rule_id = %s AND local_date = %s",
         (text_id, rule_id, local_date),

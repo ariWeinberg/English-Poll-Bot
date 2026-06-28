@@ -8,7 +8,12 @@ from pydantic import ValidationError
 
 from app.api.files import save_attachment
 from app.api.helpers import parse_bool
-from app.api.models import RosterMemberUpdatePayload, ScheduleRulePayload, TextPayload, TextScheduleRuleAssignmentPayload
+from app.api.models import (
+    RosterMemberUpdatePayload,
+    ScheduleRulePayload,
+    TextPayload,
+    TextScheduleRuleAssignmentPayload,
+)
 from app.config import settings
 from app.core.auth import current_user
 from app.database import (
@@ -83,9 +88,13 @@ async def create_text(
         try:
             payload = json.loads(new_rules_json)
         except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="new_rules_json must be valid JSON") from exc
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="new_rules_json must be valid JSON"
+            ) from exc
         if not isinstance(payload, list):
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="new_rules_json must be a JSON array")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="new_rules_json must be a JSON array"
+            )
         try:
             new_rules = [ScheduleRulePayload.model_validate(item).model_dump() for item in payload]
         except ValidationError as exc:
