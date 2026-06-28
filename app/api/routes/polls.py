@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+
+from app.api.models import PollPayload, PoolRankPayload
+from app.api.serializers import serialize_poll
+from app.config import settings
+from app.core.auth import current_user
+from app.database import (
+    POLL_POOL_REFILL_BATCH_SIZE,
+    POLL_POOL_TARGET_SIZE,
+    all_poll_stats,
+    count_queued_polls,
+    create_poll,
+    db_session,
+    delete_poll,
+    export_stats_csv,
+    get_effective_poll_pool_threshold_percent,
+    get_poll,
+    get_poll_pool_refill_threshold_count,
+    get_text,
+    list_poll_vote_status,
+    list_polls_page,
+    list_queued_polls,
+    reorder_queued_poll,
+    update_poll,
+)
+from app.services import fill_poll_pool, load_runtime_config
+
+
+router = APIRouter(tags=["polls"])
+
+
+@router.get("/api/v1/polls")
+async def polls(
+    page: int = 1,
+    page_size: int = 25,
+    tenant_id: int | None = None,
+    text_id: int | None = None,
+    status: str | None = None,
+    scheduled_slot: str | None = None,
+    sent_from: str | None = None,
+    sent_to: str | None = None,
+    _: dict[str, Any] = Depends(current_user),
+):
+    with db_session(settings.database_url) as conn:
+        result = list_polls_page(
+            conn,
+            page=page,
+            page_size=page_size,
+            tenant_id=tenant_id,
+            text_id=text_id,
+            status=status,
+            scheduled_slot=scheduled_slot,
+            sent_from=sent_from,
+            sent_to=sent_to,
+        )
+    result["items"] = [serialize_poll(item) for item in result["items"]]
+    return result
+
+
+@router.post("/api/v1/polls", status_code=status.HTTP_201_CREATED)
+async def create_poll_route(payload: PollPayload, _: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        poll_id = create_poll(
+            conn,
+            tenant_id=payload.tenant_id,
+            text_id=payload.text_id,
+            question=payload.question,
+            options=payload.options,
+            correct_option=payload.correct_option,
+            explanation=payload.explanation,
+            chat_id=payload.chat_id,
+            generated_from_text=payload.generated_from_text,
+            scheduled_slot=payload.scheduled_slot,
+            status=payload.status,
+            pool_rank=payload.pool_rank,
+            change_window_seconds=payload.change_window_seconds,
+            manual_lock=payload.manual_lock,
+            auto_lock_seconds=payload.auto_lock_seconds,
+        )
+        update_poll(conn, poll_id=poll_id, **payload.model_dump())
+        return serialize_poll(get_poll(conn, poll_id))
+
+
+@router.get("/api/v1/polls/stats")
+async def poll_stats_route(
+    tenant_id: int | None = None,
+    limit: int = 25,
+    user: dict[str, Any] = Depends(current_user),
+):
+    scoped_tenant = tenant_id if tenant_id is not None else int(user["id"])
+    with db_session(settings.database_url) as conn:
+        return all_poll_stats(conn, limit=limit, tenant_id=scoped_tenant)
+
+
+@router.get("/api/v1/polls/export.csv")
+async def export_csv(tenant_id: int | None = None, user: dict[str, Any] = Depends(current_user)):
+    scoped_tenant = tenant_id if tenant_id is not None else int(user["id"])
+    with db_session(settings.database_url) as conn:
+        csv_text = export_stats_csv(conn, tenant_id=scoped_tenant)
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=poll-stats.csv"},
+    )
+
+
+@router.get("/api/v1/polls/{poll_id}")
+async def poll(poll_id: int, _: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        row = get_poll(conn, poll_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found")
+    return serialize_poll(row)
+
+
+@router.get("/api/v1/polls/{poll_id}/vote-status")
+async def poll_vote_status(poll_id: int, _: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        if get_poll(conn, poll_id) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found")
+        return list_poll_vote_status(conn, poll_id=poll_id)
+
+
+@router.patch("/api/v1/polls/{poll_id}")
+async def update_poll_route(poll_id: int, payload: PollPayload, _: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        if get_poll(conn, poll_id) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found")
+        update_poll(conn, poll_id=poll_id, **payload.model_dump())
+        return serialize_poll(get_poll(conn, poll_id))
+
+
+@router.get("/api/v1/texts/{text_id}/poll-pool")
+async def get_text_poll_pool(text_id: int, _: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        text_row = get_text(conn, text_id)
+        if text_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Text not found")
+        items = [serialize_poll(item) for item in list_queued_polls(conn, text_id=text_id)]
+        effective_threshold_percent = get_effective_poll_pool_threshold_percent(conn, text_id=text_id)
+        refill_when_below = get_poll_pool_refill_threshold_count(conn, text_id=text_id)
+        queued_count = count_queued_polls(conn, text_id=text_id)
+    return {
+        "text_id": text_id,
+        "queued_count": queued_count,
+        "effective_threshold_percent": effective_threshold_percent,
+        "refill_when_below": refill_when_below,
+        "target_size": POLL_POOL_TARGET_SIZE,
+        "refill_batch_size": POLL_POOL_REFILL_BATCH_SIZE,
+        "next_poll": items[0] if items else None,
+        "items": items,
+    }
+
+
+@router.post("/api/v1/texts/{text_id}/poll-pool/refill")
+async def refill_text_poll_pool(text_id: int, user: dict[str, Any] = Depends(current_user)):
+    runtime = load_runtime_config(settings.database_url, int(user["id"]))
+    created = await fill_poll_pool(settings=runtime, database_url=settings.database_url, text_id=text_id)
+    with db_session(settings.database_url) as conn:
+        items = [serialize_poll(item) for item in list_queued_polls(conn, text_id=text_id)]
+        effective_threshold_percent = get_effective_poll_pool_threshold_percent(conn, text_id=text_id)
+        refill_when_below = get_poll_pool_refill_threshold_count(conn, text_id=text_id)
+        queued_count = count_queued_polls(conn, text_id=text_id)
+    return {
+        "created": len(created),
+        "text_id": text_id,
+        "queued_count": queued_count,
+        "effective_threshold_percent": effective_threshold_percent,
+        "refill_when_below": refill_when_below,
+        "target_size": POLL_POOL_TARGET_SIZE,
+        "refill_batch_size": POLL_POOL_REFILL_BATCH_SIZE,
+        "next_poll": items[0] if items else None,
+        "items": items,
+    }
+
+
+@router.patch("/api/v1/polls/{poll_id}/pool-rank")
+async def update_poll_pool_rank(poll_id: int, payload: PoolRankPayload, _: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        poll = get_poll(conn, poll_id)
+        if poll is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found")
+        if str(poll["status"]) != "queued":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only queued polls can be reordered")
+        reordered = reorder_queued_poll(conn, poll_id=poll_id, pool_rank=payload.pool_rank)
+    return serialize_poll(reordered)
+
+
+@router.delete("/api/v1/polls/{poll_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_poll_route(poll_id: int, _: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        delete_poll(conn, poll_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
