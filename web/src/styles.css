@@ -110,7 +110,8 @@ h3 {
 .sidebar-link,
 .back-link,
 .list-card,
-.resource-main {
+.resource-main,
+.table-button {
   cursor: pointer;
 }
 
@@ -452,6 +453,10 @@ h3 {
   align-items: end;
 }
 
+.learner-toolbar {
+  flex-wrap: wrap;
+}
+
 .toolbar label {
   width: min(360px, 100%);
 }
@@ -550,6 +555,16 @@ textarea {
   width: 100%;
   padding: 0;
   border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.table-button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  color: inherit;
   background: transparent;
   text-align: left;
 }

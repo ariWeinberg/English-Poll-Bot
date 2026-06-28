@@ -12,6 +12,9 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Authorization" in app
     assert '"/register"' in app
     assert "Workspace Settings" in app
+    assert "Learner Progress Dashboard" in app
+    assert "Recent Answer History" in app
+    assert "Participation and accuracy" in app
     assert "Poll Events" in app
     assert "Current Vote Status" in app
     assert "formatVoteContact" in app

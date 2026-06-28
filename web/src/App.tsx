@@ -21,6 +21,7 @@ import {
   Settings,
   Sparkles,
   Trash2,
+  Users,
   Vote,
   X,
 } from "lucide-react";
@@ -138,6 +139,43 @@ type Page<T> = {
   has_next: boolean;
 };
 
+type LearnerSummary = {
+  voter_wid: string;
+  display_name: string;
+  phone_number: string;
+  total_counted_votes: number;
+  total_polls_seen: number;
+  correct_count: number;
+  incorrect_count: number;
+  correct_rate: number;
+  accepted_changes_count: number;
+  ignored_changes_count: number;
+  first_activity?: string | null;
+  latest_activity?: string | null;
+};
+
+type LearnerHistoryItem = {
+  id: number;
+  poll_id: number;
+  text_id: number;
+  question: string;
+  correct_option: string;
+  voter_wid: string;
+  display_name: string;
+  phone_number: string;
+  selected_option_name?: string | null;
+  previous_option_name?: string | null;
+  event_type: "vote" | "change" | "unvote";
+  accepted: boolean;
+  ignored_reason?: string | null;
+  recorded_at: string;
+};
+
+type LearnerDetail = {
+  learner: LearnerSummary;
+  history: LearnerHistoryItem[];
+};
+
 type GeneratedQuestion = {
   question: string;
   options: string[];
@@ -159,10 +197,20 @@ type TextFormState = Omit<Text, "id" | "tenant_name" | "attachment_name">;
 type PollFormState = Omit<Poll, "id" | "created_at">;
 type TenantFormState = Omit<Tenant, "id"> & { password: string };
 type RegisterFormState = { name: string; username: string; password: string; confirmPassword: string; timezone: string };
+type LearnerFilters = {
+  search: string;
+  textId: string;
+  dateFrom: string;
+  dateTo: string;
+  sortBy: "latest_activity" | "total_counted_votes" | "correct_rate";
+  sortDir: "asc" | "desc";
+};
 type Route =
   | { name: "login" }
   | { name: "register" }
   | { name: "dashboard" }
+  | { name: "learners" }
+  | { name: "learner-detail"; voterWid: string }
   | { name: "texts" }
   | { name: "text-detail"; id: number }
   | { name: "polls" }
@@ -329,10 +377,13 @@ function parseRoute(pathname: string): Route {
   const path = normalizePathname(pathname);
   if (path === "/register") return { name: "register" };
   if (path === "/dashboard" || path === "/") return { name: "dashboard" };
+  if (path === "/learners") return { name: "learners" };
   if (path === "/texts") return { name: "texts" };
   if (path === "/polls") return { name: "polls" };
   if (path === "/doc") return { name: "doc" };
   if (path === "/settings") return { name: "settings" };
+  const learnerMatch = path.match(/^\/learners\/(.+)$/);
+  if (learnerMatch) return { name: "learner-detail", voterWid: decodeURIComponent(learnerMatch[1]) };
   const textMatch = path.match(/^\/texts\/(\d+)$/);
   if (textMatch) return { name: "text-detail", id: Number(textMatch[1]) };
   const pollMatch = path.match(/^\/polls\/(\d+)$/);
@@ -346,6 +397,10 @@ function routeHref(route: Route): string {
       return "/register";
     case "dashboard":
       return "/dashboard";
+    case "learners":
+      return "/learners";
+    case "learner-detail":
+      return `/learners/${encodeURIComponent(route.voterWid)}`;
     case "texts":
       return "/texts";
     case "text-detail":
@@ -409,6 +464,25 @@ function excerpt(value: string, length = 160) {
 
 function formatWhen(value?: string | null) {
   return value || "Not sent yet";
+}
+
+function formatActivity(value?: string | null) {
+  return value || "—";
+}
+
+function learnerQueryString(tenantId: number, filters: LearnerFilters, extra?: Record<string, string | number | undefined>) {
+  const params = new URLSearchParams();
+  params.set("tenant_id", String(tenantId));
+  params.set("sort_by", filters.sortBy);
+  params.set("sort_dir", filters.sortDir);
+  if (filters.search.trim()) params.set("search", filters.search.trim());
+  if (filters.textId) params.set("text_id", filters.textId);
+  if (filters.dateFrom) params.set("date_from", filters.dateFrom);
+  if (filters.dateTo) params.set("date_to", filters.dateTo);
+  Object.entries(extra || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  });
+  return params.toString();
 }
 
 export function App() {
@@ -626,6 +700,14 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [preview, setPreview] = useState<GeneratedQuestion | null>(null);
   const [currentPool, setCurrentPool] = useState<PollPool | null>(null);
+  const [learnerFilters, setLearnerFilters] = useState<LearnerFilters>({
+    search: "",
+    textId: "",
+    dateFrom: "",
+    dateTo: "",
+    sortBy: "latest_activity",
+    sortDir: "desc",
+  });
 
   async function loadData() {
     setLoading(true);
@@ -803,10 +885,29 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
               texts={texts}
               polls={polls}
               pollStats={pollStats}
+              onOpenLearners={() => navigateTo({ name: "learners" })}
               onOpenText={(text) => navigateTo({ name: "text-detail", id: text.id })}
               onOpenPoll={(poll) => navigateTo({ name: "poll-detail", id: poll.id })}
               onNewText={() => setTextModal({ mode: "create" })}
               onNewPoll={() => setPollModal({ mode: "create" })}
+            />
+          )}
+          {route.name === "learners" && (
+            <LearnersPage
+              tenant={tenant}
+              texts={texts}
+              filters={learnerFilters}
+              onFiltersChange={setLearnerFilters}
+              onOpenLearner={(learner) => navigateTo({ name: "learner-detail", voterWid: learner.voter_wid })}
+            />
+          )}
+          {route.name === "learner-detail" && (
+            <LearnerDetailPage
+              tenant={tenant}
+              texts={texts}
+              voterWid={route.voterWid}
+              filters={learnerFilters}
+              onBack={() => navigateTo({ name: "learners" })}
             />
           )}
           {route.name === "texts" && (
@@ -930,6 +1031,12 @@ function Sidebar({
   const items = [
     { icon: <BarChart3 size={18} />, label: "Dashboard", route: { name: "dashboard" } as Route, active: route.name === "dashboard" },
     {
+      icon: <Users size={18} />,
+      label: "Learners",
+      route: { name: "learners" } as Route,
+      active: route.name === "learners" || route.name === "learner-detail",
+    },
+    {
       icon: <FileText size={18} />,
       label: "Texts",
       route: { name: "texts" } as Route,
@@ -1028,6 +1135,10 @@ function Topbar({
 
 function routeTitle(route: Route) {
   switch (route.name) {
+    case "learners":
+      return "Learners";
+    case "learner-detail":
+      return "Learner Detail";
     case "texts":
       return "Texts";
     case "text-detail":
@@ -1050,6 +1161,7 @@ function DashboardPage({
   texts,
   polls,
   pollStats,
+  onOpenLearners,
   onOpenText,
   onOpenPoll,
   onNewText,
@@ -1059,6 +1171,7 @@ function DashboardPage({
   texts: Text[];
   polls: Poll[];
   pollStats: PollStats[];
+  onOpenLearners: () => void;
   onOpenText: (text: Text) => void;
   onOpenPoll: (poll: Poll) => void;
   onNewText: () => void;
@@ -1078,6 +1191,9 @@ function DashboardPage({
           <p className="hero-subtitle">A cleaner command surface for content, delivery, and post-send performance.</p>
         </div>
         <div className="hero-actions">
+          <button className="button button-secondary" onClick={onOpenLearners}>
+            <Users size={16} /> Learner progress
+          </button>
           <button className="button button-primary" onClick={onNewText}>
             <Plus size={16} /> New text
           </button>
@@ -1151,6 +1267,280 @@ function MetricCard({ label, value, detail, icon }: { label: string; value: stri
       <strong>{value}</strong>
       <p>{detail}</p>
     </article>
+  );
+}
+
+function LearnersPage({
+  tenant,
+  texts,
+  filters,
+  onFiltersChange,
+  onOpenLearner,
+}: {
+  tenant: Tenant;
+  texts: Text[];
+  filters: LearnerFilters;
+  onFiltersChange: React.Dispatch<React.SetStateAction<LearnerFilters>>;
+  onOpenLearner: (learner: LearnerSummary) => void;
+}) {
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState<Page<LearnerSummary> | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setPage(1);
+  }, [filters.search, filters.textId, filters.dateFrom, filters.dateTo, filters.sortBy, filters.sortDir]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    api<Page<LearnerSummary>>(`/learners?${learnerQueryString(tenant.id, filters, { page, page_size: 25 })}`)
+      .then((result) => {
+        if (!cancelled) setData(result);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load learners");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tenant.id, filters, page]);
+
+  return (
+    <section className="detail-page">
+      <div className="detail-hero">
+        <div>
+          <p className="section-kicker">Learner Progress Dashboard</p>
+          <h2>Leaderboard</h2>
+          <p className="hero-subtitle">Track participation, answer accuracy, and ignored changes by contact.</p>
+        </div>
+      </div>
+      <div className="toolbar learner-toolbar">
+        <TextInput
+          label="Search learners"
+          value={filters.search}
+          onChange={(value) => onFiltersChange((current) => ({ ...current, search: value }))}
+          placeholder="Name, phone, or WhatsApp ID"
+        />
+        <label>
+          Text
+          <select value={filters.textId} onChange={(event) => onFiltersChange((current) => ({ ...current, textId: event.target.value }))}>
+            <option value="">All texts</option>
+            {texts.map((text) => (
+              <option key={text.id} value={text.id}>
+                {text.title}
+              </option>
+            ))}
+          </select>
+        </label>
+        <TextInput
+          label="From"
+          type="date"
+          value={filters.dateFrom}
+          onChange={(value) => onFiltersChange((current) => ({ ...current, dateFrom: value }))}
+        />
+        <TextInput
+          label="To"
+          type="date"
+          value={filters.dateTo}
+          onChange={(value) => onFiltersChange((current) => ({ ...current, dateTo: value }))}
+        />
+        <label>
+          Sort
+          <select
+            value={`${filters.sortBy}:${filters.sortDir}`}
+            onChange={(event) => {
+              const [sortBy, sortDir] = event.target.value.split(":") as [LearnerFilters["sortBy"], LearnerFilters["sortDir"]];
+              onFiltersChange((current) => ({ ...current, sortBy, sortDir }));
+            }}
+          >
+            <option value="latest_activity:desc">Latest activity</option>
+            <option value="total_counted_votes:desc">Total answers</option>
+            <option value="correct_rate:desc">Accuracy</option>
+            <option value="correct_rate:asc">Lowest accuracy</option>
+          </select>
+        </label>
+      </div>
+      <section className="surface">
+        <div className="section-header">
+          <div>
+            <p className="section-kicker">Leaderboard</p>
+            <h3>Participation and accuracy</h3>
+          </div>
+          <span className="pill">{data?.total ?? 0} learners</span>
+        </div>
+        {error && <div className="alert error">{error}</div>}
+        <div className="status-table-wrap">
+          {loading ? (
+            <EmptyState title="Loading learners" body="Aggregating vote history for this workspace." />
+          ) : data && data.items.length > 0 ? (
+            <table className="status-table learner-table">
+              <thead>
+                <tr>
+                  <th>Learner</th>
+                  <th>Total answers</th>
+                  <th>Polls seen</th>
+                  <th>Correct</th>
+                  <th>Accuracy</th>
+                  <th>Accepted changes</th>
+                  <th>Ignored changes</th>
+                  <th>Latest activity</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.items.map((item) => (
+                  <tr key={item.voter_wid}>
+                    <td>
+                      <button className="table-button" onClick={() => onOpenLearner(item)}>
+                        <strong>{item.display_name}</strong>
+                        <span className="meta-inline">{item.phone_number} · {item.voter_wid}</span>
+                      </button>
+                    </td>
+                    <td>{item.total_counted_votes}</td>
+                    <td>{item.total_polls_seen}</td>
+                    <td>{item.correct_count}/{item.incorrect_count}</td>
+                    <td>{item.correct_rate.toFixed(1)}%</td>
+                    <td>{item.accepted_changes_count}</td>
+                    <td>{item.ignored_changes_count}</td>
+                    <td>{formatActivity(item.latest_activity)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <EmptyState title="No learners yet" body="Learners will appear here after recorded poll votes arrive." />
+          )}
+        </div>
+        {data && data.total > 0 && (
+          <div className="card-actions">
+            <button className="button button-ghost" disabled={page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>
+              Previous
+            </button>
+            <span className="pill">Page {data.page}</span>
+            <button className="button button-ghost" disabled={!data.has_next} onClick={() => setPage((current) => current + 1)}>
+              Next
+            </button>
+          </div>
+        )}
+      </section>
+    </section>
+  );
+}
+
+function LearnerDetailPage({
+  tenant,
+  texts,
+  voterWid,
+  filters,
+  onBack,
+}: {
+  tenant: Tenant;
+  texts: Text[];
+  voterWid: string;
+  filters: LearnerFilters;
+  onBack: () => void;
+}) {
+  const [detail, setDetail] = useState<LearnerDetail | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const textTitle = texts.find((text) => String(text.id) === filters.textId)?.title;
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    api<LearnerDetail>(`/learners/${encodeURIComponent(voterWid)}?${learnerQueryString(tenant.id, filters, { history_limit: 25 })}`)
+      .then((result) => {
+        if (!cancelled) setDetail(result);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load learner detail");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tenant.id, voterWid, filters]);
+
+  if (loading) {
+    return <EmptyState title="Loading learner detail" body="Fetching recent answer history and aggregate stats." />;
+  }
+
+  if (error) {
+    return <div className="alert error">{error}</div>;
+  }
+
+  if (!detail) {
+    return <EmptyState title="Learner not found" body="No recorded vote history matched this learner." />;
+  }
+
+  return (
+    <section className="detail-page">
+      <button className="back-link" onClick={onBack}>
+        <ArrowLeft size={16} /> Back to learners
+      </button>
+      <div className="detail-hero">
+        <div>
+          <p className="section-kicker">Learner Detail</p>
+          <h2>{detail.learner.display_name}</h2>
+          <p className="hero-subtitle">{detail.learner.phone_number} · {detail.learner.voter_wid}</p>
+        </div>
+        <div className="option-badges">
+          {textTitle && <span className="pill">Text: {textTitle}</span>}
+          {filters.dateFrom && <span className="pill">From {filters.dateFrom}</span>}
+          {filters.dateTo && <span className="pill">To {filters.dateTo}</span>}
+        </div>
+      </div>
+      <section className="surface">
+        <div className="detail-summary">
+          <StatBlock label="Total answers" value={detail.learner.total_counted_votes} />
+          <StatBlock label="Polls seen" value={detail.learner.total_polls_seen} />
+          <StatBlock label="Correct" value={detail.learner.correct_count} />
+          <StatBlock label="Incorrect" value={detail.learner.incorrect_count} />
+          <StatBlock label="Accuracy" value={`${detail.learner.correct_rate.toFixed(1)}%`} />
+          <StatBlock label="Accepted changes" value={detail.learner.accepted_changes_count} />
+          <StatBlock label="Ignored changes" value={detail.learner.ignored_changes_count} />
+          <StatBlock label="First activity" value={formatActivity(detail.learner.first_activity)} />
+          <StatBlock label="Latest activity" value={formatActivity(detail.learner.latest_activity)} />
+        </div>
+      </section>
+      <section className="surface">
+        <div className="section-header">
+          <div>
+            <p className="section-kicker">Recent Answer History</p>
+            <h3>Per-poll timeline</h3>
+          </div>
+        </div>
+        <div className="stack">
+          {detail.history.map((item) => (
+            <article className="event-row" key={item.id}>
+              <div className="event-row-top">
+                <span className="pill">{item.question}</span>
+                <span className="meta-inline">{item.recorded_at}</span>
+              </div>
+              <strong>
+                {item.selected_option_name || "Cleared vote"} · correct answer {item.correct_option}
+              </strong>
+              <p className="subtle">
+                {item.accepted
+                  ? item.event_type === "change"
+                    ? `Accepted change from ${item.previous_option_name || "—"}`
+                    : "Accepted answer"
+                  : `Ignored change: ${describeIgnoredReason(item.ignored_reason)}`}
+              </p>
+            </article>
+          ))}
+          {detail.history.length === 0 && <EmptyState title="No history in this filter range" body="Try widening the date or text filters." />}
+        </div>
+      </section>
+    </section>
   );
 }
 

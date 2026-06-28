@@ -4,7 +4,7 @@ import csv
 import io
 import json
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from math import ceil
 from typing import Any, Iterator
 
@@ -27,6 +27,20 @@ def _like(value: str) -> str:
     return f"%{value.strip()}%"
 
 
+def _coerce_filter_datetime(value: str, *, end: bool = False) -> tuple[str, str]:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("Date filter cannot be blank")
+    has_time = "T" in cleaned or " " in cleaned
+    normalized = cleaned.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if end and not has_time:
+        return "<", (parsed + timedelta(days=1)).isoformat()
+    return ("<=" if end else ">="), parsed.isoformat()
+
+
 def paginated_response(items: list[DbRow], total: int, page: int, page_size: int) -> dict[str, Any]:
     return {
         "items": items,
@@ -35,6 +49,160 @@ def paginated_response(items: list[DbRow], total: int, page: int, page_size: int
         "page_size": page_size,
         "has_next": page * page_size < total,
     }
+
+
+def _learner_sort_sql(sort_by: str, sort_dir: str) -> str:
+    direction = "ASC" if sort_dir.lower() == "asc" else "DESC"
+    mapping = {
+        "display_name": "display_name",
+        "first_activity": "first_activity",
+        "latest_activity": "latest_activity",
+        "total_counted_votes": "total_counted_votes",
+        "total_polls_seen": "total_polls_seen",
+        "correct_rate": "correct_rate",
+        "correct_count": "correct_count",
+        "incorrect_count": "incorrect_count",
+        "accepted_changes_count": "accepted_changes_count",
+        "ignored_changes_count": "ignored_changes_count",
+    }
+    column = mapping.get(sort_by, "latest_activity")
+    nulls = "NULLS FIRST" if direction == "ASC" else "NULLS LAST"
+    if column == "display_name":
+        return f"{column} {direction}, voter_wid ASC"
+    return f"{column} {direction} {nulls}, display_name ASC, voter_wid ASC"
+
+
+def _learner_filters(
+    *,
+    tenant_id: int,
+    text_id: int | None = None,
+    search: str | None = None,
+    voter_wid: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> tuple[str, list[Any]]:
+    where = ["polls.tenant_id = %s"]
+    params: list[Any] = [tenant_id]
+    if text_id is not None:
+        where.append("polls.text_id = %s")
+        params.append(text_id)
+    if voter_wid:
+        where.append("poll_vote_events.voter_wid = %s")
+        params.append(voter_wid.strip())
+    if search:
+        where.append(
+            """
+            (
+                poll_vote_events.voter_wid ILIKE %s
+                OR COALESCE(contact_profiles.display_name, poll_vote_events.voter_name, poll_vote_events.phone_number, poll_vote_events.voter_wid) ILIKE %s
+                OR COALESCE(poll_vote_events.phone_number, '') ILIKE %s
+            )
+            """
+        )
+        like = _like(search)
+        params.extend([like, like, like])
+    if date_from:
+        operator, value = _coerce_filter_datetime(date_from, end=False)
+        where.append(f"poll_vote_events.recorded_at {operator} %s")
+        params.append(value)
+    if date_to:
+        operator, value = _coerce_filter_datetime(date_to, end=True)
+        where.append(f"poll_vote_events.recorded_at {operator} %s")
+        params.append(value)
+    return " AND ".join(where), params
+
+
+def _learner_aggregate_cte(where_sql: str) -> str:
+    return f"""
+        WITH filtered_events AS (
+            SELECT
+                poll_vote_events.id,
+                poll_vote_events.poll_id,
+                poll_vote_events.option_name,
+                poll_vote_events.voter_wid,
+                poll_vote_events.voter_name,
+                poll_vote_events.phone_number,
+                poll_vote_events.event_type,
+                poll_vote_events.previous_option_name,
+                poll_vote_events.accepted,
+                poll_vote_events.ignored_reason,
+                poll_vote_events.recorded_at,
+                polls.text_id,
+                polls.question,
+                polls.correct_option,
+                contact_profiles.display_name AS profile_display_name
+            FROM poll_vote_events
+            JOIN polls ON polls.id = poll_vote_events.poll_id
+            LEFT JOIN contact_profiles
+                ON contact_profiles.tenant_id = polls.tenant_id
+               AND contact_profiles.voter_wid = poll_vote_events.voter_wid
+            WHERE {where_sql}
+        ),
+        learner_rollup AS (
+            SELECT
+                voter_wid,
+                (ARRAY_AGG(
+                    COALESCE(
+                        NULLIF(profile_display_name, ''),
+                        NULLIF(voter_name, ''),
+                        NULLIF(phone_number, ''),
+                        voter_wid
+                    )
+                    ORDER BY recorded_at DESC, id DESC
+                ))[1] AS display_name,
+                (ARRAY_AGG(
+                    COALESCE(
+                        NULLIF(phone_number, ''),
+                        NULLIF(regexp_replace(split_part(voter_wid, '@', 1), '\\D', '', 'g'), ''),
+                        split_part(voter_wid, '@', 1)
+                    )
+                    ORDER BY recorded_at DESC, id DESC
+                ))[1] AS phone_number,
+                COUNT(*) FILTER (
+                    WHERE accepted = TRUE AND event_type IN ('vote', 'change')
+                )::INT AS total_counted_votes,
+                COUNT(DISTINCT poll_id)::INT AS total_polls_seen,
+                COUNT(*) FILTER (
+                    WHERE accepted = TRUE AND event_type IN ('vote', 'change') AND option_name = correct_option
+                )::INT AS correct_count,
+                COUNT(*) FILTER (
+                    WHERE accepted = TRUE AND event_type IN ('vote', 'change') AND option_name <> correct_option
+                )::INT AS incorrect_count,
+                COUNT(*) FILTER (
+                    WHERE accepted = TRUE AND event_type = 'change'
+                )::INT AS accepted_changes_count,
+                COUNT(*) FILTER (
+                    WHERE accepted = FALSE AND event_type = 'change'
+                )::INT AS ignored_changes_count,
+                MIN(recorded_at) AS first_activity,
+                MAX(recorded_at) AS latest_activity
+            FROM filtered_events
+            GROUP BY voter_wid
+        )
+    """
+
+
+def _learner_select_sql() -> str:
+    return """
+        SELECT
+            voter_wid,
+            display_name,
+            phone_number,
+            total_counted_votes,
+            total_polls_seen,
+            correct_count,
+            incorrect_count,
+            CASE
+                WHEN total_counted_votes > 0
+                    THEN ROUND(correct_count::numeric * 100.0 / total_counted_votes, 2)
+                ELSE 0
+            END AS correct_rate,
+            accepted_changes_count,
+            ignored_changes_count,
+            first_activity,
+            latest_activity
+        FROM learner_rollup
+    """
 
 
 def now_iso() -> str:
@@ -1171,6 +1339,132 @@ def list_poll_vote_status(conn: psycopg.Connection[DbRow], *, poll_id: int) -> l
             }
         )
     return items
+
+
+def list_learners_page(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    page: int = 1,
+    page_size: int = 25,
+    text_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    search: str | None = None,
+    sort_by: str = "latest_activity",
+    sort_dir: str = "desc",
+) -> dict[str, Any]:
+    page, page_size, offset = _page_bounds(page, page_size)
+    where_sql, params = _learner_filters(
+        tenant_id=tenant_id,
+        text_id=text_id,
+        search=search,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    aggregate_cte = _learner_aggregate_cte(where_sql)
+    total = conn.execute(
+        f"""
+        {aggregate_cte}
+        SELECT COUNT(*) AS count
+        FROM learner_rollup
+        """,
+        params,
+    ).fetchone()["count"]
+    items = conn.execute(
+        f"""
+        {aggregate_cte}
+        {_learner_select_sql()}
+        ORDER BY {_learner_sort_sql(sort_by, sort_dir)}
+        LIMIT %s OFFSET %s
+        """,
+        [*params, page_size, offset],
+    ).fetchall()
+    return paginated_response(items, int(total), page, page_size)
+
+
+def get_learner_summary(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    voter_wid: str,
+    text_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> DbRow | None:
+    where_sql, params = _learner_filters(
+        tenant_id=tenant_id,
+        text_id=text_id,
+        voter_wid=voter_wid,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    row = conn.execute(
+        f"""
+        {_learner_aggregate_cte(where_sql)}
+        {_learner_select_sql()}
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    return row
+
+
+def list_learner_history(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    voter_wid: str,
+    text_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 25,
+) -> list[DbRow]:
+    safe_limit = min(max(limit, 1), 100)
+    where_sql, params = _learner_filters(
+        tenant_id=tenant_id,
+        text_id=text_id,
+        voter_wid=voter_wid,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return conn.execute(
+        f"""
+        SELECT
+            poll_vote_events.id,
+            poll_vote_events.poll_id,
+            polls.text_id,
+            polls.question,
+            polls.correct_option,
+            poll_vote_events.voter_wid,
+            COALESCE(
+                contact_profiles.display_name,
+                poll_vote_events.voter_name,
+                poll_vote_events.phone_number,
+                poll_vote_events.voter_wid
+            ) AS display_name,
+            COALESCE(
+                poll_vote_events.phone_number,
+                NULLIF(regexp_replace(split_part(poll_vote_events.voter_wid, '@', 1), '\\D', '', 'g'), ''),
+                split_part(poll_vote_events.voter_wid, '@', 1)
+            ) AS phone_number,
+            NULLIF(poll_vote_events.option_name, '') AS selected_option_name,
+            poll_vote_events.previous_option_name,
+            poll_vote_events.event_type,
+            poll_vote_events.accepted,
+            poll_vote_events.ignored_reason,
+            poll_vote_events.recorded_at
+        FROM poll_vote_events
+        JOIN polls ON polls.id = poll_vote_events.poll_id
+        LEFT JOIN contact_profiles
+            ON contact_profiles.tenant_id = polls.tenant_id
+           AND contact_profiles.voter_wid = poll_vote_events.voter_wid
+        WHERE {where_sql}
+        ORDER BY poll_vote_events.recorded_at DESC, poll_vote_events.id DESC
+        LIMIT %s
+        """,
+        [*params, safe_limit],
+    ).fetchall()
 
 
 def get_poll_vote(conn: psycopg.Connection[DbRow], vote_id: int) -> DbRow | None:

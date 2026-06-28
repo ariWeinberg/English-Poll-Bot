@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.database import create_poll, db_session, init_db
+from app.database import create_poll, db_session, init_db, upsert_contact_profile
 from app.main import app
 
 
@@ -27,6 +27,126 @@ def auth_headers(client: TestClient) -> dict[str, str]:
     assert response.status_code == 200
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+def seed_learner_analytics_fixture(database_url: str) -> dict[str, int]:
+    with db_session(database_url) as conn:
+        conn.execute(
+            """
+            INSERT INTO texts
+                (id, tenant_id, title, body, chat_id, morning_time, evening_time,
+                 summary_time_morning, summary_time_evening, enabled, created_at, updated_at)
+            VALUES
+                (2, 1, 'Advanced lesson', 'Body 2', 'group-2@g.us', '08:30', '18:00',
+                 '08:25', '17:55', TRUE, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO tenants
+                (id, name, username, password, greenapi_api_url, greenapi_id_instance,
+                 greenapi_api_token_instance, gemini_api_key, gemini_model, timezone,
+                 summary_enabled, scheduler_enabled, is_active, created_at, updated_at)
+            VALUES
+                (2, 'Tenant B', 'tenant-b', 'secret', 'https://api.green-api.com', '', '',
+                 '', 'gemini-3.5-flash', 'Asia/Jerusalem', TRUE, TRUE, TRUE,
+                 '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO texts
+                (id, tenant_id, title, body, chat_id, morning_time, evening_time,
+                 summary_time_morning, summary_time_evening, enabled, created_at, updated_at)
+            VALUES
+                (3, 2, 'Tenant B text', 'Body 3', 'group-b@g.us', '08:30', '18:00',
+                 '08:25', '17:55', TRUE, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+            """
+        )
+
+        poll_1 = create_poll(
+            conn,
+            tenant_id=1,
+            text_id=1,
+            question="P1",
+            options=["A", "B"],
+            correct_option="A",
+            explanation="",
+            chat_id="group@g.us",
+            generated_from_text="Body",
+            scheduled_slot="manual",
+        )
+        poll_2 = create_poll(
+            conn,
+            tenant_id=1,
+            text_id=1,
+            question="P2",
+            options=["A", "B"],
+            correct_option="B",
+            explanation="",
+            chat_id="group@g.us",
+            generated_from_text="Body",
+            scheduled_slot="manual",
+        )
+        poll_3 = create_poll(
+            conn,
+            tenant_id=1,
+            text_id=2,
+            question="P3",
+            options=["A", "B"],
+            correct_option="A",
+            explanation="",
+            chat_id="group-2@g.us",
+            generated_from_text="Body 2",
+            scheduled_slot="manual",
+        )
+        poll_4 = create_poll(
+            conn,
+            tenant_id=2,
+            text_id=3,
+            question="P4",
+            options=["A", "B"],
+            correct_option="A",
+            explanation="",
+            chat_id="group-b@g.us",
+            generated_from_text="Body 3",
+            scheduled_slot="manual",
+        )
+
+        upsert_contact_profile(conn, tenant_id=1, voter_wid="111@c.us", phone_number="111", display_name="Dana Cohen")
+        upsert_contact_profile(
+            conn, tenant_id=2, voter_wid="111@c.us", phone_number="999", display_name="Tenant B Dana"
+        )
+
+        conn.execute(
+            """
+            INSERT INTO poll_votes (poll_id, option_name, voter_wid, voter_name, phone_number, first_accepted_at, updated_at)
+            VALUES
+                (%s, 'B', '111@c.us', 'Dana Cohen', '111', '2026-01-10T08:00:00+00:00', '2026-01-11T09:00:00+00:00'),
+                (%s, 'B', '111@c.us', 'Dana Cohen', '111', '2026-02-10T08:00:00+00:00', '2026-02-10T08:00:00+00:00'),
+                (%s, 'A', '111@c.us', 'Dana Cohen', '111', '2025-12-20T08:00:00+00:00', '2025-12-20T08:00:00+00:00'),
+                (%s, 'B', '222@c.us', NULL, '222', '2026-02-09T08:00:00+00:00', '2026-02-09T08:00:00+00:00'),
+                (%s, 'A', '111@c.us', 'Tenant B Dana', '999', '2026-03-01T08:00:00+00:00', '2026-03-01T08:00:00+00:00')
+            """,
+            (poll_1, poll_2, poll_3, poll_1, poll_4),
+        )
+        conn.execute(
+            """
+            INSERT INTO poll_vote_events
+                (poll_id, option_name, voter_wid, voter_name, phone_number, event_type, previous_option_name, accepted, ignored_reason, recorded_at)
+            VALUES
+                (%s, 'A', '111@c.us', 'Dana Cohen', '111', 'vote', NULL, TRUE, NULL, '2026-01-10T08:00:00+00:00'),
+                (%s, 'B', '111@c.us', 'Dana Cohen', '111', 'change', 'A', TRUE, NULL, '2026-01-11T09:00:00+00:00'),
+                (%s, 'B', '111@c.us', 'Dana Cohen', '111', 'vote', NULL, TRUE, NULL, '2026-02-10T08:00:00+00:00'),
+                (%s, 'A', '111@c.us', 'Dana Cohen', '111', 'change', 'B', FALSE, 'manual_lock', '2026-02-11T10:00:00+00:00'),
+                (%s, 'A', '111@c.us', 'Dana Cohen', '111', 'vote', NULL, TRUE, NULL, '2025-12-20T08:00:00+00:00'),
+                (%s, 'B', '222@c.us', NULL, '222', 'vote', NULL, TRUE, NULL, '2026-02-09T08:00:00+00:00'),
+                (%s, 'A', '111@c.us', 'Tenant B Dana', '999', 'vote', NULL, TRUE, NULL, '2026-03-01T08:00:00+00:00')
+            """,
+            (poll_1, poll_1, poll_2, poll_2, poll_3, poll_1, poll_4),
+        )
+
+    return {"poll_1": poll_1, "poll_2": poll_2, "poll_3": poll_3, "poll_4": poll_4}
 
 
 def test_register_creates_tenant_and_allows_login():
@@ -341,3 +461,124 @@ def test_poll_vote_status_route_returns_counted_and_ignored_state():
                 "latest_ignored_at": "2026-01-01T12:02:00+00:00",
             }
         ]
+
+
+def test_learners_leaderboard_is_tenant_scoped_and_aggregated():
+    database_url = reset_db()
+    seed_learner_analytics_fixture(database_url)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.get("/api/v1/learners?page_size=10", headers=headers)
+        assert response.status_code == 200
+        body = response.json()
+
+    assert body["total"] == 2
+    assert [item["voter_wid"] for item in body["items"]] == ["111@c.us", "222@c.us"]
+    assert body["items"][0] == {
+        "voter_wid": "111@c.us",
+        "display_name": "Dana Cohen",
+        "phone_number": "111",
+        "total_counted_votes": 4,
+        "total_polls_seen": 3,
+        "correct_count": 3,
+        "incorrect_count": 1,
+        "correct_rate": 75.0,
+        "accepted_changes_count": 1,
+        "ignored_changes_count": 1,
+        "first_activity": "2025-12-20T08:00:00+00:00",
+        "latest_activity": "2026-02-11T10:00:00+00:00",
+    }
+
+
+def test_learners_filters_apply_text_and_date_ranges():
+    database_url = reset_db()
+    seed_learner_analytics_fixture(database_url)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        text_only = client.get("/api/v1/learners?text_id=2", headers=headers)
+        assert text_only.status_code == 200
+        assert text_only.json()["items"] == [
+            {
+                "voter_wid": "111@c.us",
+                "display_name": "Dana Cohen",
+                "phone_number": "111",
+                "total_counted_votes": 1,
+                "total_polls_seen": 1,
+                "correct_count": 1,
+                "incorrect_count": 0,
+                "correct_rate": 100.0,
+                "accepted_changes_count": 0,
+                "ignored_changes_count": 0,
+                "first_activity": "2025-12-20T08:00:00+00:00",
+                "latest_activity": "2025-12-20T08:00:00+00:00",
+            }
+        ]
+
+        recent = client.get("/api/v1/learners?date_from=2026-02-01", headers=headers)
+        assert recent.status_code == 200
+        items = recent.json()["items"]
+        assert items[0]["voter_wid"] == "111@c.us"
+        assert items[0]["total_counted_votes"] == 1
+        assert items[0]["total_polls_seen"] == 1
+        assert items[0]["correct_count"] == 1
+        assert items[0]["incorrect_count"] == 0
+        assert items[0]["ignored_changes_count"] == 1
+        assert items[0]["first_activity"] == "2026-02-10T08:00:00+00:00"
+        assert items[0]["latest_activity"] == "2026-02-11T10:00:00+00:00"
+        assert items[1]["voter_wid"] == "222@c.us"
+
+
+def test_learner_detail_returns_recent_history_with_accepted_and_ignored_state():
+    database_url = reset_db()
+    poll_ids = seed_learner_analytics_fixture(database_url)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.get("/api/v1/learners/111@c.us?history_limit=4", headers=headers)
+        assert response.status_code == 200
+        body = response.json()
+
+    assert body["learner"]["voter_wid"] == "111@c.us"
+    assert body["learner"]["accepted_changes_count"] == 1
+    assert body["learner"]["ignored_changes_count"] == 1
+    assert [item["poll_id"] for item in body["history"]] == [
+        poll_ids["poll_2"],
+        poll_ids["poll_2"],
+        poll_ids["poll_1"],
+        poll_ids["poll_1"],
+    ]
+    assert body["history"][0] == {
+        "id": body["history"][0]["id"],
+        "poll_id": poll_ids["poll_2"],
+        "text_id": 1,
+        "question": "P2",
+        "correct_option": "B",
+        "voter_wid": "111@c.us",
+        "display_name": "Dana Cohen",
+        "phone_number": "111",
+        "selected_option_name": "A",
+        "previous_option_name": "B",
+        "event_type": "change",
+        "accepted": False,
+        "ignored_reason": "manual_lock",
+        "recorded_at": "2026-02-11T10:00:00+00:00",
+    }
+
+
+def test_learner_routes_do_not_leak_cross_tenant_contact_collisions():
+    database_url = reset_db()
+    seed_learner_analytics_fixture(database_url)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.get("/api/v1/learners/111@c.us", headers=headers)
+        assert response.status_code == 200
+        body = response.json()
+        forbidden = client.get("/api/v1/learners?tenant_id=2", headers=headers)
+
+    assert body["learner"]["display_name"] == "Dana Cohen"
+    assert all(item["display_name"] == "Dana Cohen" for item in body["history"])
+    assert all(item["phone_number"] == "111" for item in body["history"])
+    assert forbidden.status_code == 403

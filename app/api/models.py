@@ -101,3 +101,40 @@ class SendSummaryRequest(BaseModel):
 
 class PoolRankPayload(BaseModel):
     pool_rank: int = Field(ge=1)
+
+
+class LearnerSummary(BaseModel):
+    voter_wid: str
+    display_name: str
+    phone_number: str
+    total_counted_votes: int
+    total_polls_seen: int
+    correct_count: int
+    incorrect_count: int
+    correct_rate: float
+    accepted_changes_count: int
+    ignored_changes_count: int
+    first_activity: str | None = None
+    latest_activity: str | None = None
+
+
+class LearnerHistoryItem(BaseModel):
+    id: int
+    poll_id: int
+    text_id: int
+    question: str
+    correct_option: str
+    voter_wid: str
+    display_name: str
+    phone_number: str
+    selected_option_name: str | None = None
+    previous_option_name: str | None = None
+    event_type: str
+    accepted: bool
+    ignored_reason: str | None = None
+    recorded_at: str
+
+
+class LearnerDetailResponse(BaseModel):
+    learner: LearnerSummary
+    history: list[LearnerHistoryItem]
