@@ -17,6 +17,7 @@ from app.database import (
     db_session,
     delete_poll,
     export_stats_csv,
+    get_poll_coverage_page,
     get_effective_poll_pool_threshold_percent,
     get_poll,
     get_poll_pool_refill_threshold_count,
@@ -123,6 +124,20 @@ async def poll_vote_status(poll_id: int, _: dict[str, Any] = Depends(current_use
         if get_poll(conn, poll_id) is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found")
         return list_poll_vote_status(conn, poll_id=poll_id)
+
+
+@router.get("/api/v1/polls/{poll_id}/coverage")
+async def poll_coverage(
+    poll_id: int,
+    page: int = 1,
+    page_size: int = 25,
+    user: dict[str, Any] = Depends(current_user),
+):
+    with db_session(settings.database_url) as conn:
+        poll = get_poll(conn, poll_id)
+        if poll is None or int(poll["tenant_id"]) != int(user["id"]):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found")
+        return get_poll_coverage_page(conn, poll_id=poll_id, page=page, page_size=page_size)
 
 
 @router.patch("/api/v1/polls/{poll_id}")

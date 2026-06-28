@@ -14,7 +14,9 @@ def reset_db() -> str:
     assert TEST_DATABASE_URL is not None
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
-        conn.execute("TRUNCATE poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
+        conn.execute(
+            "TRUNCATE chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+        )
     init_db(TEST_DATABASE_URL)
     return TEST_DATABASE_URL
 

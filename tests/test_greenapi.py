@@ -1,4 +1,4 @@
-from app.greenapi import build_poll_payload
+from app.greenapi import build_poll_payload, parse_group_participant
 
 
 def test_build_poll_payload_matches_greenapi_send_poll_shape():
@@ -15,3 +15,17 @@ def test_build_poll_payload_matches_greenapi_send_poll_shape():
         "options": [{"optionName": "One"}, {"optionName": "Two"}],
         "multipleAnswers": False,
     }
+
+
+def test_parse_group_participant_normalizes_supported_shapes():
+    assert parse_group_participant("111@c.us") == {
+        "voter_wid": "111@c.us",
+        "display_name": None,
+        "phone_number": "111",
+    }
+    assert parse_group_participant({"participantId": "222@c.us", "name": "Dana", "phone": "222"}) == {
+        "voter_wid": "222@c.us",
+        "display_name": "Dana",
+        "phone_number": "222",
+    }
+    assert parse_group_participant({"id": "", "name": "Missing"}) is None

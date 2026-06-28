@@ -6,7 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.config import settings
 from app.core.auth import current_user
-from app.database import db_session, get_learner_summary, list_learner_history, list_learners_page
+from app.database import (
+    db_session,
+    get_learner_summary,
+    list_learner_history,
+    list_learner_missed_polls,
+    list_learners_page,
+)
 
 
 router = APIRouter(prefix="/api/v1/learners", tags=["learners"])
@@ -58,6 +64,7 @@ async def learner_detail(
     date_from: str | None = None,
     date_to: str | None = None,
     history_limit: int = 25,
+    missed_limit: int = 25,
     user: dict[str, Any] = Depends(current_user),
 ):
     scoped_tenant = _scoped_tenant_id(tenant_id, user)
@@ -81,4 +88,13 @@ async def learner_detail(
             date_to=date_to,
             limit=history_limit,
         )
-    return {"learner": learner, "history": history}
+        missed_polls = list_learner_missed_polls(
+            conn,
+            tenant_id=scoped_tenant,
+            voter_wid=voter_wid,
+            text_id=text_id,
+            date_from=date_from,
+            date_to=date_to,
+            limit=missed_limit,
+        )
+    return {"learner": learner, "history": history, "missed_polls": missed_polls}

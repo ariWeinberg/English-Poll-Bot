@@ -21,6 +21,8 @@ from app.database import (
     get_text_poll_history,
     get_poll_pool_refill_threshold_count,
     get_text_pool_tail_rank,
+    list_coverage_participants,
+    list_chat_participants,
     list_pending_texts,
     list_unsummarized_polls,
     mark_poll_failed,
@@ -28,6 +30,8 @@ from app.database import (
     mark_summary_sent,
     poll_stats,
     replace_poll_votes,
+    snapshot_poll_recipients,
+    sync_chat_participants,
     upsert_contact_profile,
 )
 from app.database import normalize_phone_number
@@ -273,6 +277,92 @@ async def _refill_pool_if_needed(*, settings: RuntimeConfig, database_url: str, 
         await fill_poll_pool(settings=settings, database_url=database_url, text_id=text_id)
 
 
+async def sync_text_roster(
+    *,
+    settings: RuntimeConfig,
+    database_url: str,
+    text_id: int,
+) -> dict[str, Any]:
+    if not settings.greenapi_ready:
+        raise ValueError("GreenAPI configuration is incomplete.")
+    with db_session(database_url) as conn:
+        text = get_text(conn, text_id)
+        if text is None:
+            raise ValueError("Text not found.")
+        if int(text["tenant_id"]) != settings.tenant_id:
+            raise ValueError("Text not found.")
+    chat_id = str(text["chat_id"] or "").strip()
+    if not chat_id:
+        raise ValueError("Text chat ID is required for roster sync.")
+    participants = await create_greenapi_client(settings).get_group_participants(chat_id=chat_id)
+    with db_session(database_url) as conn:
+        synced_at = sync_chat_participants(
+            conn,
+            tenant_id=settings.tenant_id,
+            chat_id=chat_id,
+            participants=participants,
+        )
+        items = list_chat_participants(conn, tenant_id=settings.tenant_id, chat_id=chat_id)
+    active_count = sum(1 for item in items if item["is_active_in_chat"])
+    excluded_count = sum(1 for item in items if item["excluded_from_coverage"])
+    return {
+        "text_id": text_id,
+        "chat_id": chat_id,
+        "last_synced_at": synced_at,
+        "active_count": active_count,
+        "excluded_count": excluded_count,
+        "items": items,
+    }
+
+
+async def prepare_poll_recipient_snapshot(
+    *,
+    settings: RuntimeConfig,
+    database_url: str,
+    poll_id: int,
+    text_id: int,
+    chat_id: str,
+) -> dict[str, Any]:
+    snapshot_source = "unavailable"
+    snapshot_synced_at: str | None = None
+    participants: list[dict[str, Any]] = []
+    if settings.greenapi_ready:
+        try:
+            roster = await sync_text_roster(settings=settings, database_url=database_url, text_id=text_id)
+            snapshot_source = "live_sync"
+            snapshot_synced_at = roster["last_synced_at"]
+            participants = [
+                item for item in roster["items"] if item["is_active_in_chat"] and not item["excluded_from_coverage"]
+            ]
+        except Exception:
+            logger.exception(
+                "poll_roster.sync_failed",
+                extra={"tenant_id": settings.tenant_id, "text_id": text_id, "poll_id": poll_id},
+            )
+    if snapshot_source == "unavailable":
+        with db_session(database_url) as conn:
+            cached = list_coverage_participants(conn, tenant_id=settings.tenant_id, chat_id=chat_id)
+            if cached:
+                snapshot_source = "cached_roster"
+                snapshot_synced_at = str(cached[0]["last_synced_at"]) if "last_synced_at" in cached[0] else None
+                participants = cached
+    with db_session(database_url) as conn:
+        snapshot_count = snapshot_poll_recipients(
+            conn,
+            poll_id=poll_id,
+            tenant_id=settings.tenant_id,
+            chat_id=chat_id,
+            participants=participants,
+            source=snapshot_source,
+            synced_at=snapshot_synced_at,
+        )
+    return {
+        "recipient_snapshot_source": snapshot_source,
+        "recipient_snapshot_synced_at": snapshot_synced_at,
+        "assigned_count": snapshot_count,
+    }
+
+
 async def preview_next_pooled_poll(*, settings: RuntimeConfig, database_url: str, text_id: int) -> GeneratedQuestion:
     with db_session(database_url) as conn:
         text = get_text(conn, text_id)
@@ -310,6 +400,8 @@ async def generate_and_send_poll(
         text = get_text(conn, text_id)
         if text is None:
             raise ValueError("Text not found.")
+        if int(text["tenant_id"]) != settings.tenant_id:
+            raise ValueError("Text not found.")
         queued = get_next_queued_poll(conn, text_id=text_id)
         source_text = get_source_text(conn, text_id)
         history = get_text_poll_history(conn, text_id=text_id)
@@ -338,6 +430,13 @@ async def generate_and_send_poll(
             correct_option=str(queued["correct_option"]),
             explanation=str(queued.get("explanation") or ""),
         )
+    snapshot = await prepare_poll_recipient_snapshot(
+        settings=settings,
+        database_url=database_url,
+        poll_id=poll_id,
+        text_id=text_id,
+        chat_id=str(text["chat_id"]),
+    )
     try:
         message_id = await create_greenapi_client(settings).send_poll(
             chat_id=text["chat_id"],
@@ -368,6 +467,8 @@ async def generate_and_send_poll(
             "poll_id": poll_id,
             "used_pool": used_pool,
             "greenapi_message_id": message_id,
+            "recipient_snapshot_source": snapshot["recipient_snapshot_source"],
+            "assigned_count": snapshot["assigned_count"],
         },
     )
     return poll_id

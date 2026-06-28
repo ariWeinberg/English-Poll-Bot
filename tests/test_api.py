@@ -17,7 +17,9 @@ def reset_db() -> str:
     object.__setattr__(settings, "database_url", TEST_DATABASE_URL)
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
-        conn.execute("TRUNCATE poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
+        conn.execute(
+            "TRUNCATE chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+        )
     init_db(TEST_DATABASE_URL)
     return TEST_DATABASE_URL
 
@@ -113,6 +115,27 @@ def seed_learner_analytics_fixture(database_url: str) -> dict[str, int]:
             scheduled_slot="manual",
         )
 
+        conn.execute(
+            """
+            UPDATE polls
+            SET
+                status = CASE
+                    WHEN id = %s THEN 'sent'
+                    WHEN id = %s THEN 'sent'
+                    WHEN id = %s THEN 'sent'
+                    WHEN id = %s THEN 'sent'
+                END,
+                sent_at = CASE
+                    WHEN id = %s THEN '2026-01-10T08:00:00+00:00'
+                    WHEN id = %s THEN '2026-02-10T08:00:00+00:00'
+                    WHEN id = %s THEN '2025-12-20T08:00:00+00:00'
+                    WHEN id = %s THEN '2026-03-01T08:00:00+00:00'
+                END
+            WHERE id IN (%s, %s, %s, %s)
+            """,
+            (poll_1, poll_2, poll_3, poll_4, poll_1, poll_2, poll_3, poll_4, poll_1, poll_2, poll_3, poll_4),
+        )
+
         upsert_contact_profile(conn, tenant_id=1, voter_wid="111@c.us", phone_number="111", display_name="Dana Cohen")
         upsert_contact_profile(
             conn, tenant_id=2, voter_wid="111@c.us", phone_number="999", display_name="Tenant B Dana"
@@ -144,6 +167,30 @@ def seed_learner_analytics_fixture(database_url: str) -> dict[str, int]:
                 (%s, 'A', '111@c.us', 'Tenant B Dana', '999', 'vote', NULL, TRUE, NULL, '2026-03-01T08:00:00+00:00')
             """,
             (poll_1, poll_1, poll_2, poll_2, poll_3, poll_1, poll_4),
+        )
+        conn.execute(
+            """
+            INSERT INTO poll_recipient_snapshots
+                (poll_id, tenant_id, chat_id, voter_wid, phone_number, display_name, created_at)
+            VALUES
+                (%s, 1, 'group@g.us', '111@c.us', '111', 'Dana Cohen', '2026-01-10T07:59:00+00:00'),
+                (%s, 1, 'group@g.us', '222@c.us', '222', NULL, '2026-01-10T07:59:00+00:00'),
+                (%s, 1, 'group@g.us', '333@c.us', '333', NULL, '2026-01-10T07:59:00+00:00'),
+                (%s, 1, 'group@g.us', '111@c.us', '111', 'Dana Cohen', '2026-02-10T07:59:00+00:00'),
+                (%s, 1, 'group@g.us', '333@c.us', '333', NULL, '2026-02-10T07:59:00+00:00'),
+                (%s, 1, 'group-2@g.us', '111@c.us', '111', 'Dana Cohen', '2025-12-20T07:59:00+00:00'),
+                (%s, 1, 'group-2@g.us', '444@c.us', '444', NULL, '2025-12-20T07:59:00+00:00'),
+                (%s, 2, 'group-b@g.us', '111@c.us', '999', 'Tenant B Dana', '2026-03-01T07:59:00+00:00')
+            """,
+            (poll_1, poll_1, poll_1, poll_2, poll_2, poll_3, poll_3, poll_4),
+        )
+        conn.execute(
+            """
+            UPDATE polls
+            SET recipient_snapshot_source = 'live_sync', recipient_snapshot_synced_at = created_at
+            WHERE id IN (%s, %s, %s, %s)
+            """,
+            (poll_1, poll_2, poll_3, poll_4),
         )
 
     return {"poll_1": poll_1, "poll_2": poll_2, "poll_3": poll_3, "poll_4": poll_4}
@@ -473,8 +520,8 @@ def test_learners_leaderboard_is_tenant_scoped_and_aggregated():
         assert response.status_code == 200
         body = response.json()
 
-    assert body["total"] == 2
-    assert [item["voter_wid"] for item in body["items"]] == ["111@c.us", "222@c.us"]
+    assert body["total"] == 4
+    assert [item["voter_wid"] for item in body["items"]] == ["111@c.us", "222@c.us", "333@c.us", "444@c.us"]
     assert body["items"][0] == {
         "voter_wid": "111@c.us",
         "display_name": "Dana Cohen",
@@ -486,6 +533,10 @@ def test_learners_leaderboard_is_tenant_scoped_and_aggregated():
         "correct_rate": 75.0,
         "accepted_changes_count": 1,
         "ignored_changes_count": 1,
+        "assigned_polls_count": 3,
+        "responded_polls_count": 3,
+        "missed_polls_count": 0,
+        "response_rate": 100.0,
         "first_activity": "2025-12-20T08:00:00+00:00",
         "latest_activity": "2026-02-11T10:00:00+00:00",
     }
@@ -511,9 +562,31 @@ def test_learners_filters_apply_text_and_date_ranges():
                 "correct_rate": 100.0,
                 "accepted_changes_count": 0,
                 "ignored_changes_count": 0,
+                "assigned_polls_count": 1,
+                "responded_polls_count": 1,
+                "missed_polls_count": 0,
+                "response_rate": 100.0,
                 "first_activity": "2025-12-20T08:00:00+00:00",
                 "latest_activity": "2025-12-20T08:00:00+00:00",
-            }
+            },
+            {
+                "voter_wid": "444@c.us",
+                "display_name": "444",
+                "phone_number": "444",
+                "total_counted_votes": 0,
+                "total_polls_seen": 0,
+                "correct_count": 0,
+                "incorrect_count": 0,
+                "correct_rate": 0.0,
+                "accepted_changes_count": 0,
+                "ignored_changes_count": 0,
+                "assigned_polls_count": 1,
+                "responded_polls_count": 0,
+                "missed_polls_count": 1,
+                "response_rate": 0.0,
+                "first_activity": "2025-12-20T08:00:00+00:00",
+                "latest_activity": "2025-12-20T08:00:00+00:00",
+            },
         ]
 
         recent = client.get("/api/v1/learners?date_from=2026-02-01", headers=headers)
@@ -522,12 +595,18 @@ def test_learners_filters_apply_text_and_date_ranges():
         assert items[0]["voter_wid"] == "111@c.us"
         assert items[0]["total_counted_votes"] == 1
         assert items[0]["total_polls_seen"] == 1
+        assert items[0]["assigned_polls_count"] == 1
+        assert items[0]["responded_polls_count"] == 1
+        assert items[0]["missed_polls_count"] == 0
+        assert items[0]["response_rate"] == 100.0
         assert items[0]["correct_count"] == 1
         assert items[0]["incorrect_count"] == 0
         assert items[0]["ignored_changes_count"] == 1
         assert items[0]["first_activity"] == "2026-02-10T08:00:00+00:00"
         assert items[0]["latest_activity"] == "2026-02-11T10:00:00+00:00"
         assert items[1]["voter_wid"] == "222@c.us"
+        assert items[2]["voter_wid"] == "333@c.us"
+        assert items[2]["missed_polls_count"] == 1
 
 
 def test_learner_detail_returns_recent_history_with_accepted_and_ignored_state():
@@ -543,12 +622,17 @@ def test_learner_detail_returns_recent_history_with_accepted_and_ignored_state()
     assert body["learner"]["voter_wid"] == "111@c.us"
     assert body["learner"]["accepted_changes_count"] == 1
     assert body["learner"]["ignored_changes_count"] == 1
+    assert body["learner"]["assigned_polls_count"] == 3
+    assert body["learner"]["responded_polls_count"] == 3
+    assert body["learner"]["missed_polls_count"] == 0
+    assert body["learner"]["response_rate"] == 100.0
     assert [item["poll_id"] for item in body["history"]] == [
         poll_ids["poll_2"],
         poll_ids["poll_2"],
         poll_ids["poll_1"],
         poll_ids["poll_1"],
     ]
+    assert body["missed_polls"] == []
     assert body["history"][0] == {
         "id": body["history"][0]["id"],
         "poll_id": poll_ids["poll_2"],
@@ -565,6 +649,79 @@ def test_learner_detail_returns_recent_history_with_accepted_and_ignored_state()
         "ignored_reason": "manual_lock",
         "recorded_at": "2026-02-11T10:00:00+00:00",
     }
+
+
+def test_learner_detail_includes_recent_missed_polls():
+    database_url = reset_db()
+    poll_ids = seed_learner_analytics_fixture(database_url)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.get("/api/v1/learners/333@c.us?history_limit=4&missed_limit=4", headers=headers)
+        assert response.status_code == 200
+        body = response.json()
+
+    assert body["learner"]["voter_wid"] == "333@c.us"
+    assert body["learner"]["assigned_polls_count"] == 2
+    assert body["learner"]["responded_polls_count"] == 0
+    assert body["learner"]["missed_polls_count"] == 2
+    assert body["learner"]["response_rate"] == 0.0
+    assert body["history"] == []
+    assert [item["poll_id"] for item in body["missed_polls"]] == [poll_ids["poll_2"], poll_ids["poll_1"]]
+    assert body["missed_polls"][0]["recipient_snapshot_source"] == "live_sync"
+
+
+def test_text_roster_and_poll_coverage_routes():
+    database_url = reset_db()
+    poll_ids = seed_learner_analytics_fixture(database_url)
+    with db_session(database_url) as conn:
+        conn.execute(
+            """
+            INSERT INTO chat_participants
+                (tenant_id, chat_id, voter_wid, phone_number, display_name, is_active_in_chat,
+                 excluded_from_coverage, last_synced_at, created_at, updated_at)
+            VALUES
+                (1, 'group@g.us', '111@c.us', '111', 'Dana Cohen', TRUE, FALSE, '2026-02-10T07:59:00+00:00', '2026-02-10T07:59:00+00:00', '2026-02-10T07:59:00+00:00'),
+                (1, 'group@g.us', '222@c.us', '222', NULL, TRUE, FALSE, '2026-02-10T07:59:00+00:00', '2026-02-10T07:59:00+00:00', '2026-02-10T07:59:00+00:00'),
+                (1, 'group@g.us', '333@c.us', '333', NULL, TRUE, TRUE, '2026-02-10T07:59:00+00:00', '2026-02-10T07:59:00+00:00', '2026-02-10T07:59:00+00:00')
+            """
+        )
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        roster = client.get("/api/v1/texts/1/roster", headers=headers)
+        assert roster.status_code == 200
+        roster_body = roster.json()
+        assert roster_body["active_count"] == 3
+        assert roster_body["excluded_count"] == 1
+        assert roster_body["items"][0]["last_synced_at"] == "2026-02-10T07:59:00+00:00"
+
+        toggled = client.patch(
+            "/api/v1/texts/1/roster/222@c.us",
+            headers=headers,
+            json={"excluded_from_coverage": True},
+        )
+        assert toggled.status_code == 200
+        assert toggled.json()["excluded_from_coverage"] is True
+
+        coverage = client.get(f"/api/v1/polls/{poll_ids['poll_1']}/coverage", headers=headers)
+        assert coverage.status_code == 200
+        coverage_body = coverage.json()
+
+    assert coverage_body["coverage_available"] is True
+    assert coverage_body["recipient_snapshot_source"] == "live_sync"
+    assert coverage_body["assigned_count"] == 3
+    assert coverage_body["responded_count"] == 2
+    assert coverage_body["missed_count"] == 1
+    assert coverage_body["response_rate"] == pytest.approx(66.67, abs=0.01)
+    assert coverage_body["items"] == [
+        {
+            "voter_wid": "333@c.us",
+            "display_name": "333",
+            "phone_number": "333",
+            "assigned_at": "2026-01-10T07:59:00+00:00",
+        }
+    ]
 
 
 def test_learner_routes_do_not_leak_cross_tenant_contact_collisions():

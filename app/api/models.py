@@ -114,6 +114,10 @@ class LearnerSummary(BaseModel):
     correct_rate: float
     accepted_changes_count: int
     ignored_changes_count: int
+    assigned_polls_count: int
+    responded_polls_count: int
+    missed_polls_count: int
+    response_rate: float
     first_activity: str | None = None
     latest_activity: str | None = None
 
@@ -135,6 +139,52 @@ class LearnerHistoryItem(BaseModel):
     recorded_at: str
 
 
+class LearnerMissedPollItem(BaseModel):
+    poll_id: int
+    text_id: int
+    question: str
+    sent_at: str | None = None
+    recipient_snapshot_source: str | None = None
+    recipient_snapshot_synced_at: str | None = None
+
+
 class LearnerDetailResponse(BaseModel):
     learner: LearnerSummary
     history: list[LearnerHistoryItem]
+    missed_polls: list[LearnerMissedPollItem]
+
+
+class RosterMemberUpdatePayload(BaseModel):
+    excluded_from_coverage: bool
+
+
+class RosterMember(BaseModel):
+    voter_wid: str
+    display_name: str
+    phone_number: str
+    is_active_in_chat: bool
+    excluded_from_coverage: bool
+    last_synced_at: str | None = None
+
+
+class PollCoverageItem(BaseModel):
+    voter_wid: str
+    display_name: str
+    phone_number: str
+    assigned_at: str | None = None
+
+
+class PollCoverageResponse(BaseModel):
+    poll_id: int
+    coverage_available: bool
+    recipient_snapshot_source: str | None = None
+    recipient_snapshot_synced_at: str | None = None
+    assigned_count: int
+    responded_count: int
+    missed_count: int
+    response_rate: float
+    items: list[PollCoverageItem]
+    total: int
+    page: int
+    page_size: int
+    has_next: bool

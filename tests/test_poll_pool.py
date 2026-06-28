@@ -29,7 +29,9 @@ def reset_db() -> str:
     object.__setattr__(settings, "database_url", TEST_DATABASE_URL)
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
-        conn.execute("TRUNCATE poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
+        conn.execute(
+            "TRUNCATE chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+        )
     init_db(TEST_DATABASE_URL)
     return TEST_DATABASE_URL
 
@@ -106,6 +108,13 @@ def test_send_uses_next_queued_poll_and_refills_below_threshold(monkeypatch):
         assert question == "First queued?"
         return "green-msg-1"
 
+    async def fake_get_group_participants(self, *, chat_id: str):
+        assert chat_id == "group@g.us"
+        return [
+            {"voter_wid": "111@c.us", "display_name": "Dana", "phone_number": "111"},
+            {"voter_wid": "222@c.us", "display_name": None, "phone_number": "222"},
+        ]
+
     refill_calls: list[int] = []
 
     async def fake_refill(*, settings, database_url: str, text_id: int, count: int = 5):
@@ -130,6 +139,7 @@ def test_send_uses_next_queued_poll_and_refills_below_threshold(monkeypatch):
         return []
 
     monkeypatch.setattr("app.greenapi.GreenAPIClient.send_poll", fake_send_poll)
+    monkeypatch.setattr("app.greenapi.GreenAPIClient.get_group_participants", fake_get_group_participants)
     monkeypatch.setattr("app.services.fill_poll_pool", fake_refill)
 
     sent_poll_id = asyncio.run(
@@ -142,10 +152,16 @@ def test_send_uses_next_queued_poll_and_refills_below_threshold(monkeypatch):
         first = get_poll(conn, first_id)
         second = get_poll(conn, second_id)
         queued_count = count_queued_polls(conn, text_id=1)
+        snapshots = conn.execute(
+            "SELECT voter_wid FROM poll_recipient_snapshots WHERE poll_id = %s ORDER BY voter_wid ASC",
+            (first_id,),
+        ).fetchall()
     assert first["status"] == "sent"
     assert first["greenapi_message_id"] == "green-msg-1"
+    assert first["recipient_snapshot_source"] == "live_sync"
     assert second["status"] == "queued"
     assert queued_count == 6
+    assert [row["voter_wid"] for row in snapshots] == ["111@c.us", "222@c.us"]
 
 
 def test_pool_threshold_inherits_tenant_default_and_allows_text_override():
@@ -171,11 +187,16 @@ def test_empty_pool_falls_back_to_immediate_generation(monkeypatch):
         assert question == "Question 99?"
         return "green-msg-99"
 
+    async def fake_get_group_participants(self, *, chat_id: str):
+        assert chat_id == "group@g.us"
+        return [{"voter_wid": "111@c.us", "display_name": "Dana", "phone_number": "111"}]
+
     async def fake_refill_if_needed(*, settings, database_url: str, text_id: int):
         return None
 
     monkeypatch.setattr("app.services.generate_question", fake_generate_question)
     monkeypatch.setattr("app.greenapi.GreenAPIClient.send_poll", fake_send_poll)
+    monkeypatch.setattr("app.greenapi.GreenAPIClient.get_group_participants", fake_get_group_participants)
     monkeypatch.setattr("app.services._refill_pool_if_needed", fake_refill_if_needed)
 
     poll_id = asyncio.run(
@@ -184,8 +205,108 @@ def test_empty_pool_falls_back_to_immediate_generation(monkeypatch):
 
     with db_session(database_url) as conn:
         poll = get_poll(conn, poll_id)
+        snapshot_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM poll_recipient_snapshots WHERE poll_id = %s",
+            (poll_id,),
+        ).fetchone()["count"]
     assert poll["status"] == "sent"
     assert poll["greenapi_message_id"] == "green-msg-99"
+    assert poll["recipient_snapshot_source"] == "live_sync"
+    assert snapshot_count == 1
+
+
+def test_send_falls_back_to_cached_roster_when_live_sync_fails(monkeypatch):
+    database_url = reset_db()
+    runtime = load_runtime_config(database_url, 1)
+    with db_session(database_url) as conn:
+        poll_id = create_poll(
+            conn,
+            tenant_id=1,
+            text_id=1,
+            question="Cached roster?",
+            options=["A", "B", "C", "D"],
+            correct_option="A",
+            explanation="",
+            chat_id="group@g.us",
+            generated_from_text="Body",
+            scheduled_slot=None,
+            status="queued",
+            pool_rank=1,
+        )
+        conn.execute(
+            """
+            INSERT INTO chat_participants
+                (tenant_id, chat_id, voter_wid, phone_number, display_name, is_active_in_chat,
+                 excluded_from_coverage, last_synced_at, created_at, updated_at)
+            VALUES
+                (1, 'group@g.us', '111@c.us', '111', 'Dana', TRUE, FALSE, '2026-01-10T07:59:00+00:00', '2026-01-10T07:59:00+00:00', '2026-01-10T07:59:00+00:00'),
+                (1, 'group@g.us', '222@c.us', '222', NULL, TRUE, FALSE, '2026-01-10T07:59:00+00:00', '2026-01-10T07:59:00+00:00', '2026-01-10T07:59:00+00:00')
+            """
+        )
+
+    async def fake_send_poll(self, *, chat_id: str, question: str, options: list[str]):
+        return "green-msg-cache"
+
+    async def fake_get_group_participants(self, *, chat_id: str):
+        raise RuntimeError("network unavailable")
+
+    async def fake_refill(*, settings, database_url: str, text_id: int):
+        return None
+
+    monkeypatch.setattr("app.greenapi.GreenAPIClient.send_poll", fake_send_poll)
+    monkeypatch.setattr("app.greenapi.GreenAPIClient.get_group_participants", fake_get_group_participants)
+    monkeypatch.setattr("app.services._refill_pool_if_needed", fake_refill)
+
+    sent_poll_id = asyncio.run(
+        generate_and_send_poll(settings=runtime, database_url=database_url, text_id=1, scheduled_slot="manual")
+    )
+
+    assert sent_poll_id == poll_id
+    with db_session(database_url) as conn:
+        poll = get_poll(conn, poll_id)
+        snapshot_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM poll_recipient_snapshots WHERE poll_id = %s",
+            (poll_id,),
+        ).fetchone()["count"]
+    assert poll["recipient_snapshot_source"] == "cached_roster"
+    assert poll["recipient_snapshot_synced_at"] == "2026-01-10T07:59:00+00:00"
+    assert snapshot_count == 2
+
+
+def test_send_marks_coverage_unavailable_without_live_or_cached_roster(monkeypatch):
+    database_url = reset_db()
+    runtime = load_runtime_config(database_url, 1)
+
+    async def fake_generate_question(_settings, _source_text, *, prior_poll_history):
+        return build_question(7)
+
+    async def fake_send_poll(self, *, chat_id: str, question: str, options: list[str]):
+        return "green-msg-unavailable"
+
+    async def fake_get_group_participants(self, *, chat_id: str):
+        raise RuntimeError("network unavailable")
+
+    async def fake_refill(*, settings, database_url: str, text_id: int):
+        return None
+
+    monkeypatch.setattr("app.services.generate_question", fake_generate_question)
+    monkeypatch.setattr("app.greenapi.GreenAPIClient.send_poll", fake_send_poll)
+    monkeypatch.setattr("app.greenapi.GreenAPIClient.get_group_participants", fake_get_group_participants)
+    monkeypatch.setattr("app.services._refill_pool_if_needed", fake_refill)
+
+    poll_id = asyncio.run(
+        generate_and_send_poll(settings=runtime, database_url=database_url, text_id=1, scheduled_slot="manual")
+    )
+
+    with db_session(database_url) as conn:
+        poll = get_poll(conn, poll_id)
+        snapshot_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM poll_recipient_snapshots WHERE poll_id = %s",
+            (poll_id,),
+        ).fetchone()["count"]
+    assert poll["recipient_snapshot_source"] == "unavailable"
+    assert poll["recipient_snapshot_synced_at"] is None
+    assert snapshot_count == 0
 
 
 def test_preview_returns_next_queued_poll_without_consuming():

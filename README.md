@@ -48,6 +48,7 @@ Authenticated API routes live under `/api/v1` and use `Authorization: Bearer <to
 - `POST /api/v1/auth/login`
 - CRUD: `/api/v1/tenants`, `/api/v1/texts`, `/api/v1/polls`, `/api/v1/poll-votes`
 - Learner analytics: `GET /api/v1/learners`, `GET /api/v1/learners/{voter_wid}`
+- Roster and coverage: `GET|POST|PATCH /api/v1/texts/{text_id}/roster...`, `GET /api/v1/polls/{poll_id}/coverage`
 - Actions: `/api/v1/questions/preview`, `/api/v1/polls/send-now`, `/api/v1/summaries/send-now`
 - CSV export: `/api/v1/polls/export.csv`
 - Protected docs: `POST /api/v1/docs/session`, then open `/api/v1/docs?token=...` or `/api/v1/openapi.json?token=...`
@@ -76,7 +77,9 @@ Logs include request IDs, request lifecycle events, scheduler decisions, webhook
 - Per-text morning/evening poll times
 - Per-text morning/evening summary times
 - Optional file attachment for each text
-- Learner progress dashboard with tenant-scoped leaderboard, filters, and per-contact answer history
+- Learner progress dashboard with tenant-scoped leaderboard, missed-response tracking, and per-contact answer history
+- Text-level WhatsApp group roster sync with coverage exclusions
+- Poll-level participation coverage with non-responder lists
 - Separate landing, login, dashboard, learner analytics, and texts pages
 
 ## Webhooks

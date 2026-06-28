@@ -64,6 +64,10 @@ def _learner_sort_sql(sort_by: str, sort_dir: str) -> str:
         "incorrect_count": "incorrect_count",
         "accepted_changes_count": "accepted_changes_count",
         "ignored_changes_count": "ignored_changes_count",
+        "assigned_polls_count": "assigned_polls_count",
+        "responded_polls_count": "responded_polls_count",
+        "missed_polls_count": "missed_polls_count",
+        "response_rate": "response_rate",
     }
     column = mapping.get(sort_by, "latest_activity")
     nulls = "NULLS FIRST" if direction == "ASC" else "NULLS LAST"
@@ -72,12 +76,10 @@ def _learner_sort_sql(sort_by: str, sort_dir: str) -> str:
     return f"{column} {direction} {nulls}, display_name ASC, voter_wid ASC"
 
 
-def _learner_filters(
+def _learner_poll_filters(
     *,
     tenant_id: int,
     text_id: int | None = None,
-    search: str | None = None,
-    voter_wid: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> tuple[str, list[Any]]:
@@ -86,98 +88,207 @@ def _learner_filters(
     if text_id is not None:
         where.append("polls.text_id = %s")
         params.append(text_id)
-    if voter_wid:
-        where.append("poll_vote_events.voter_wid = %s")
-        params.append(voter_wid.strip())
-    if search:
-        where.append(
-            """
-            (
-                poll_vote_events.voter_wid ILIKE %s
-                OR COALESCE(contact_profiles.display_name, poll_vote_events.voter_name, poll_vote_events.phone_number, poll_vote_events.voter_wid) ILIKE %s
-                OR COALESCE(poll_vote_events.phone_number, '') ILIKE %s
-            )
-            """
-        )
-        like = _like(search)
-        params.extend([like, like, like])
     if date_from:
         operator, value = _coerce_filter_datetime(date_from, end=False)
-        where.append(f"poll_vote_events.recorded_at {operator} %s")
+        where.append(f"polls.sent_at {operator} %s")
         params.append(value)
     if date_to:
         operator, value = _coerce_filter_datetime(date_to, end=True)
-        where.append(f"poll_vote_events.recorded_at {operator} %s")
+        where.append(f"polls.sent_at {operator} %s")
         params.append(value)
     return " AND ".join(where), params
 
 
-def _learner_aggregate_cte(where_sql: str) -> str:
+def _learner_aggregate_cte(where_sql: str, *, search: str | None = None, voter_wid: str | None = None) -> str:
+    final_filters = ["1 = 1"]
+    if voter_wid:
+        final_filters.append("voter_wid = %s")
+    if search:
+        final_filters.append(
+            """
+            (
+                voter_wid ILIKE %s
+                OR display_name ILIKE %s
+                OR phone_number ILIKE %s
+            )
+            """
+        )
+    final_where_sql = " AND ".join(final_filters)
     return f"""
-        WITH filtered_events AS (
+        WITH filtered_polls AS (
             SELECT
-                poll_vote_events.id,
-                poll_vote_events.poll_id,
-                poll_vote_events.option_name,
-                poll_vote_events.voter_wid,
-                poll_vote_events.voter_name,
-                poll_vote_events.phone_number,
-                poll_vote_events.event_type,
-                poll_vote_events.previous_option_name,
-                poll_vote_events.accepted,
-                poll_vote_events.ignored_reason,
-                poll_vote_events.recorded_at,
+                polls.id,
+                polls.tenant_id,
                 polls.text_id,
                 polls.question,
                 polls.correct_option,
-                contact_profiles.display_name AS profile_display_name
-            FROM poll_vote_events
-            JOIN polls ON polls.id = poll_vote_events.poll_id
-            LEFT JOIN contact_profiles
-                ON contact_profiles.tenant_id = polls.tenant_id
-               AND contact_profiles.voter_wid = poll_vote_events.voter_wid
+                polls.sent_at,
+                polls.recipient_snapshot_source,
+                polls.recipient_snapshot_synced_at
+            FROM polls
             WHERE {where_sql}
         ),
-        learner_rollup AS (
+        assignment_rollup AS (
+            SELECT
+                poll_recipient_snapshots.voter_wid,
+                (ARRAY_AGG(
+                    COALESCE(
+                        NULLIF(poll_recipient_snapshots.display_name, ''),
+                        NULLIF(poll_recipient_snapshots.phone_number, ''),
+                        poll_recipient_snapshots.voter_wid
+                    )
+                    ORDER BY filtered_polls.sent_at DESC NULLS LAST, poll_recipient_snapshots.created_at DESC
+                ))[1] AS display_name,
+                (ARRAY_AGG(
+                    COALESCE(
+                        NULLIF(poll_recipient_snapshots.phone_number, ''),
+                        NULLIF(regexp_replace(split_part(poll_recipient_snapshots.voter_wid, '@', 1), '\\D', '', 'g'), ''),
+                        split_part(poll_recipient_snapshots.voter_wid, '@', 1)
+                    )
+                    ORDER BY filtered_polls.sent_at DESC NULLS LAST, poll_recipient_snapshots.created_at DESC
+                ))[1] AS phone_number,
+                COUNT(DISTINCT poll_recipient_snapshots.poll_id)::INT AS assigned_polls_count,
+                MIN(filtered_polls.sent_at) AS first_assigned_at,
+                MAX(filtered_polls.sent_at) AS latest_assigned_at
+            FROM poll_recipient_snapshots
+            JOIN filtered_polls ON filtered_polls.id = poll_recipient_snapshots.poll_id
+            GROUP BY poll_recipient_snapshots.voter_wid
+        ),
+        response_rollup AS (
+            SELECT
+                poll_votes.voter_wid,
+                (ARRAY_AGG(
+                    COALESCE(
+                        NULLIF(contact_profiles.display_name, ''),
+                        NULLIF(poll_votes.voter_name, ''),
+                        NULLIF(poll_votes.phone_number, ''),
+                        poll_votes.voter_wid
+                    )
+                    ORDER BY filtered_polls.sent_at DESC NULLS LAST, poll_votes.updated_at DESC
+                ))[1] AS display_name,
+                (ARRAY_AGG(
+                    COALESCE(
+                        NULLIF(poll_votes.phone_number, ''),
+                        NULLIF(regexp_replace(split_part(poll_votes.voter_wid, '@', 1), '\\D', '', 'g'), ''),
+                        split_part(poll_votes.voter_wid, '@', 1)
+                    )
+                    ORDER BY filtered_polls.sent_at DESC NULLS LAST, poll_votes.updated_at DESC
+                ))[1] AS phone_number,
+                COUNT(DISTINCT poll_votes.poll_id)::INT AS responded_polls_count,
+                COUNT(*)::INT AS total_counted_votes,
+                COUNT(*) FILTER (
+                    WHERE poll_votes.option_name = filtered_polls.correct_option
+                )::INT AS correct_count,
+                COUNT(*) FILTER (
+                    WHERE poll_votes.option_name <> filtered_polls.correct_option
+                )::INT AS incorrect_count,
+                MIN(poll_votes.first_accepted_at) AS first_response_at,
+                MAX(poll_votes.updated_at) AS latest_response_at
+            FROM poll_votes
+            JOIN filtered_polls ON filtered_polls.id = poll_votes.poll_id
+            LEFT JOIN contact_profiles
+                ON contact_profiles.tenant_id = filtered_polls.tenant_id
+               AND contact_profiles.voter_wid = poll_votes.voter_wid
+            GROUP BY poll_votes.voter_wid
+        ),
+        change_rollup AS (
             SELECT
                 voter_wid,
                 (ARRAY_AGG(
                     COALESCE(
-                        NULLIF(profile_display_name, ''),
-                        NULLIF(voter_name, ''),
-                        NULLIF(phone_number, ''),
+                        NULLIF(contact_profiles.display_name, ''),
+                        NULLIF(poll_vote_events.voter_name, ''),
+                        NULLIF(poll_vote_events.phone_number, ''),
                         voter_wid
                     )
-                    ORDER BY recorded_at DESC, id DESC
+                    ORDER BY poll_vote_events.recorded_at DESC, poll_vote_events.id DESC
                 ))[1] AS display_name,
                 (ARRAY_AGG(
                     COALESCE(
-                        NULLIF(phone_number, ''),
+                        NULLIF(poll_vote_events.phone_number, ''),
                         NULLIF(regexp_replace(split_part(voter_wid, '@', 1), '\\D', '', 'g'), ''),
                         split_part(voter_wid, '@', 1)
                     )
-                    ORDER BY recorded_at DESC, id DESC
+                    ORDER BY poll_vote_events.recorded_at DESC, poll_vote_events.id DESC
                 ))[1] AS phone_number,
                 COUNT(*) FILTER (
-                    WHERE accepted = TRUE AND event_type IN ('vote', 'change')
-                )::INT AS total_counted_votes,
-                COUNT(DISTINCT poll_id)::INT AS total_polls_seen,
-                COUNT(*) FILTER (
-                    WHERE accepted = TRUE AND event_type IN ('vote', 'change') AND option_name = correct_option
-                )::INT AS correct_count,
-                COUNT(*) FILTER (
-                    WHERE accepted = TRUE AND event_type IN ('vote', 'change') AND option_name <> correct_option
-                )::INT AS incorrect_count,
-                COUNT(*) FILTER (
-                    WHERE accepted = TRUE AND event_type = 'change'
+                    WHERE poll_vote_events.accepted = TRUE AND poll_vote_events.event_type = 'change'
                 )::INT AS accepted_changes_count,
                 COUNT(*) FILTER (
-                    WHERE accepted = FALSE AND event_type = 'change'
+                    WHERE poll_vote_events.accepted = FALSE AND poll_vote_events.event_type = 'change'
                 )::INT AS ignored_changes_count,
-                MIN(recorded_at) AS first_activity,
-                MAX(recorded_at) AS latest_activity
-            FROM filtered_events
-            GROUP BY voter_wid
+                MIN(poll_vote_events.recorded_at) AS first_event_at,
+                MAX(poll_vote_events.recorded_at) AS latest_event_at
+            FROM poll_vote_events
+            JOIN filtered_polls ON filtered_polls.id = poll_vote_events.poll_id
+            LEFT JOIN contact_profiles
+                ON contact_profiles.tenant_id = filtered_polls.tenant_id
+               AND contact_profiles.voter_wid = poll_vote_events.voter_wid
+            GROUP BY poll_vote_events.voter_wid
+        ),
+        learners AS (
+            SELECT voter_wid FROM assignment_rollup
+            UNION
+            SELECT voter_wid FROM response_rollup
+            UNION
+            SELECT voter_wid FROM change_rollup
+        ),
+        learner_rollup AS (
+            SELECT
+                learners.voter_wid,
+                COALESCE(
+                    assignment_rollup.display_name,
+                    response_rollup.display_name,
+                    change_rollup.display_name,
+                    learners.voter_wid
+                ) AS display_name,
+                COALESCE(
+                    assignment_rollup.phone_number,
+                    response_rollup.phone_number,
+                    change_rollup.phone_number,
+                    NULLIF(regexp_replace(split_part(learners.voter_wid, '@', 1), '\\D', '', 'g'), ''),
+                    split_part(learners.voter_wid, '@', 1)
+                ) AS phone_number,
+                COALESCE(response_rollup.total_counted_votes, 0) AS total_counted_votes,
+                COALESCE(response_rollup.responded_polls_count, 0) AS total_polls_seen,
+                COALESCE(response_rollup.correct_count, 0) AS correct_count,
+                COALESCE(response_rollup.incorrect_count, 0) AS incorrect_count,
+                COALESCE(change_rollup.accepted_changes_count, 0) AS accepted_changes_count,
+                COALESCE(change_rollup.ignored_changes_count, 0) AS ignored_changes_count,
+                COALESCE(assignment_rollup.assigned_polls_count, 0) AS assigned_polls_count,
+                COALESCE(response_rollup.responded_polls_count, 0) AS responded_polls_count,
+                GREATEST(
+                    COALESCE(assignment_rollup.assigned_polls_count, 0) - COALESCE(response_rollup.responded_polls_count, 0),
+                    0
+                ) AS missed_polls_count,
+                CASE
+                    WHEN COALESCE(assignment_rollup.assigned_polls_count, 0) > 0
+                        THEN ROUND(
+                            COALESCE(response_rollup.responded_polls_count, 0)::numeric * 100.0
+                            / assignment_rollup.assigned_polls_count,
+                            2
+                        )
+                    ELSE 0
+                END AS response_rate,
+                LEAST(
+                    COALESCE(assignment_rollup.first_assigned_at, '9999-12-31T00:00:00+00:00'),
+                    COALESCE(response_rollup.first_response_at, '9999-12-31T00:00:00+00:00'),
+                    COALESCE(change_rollup.first_event_at, '9999-12-31T00:00:00+00:00')
+                ) AS first_activity,
+                GREATEST(
+                    COALESCE(assignment_rollup.latest_assigned_at, '0001-01-01T00:00:00+00:00'),
+                    COALESCE(response_rollup.latest_response_at, '0001-01-01T00:00:00+00:00'),
+                    COALESCE(change_rollup.latest_event_at, '0001-01-01T00:00:00+00:00')
+                ) AS latest_activity
+            FROM learners
+            LEFT JOIN assignment_rollup ON assignment_rollup.voter_wid = learners.voter_wid
+            LEFT JOIN response_rollup ON response_rollup.voter_wid = learners.voter_wid
+            LEFT JOIN change_rollup ON change_rollup.voter_wid = learners.voter_wid
+        ),
+        filtered_learners AS (
+            SELECT *
+            FROM learner_rollup
+            WHERE {final_where_sql}
         )
     """
 
@@ -199,9 +310,13 @@ def _learner_select_sql() -> str:
             END AS correct_rate,
             accepted_changes_count,
             ignored_changes_count,
-            first_activity,
-            latest_activity
-        FROM learner_rollup
+            assigned_polls_count,
+            responded_polls_count,
+            missed_polls_count,
+            response_rate,
+            NULLIF(first_activity, '9999-12-31T00:00:00+00:00') AS first_activity,
+            NULLIF(latest_activity, '0001-01-01T00:00:00+00:00') AS latest_activity
+        FROM filtered_learners
     """
 
 
@@ -344,12 +459,41 @@ def init_db(database_url: str) -> None:
                 UNIQUE (tenant_id, voter_wid)
             );
 
+            CREATE TABLE IF NOT EXISTS chat_participants (
+                id SERIAL PRIMARY KEY,
+                tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                chat_id TEXT NOT NULL,
+                voter_wid TEXT NOT NULL,
+                phone_number TEXT,
+                display_name TEXT,
+                is_active_in_chat BOOLEAN NOT NULL DEFAULT TRUE,
+                excluded_from_coverage BOOLEAN NOT NULL DEFAULT FALSE,
+                last_synced_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (tenant_id, chat_id, voter_wid)
+            );
+
+            CREATE TABLE IF NOT EXISTS poll_recipient_snapshots (
+                id SERIAL PRIMARY KEY,
+                poll_id INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+                tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                chat_id TEXT NOT NULL,
+                voter_wid TEXT NOT NULL,
+                phone_number TEXT,
+                display_name TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE (poll_id, voter_wid)
+            );
+
             ALTER TABLE polls ADD COLUMN IF NOT EXISTS change_window_seconds INTEGER;
             ALTER TABLE polls ADD COLUMN IF NOT EXISTS manual_lock BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE polls ADD COLUMN IF NOT EXISTS auto_lock_seconds INTEGER;
             ALTER TABLE tenants ADD COLUMN IF NOT EXISTS poll_pool_threshold_percent INTEGER NOT NULL DEFAULT 80;
             ALTER TABLE texts ADD COLUMN IF NOT EXISTS poll_pool_threshold_percent INTEGER;
             ALTER TABLE polls ADD COLUMN IF NOT EXISTS pool_rank INTEGER;
+            ALTER TABLE polls ADD COLUMN IF NOT EXISTS recipient_snapshot_source TEXT;
+            ALTER TABLE polls ADD COLUMN IF NOT EXISTS recipient_snapshot_synced_at TEXT;
             ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS voter_name TEXT;
             ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS phone_number TEXT;
             ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS first_accepted_at TEXT;
@@ -379,6 +523,12 @@ def init_db(database_url: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_vote_events_voter_wid ON poll_vote_events(voter_wid);
             CREATE INDEX IF NOT EXISTS idx_vote_events_recorded_at ON poll_vote_events(recorded_at);
             CREATE INDEX IF NOT EXISTS idx_contact_profiles_tenant_voter ON contact_profiles(tenant_id, voter_wid);
+            CREATE INDEX IF NOT EXISTS idx_chat_participants_tenant_chat ON chat_participants(tenant_id, chat_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_participants_tenant_chat_active
+                ON chat_participants(tenant_id, chat_id, is_active_in_chat, excluded_from_coverage);
+            CREATE INDEX IF NOT EXISTS idx_poll_recipient_snapshots_poll ON poll_recipient_snapshots(poll_id);
+            CREATE INDEX IF NOT EXISTS idx_poll_recipient_snapshots_tenant_voter
+                ON poll_recipient_snapshots(tenant_id, voter_wid);
             """
         )
         timestamp = now_iso()
@@ -753,9 +903,10 @@ def create_poll(
         """
         INSERT INTO polls (
             tenant_id, text_id, question, options_json, correct_option, explanation, chat_id,
-            generated_from_text, status, scheduled_slot, change_window_seconds, manual_lock, auto_lock_seconds, pool_rank, created_at
+            generated_from_text, status, scheduled_slot, change_window_seconds, manual_lock, auto_lock_seconds,
+            pool_rank, recipient_snapshot_source, recipient_snapshot_synced_at, created_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -773,6 +924,8 @@ def create_poll(
             manual_lock,
             auto_lock_seconds,
             pool_rank,
+            None,
+            None,
             now_iso(),
         ),
     ).fetchone()
@@ -935,6 +1088,8 @@ def update_poll(
     change_window_seconds: int | None,
     manual_lock: bool,
     auto_lock_seconds: int | None,
+    recipient_snapshot_source: str | None = None,
+    recipient_snapshot_synced_at: str | None = None,
 ) -> None:
     conn.execute(
         """
@@ -943,7 +1098,8 @@ def update_poll(
             correct_option = %s, explanation = %s, greenapi_message_id = %s,
             chat_id = %s, generated_from_text = %s, status = %s, scheduled_slot = %s,
             sent_at = %s, summary_sent_at = %s, pool_rank = %s, change_window_seconds = %s,
-            manual_lock = %s, auto_lock_seconds = %s
+            manual_lock = %s, auto_lock_seconds = %s,
+            recipient_snapshot_source = %s, recipient_snapshot_synced_at = %s
         WHERE id = %s
         """,
         (
@@ -964,6 +1120,8 @@ def update_poll(
             change_window_seconds,
             manual_lock,
             auto_lock_seconds,
+            recipient_snapshot_source,
+            recipient_snapshot_synced_at,
             poll_id,
         ),
     )
@@ -1094,6 +1252,190 @@ def upsert_contact_profile(
             now_iso(),
         ),
     )
+
+
+def list_chat_participants(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    chat_id: str,
+    active_only: bool = False,
+) -> list[DbRow]:
+    where = "WHERE tenant_id = %s AND chat_id = %s"
+    params: list[Any] = [tenant_id, chat_id.strip()]
+    if active_only:
+        where += " AND is_active_in_chat = TRUE"
+    return conn.execute(
+        f"""
+        SELECT
+            voter_wid,
+            COALESCE(
+                NULLIF(display_name, ''),
+                NULLIF(phone_number, ''),
+                voter_wid
+            ) AS display_name,
+            COALESCE(
+                NULLIF(phone_number, ''),
+                NULLIF(regexp_replace(split_part(voter_wid, '@', 1), '\\D', '', 'g'), ''),
+                split_part(voter_wid, '@', 1)
+            ) AS phone_number,
+            is_active_in_chat,
+            excluded_from_coverage,
+            last_synced_at
+        FROM chat_participants
+        {where}
+        ORDER BY is_active_in_chat DESC, excluded_from_coverage ASC, display_name ASC, voter_wid ASC
+        """,
+        params,
+    ).fetchall()
+
+
+def sync_chat_participants(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    chat_id: str,
+    participants: list[dict[str, str | None]],
+    synced_at: str | None = None,
+) -> str:
+    timestamp = synced_at or now_iso()
+    normalized_chat_id = chat_id.strip()
+    conn.execute(
+        """
+        UPDATE chat_participants
+        SET is_active_in_chat = FALSE, last_synced_at = %s, updated_at = %s
+        WHERE tenant_id = %s AND chat_id = %s
+        """,
+        (timestamp, timestamp, tenant_id, normalized_chat_id),
+    )
+    rows: list[tuple[int, str, str, str, str | None, str | None, str, str]] = []
+    for participant in participants:
+        voter_wid = str(participant.get("voter_wid") or "").strip()
+        if not voter_wid:
+            continue
+        display_name = str(participant.get("display_name") or participant.get("voter_name") or "").strip() or None
+        phone_number = str(participant.get("phone_number") or "").strip() or normalize_phone_number(voter_wid)
+        rows.append(
+            (tenant_id, normalized_chat_id, voter_wid, phone_number, display_name, timestamp, timestamp, timestamp)
+        )
+        upsert_contact_profile(
+            conn,
+            tenant_id=tenant_id,
+            voter_wid=voter_wid,
+            phone_number=phone_number,
+            display_name=display_name,
+        )
+    if rows:
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO chat_participants (
+                    tenant_id, chat_id, voter_wid, phone_number, display_name,
+                    last_synced_at, created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (tenant_id, chat_id, voter_wid) DO UPDATE SET
+                    phone_number = COALESCE(EXCLUDED.phone_number, chat_participants.phone_number),
+                    display_name = COALESCE(EXCLUDED.display_name, chat_participants.display_name),
+                    is_active_in_chat = TRUE,
+                    last_synced_at = EXCLUDED.last_synced_at,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                rows,
+            )
+    return timestamp
+
+
+def update_chat_participant_exclusion(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    chat_id: str,
+    voter_wid: str,
+    excluded_from_coverage: bool,
+) -> None:
+    updated = conn.execute(
+        """
+        UPDATE chat_participants
+        SET excluded_from_coverage = %s, updated_at = %s
+        WHERE tenant_id = %s AND chat_id = %s AND voter_wid = %s
+        """,
+        (excluded_from_coverage, now_iso(), tenant_id, chat_id.strip(), voter_wid.strip()),
+    )
+    if updated.rowcount == 0:
+        raise RuntimeError("Roster member not found")
+
+
+def list_coverage_participants(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    chat_id: str,
+) -> list[DbRow]:
+    return conn.execute(
+        """
+        SELECT
+            voter_wid,
+            COALESCE(
+                NULLIF(display_name, ''),
+                NULLIF(phone_number, ''),
+                voter_wid
+            ) AS display_name,
+            COALESCE(
+                NULLIF(phone_number, ''),
+                NULLIF(regexp_replace(split_part(voter_wid, '@', 1), '\\D', '', 'g'), ''),
+                split_part(voter_wid, '@', 1)
+            ) AS phone_number,
+            last_synced_at
+        FROM chat_participants
+        WHERE tenant_id = %s AND chat_id = %s AND is_active_in_chat = TRUE AND excluded_from_coverage = FALSE
+        ORDER BY display_name ASC, voter_wid ASC
+        """,
+        (tenant_id, chat_id.strip()),
+    ).fetchall()
+
+
+def snapshot_poll_recipients(
+    conn: psycopg.Connection[DbRow],
+    *,
+    poll_id: int,
+    tenant_id: int,
+    chat_id: str,
+    participants: list[dict[str, Any]],
+    source: str,
+    synced_at: str | None,
+) -> int:
+    timestamp = now_iso()
+    normalized_chat_id = chat_id.strip()
+    conn.execute("DELETE FROM poll_recipient_snapshots WHERE poll_id = %s", (poll_id,))
+    rows: list[tuple[int, int, str, str, str, str | None, str]] = []
+    for participant in participants:
+        voter_wid = str(participant.get("voter_wid") or "").strip()
+        if not voter_wid:
+            continue
+        display_name = str(participant.get("display_name") or "").strip() or None
+        phone_number = str(participant.get("phone_number") or "").strip() or normalize_phone_number(voter_wid)
+        rows.append((poll_id, tenant_id, normalized_chat_id, voter_wid, phone_number, display_name, timestamp))
+    if rows:
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO poll_recipient_snapshots (
+                    poll_id, tenant_id, chat_id, voter_wid, phone_number, display_name, created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                rows,
+            )
+    conn.execute(
+        """
+        UPDATE polls
+        SET recipient_snapshot_source = %s, recipient_snapshot_synced_at = %s
+        WHERE id = %s
+        """,
+        (source, synced_at, poll_id),
+    )
+    return len(rows)
 
 
 def replace_poll_votes(
@@ -1355,21 +1697,24 @@ def list_learners_page(
     sort_dir: str = "desc",
 ) -> dict[str, Any]:
     page, page_size, offset = _page_bounds(page, page_size)
-    where_sql, params = _learner_filters(
+    where_sql, params = _learner_poll_filters(
         tenant_id=tenant_id,
         text_id=text_id,
-        search=search,
         date_from=date_from,
         date_to=date_to,
     )
-    aggregate_cte = _learner_aggregate_cte(where_sql)
+    aggregate_cte = _learner_aggregate_cte(where_sql, search=search)
+    learner_params = list(params)
+    if search:
+        like = _like(search)
+        learner_params.extend([like, like, like])
     total = conn.execute(
         f"""
         {aggregate_cte}
         SELECT COUNT(*) AS count
-        FROM learner_rollup
+        FROM filtered_learners
         """,
-        params,
+        learner_params,
     ).fetchone()["count"]
     items = conn.execute(
         f"""
@@ -1378,7 +1723,7 @@ def list_learners_page(
         ORDER BY {_learner_sort_sql(sort_by, sort_dir)}
         LIMIT %s OFFSET %s
         """,
-        [*params, page_size, offset],
+        [*learner_params, page_size, offset],
     ).fetchall()
     return paginated_response(items, int(total), page, page_size)
 
@@ -1392,20 +1737,21 @@ def get_learner_summary(
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> DbRow | None:
-    where_sql, params = _learner_filters(
+    where_sql, params = _learner_poll_filters(
         tenant_id=tenant_id,
         text_id=text_id,
-        voter_wid=voter_wid,
         date_from=date_from,
         date_to=date_to,
     )
+    aggregate_cte = _learner_aggregate_cte(where_sql, voter_wid=voter_wid)
+    learner_params = [*params, voter_wid.strip()]
     row = conn.execute(
         f"""
-        {_learner_aggregate_cte(where_sql)}
+        {aggregate_cte}
         {_learner_select_sql()}
         LIMIT 1
         """,
-        params,
+        learner_params,
     ).fetchone()
     return row
 
@@ -1421,10 +1767,9 @@ def list_learner_history(
     limit: int = 25,
 ) -> list[DbRow]:
     safe_limit = min(max(limit, 1), 100)
-    where_sql, params = _learner_filters(
+    where_sql, params = _learner_poll_filters(
         tenant_id=tenant_id,
         text_id=text_id,
-        voter_wid=voter_wid,
         date_from=date_from,
         date_to=date_to,
     )
@@ -1459,12 +1804,141 @@ def list_learner_history(
         LEFT JOIN contact_profiles
             ON contact_profiles.tenant_id = polls.tenant_id
            AND contact_profiles.voter_wid = poll_vote_events.voter_wid
-        WHERE {where_sql}
+        WHERE {where_sql} AND poll_vote_events.voter_wid = %s
         ORDER BY poll_vote_events.recorded_at DESC, poll_vote_events.id DESC
         LIMIT %s
         """,
-        [*params, safe_limit],
+        [*params, voter_wid.strip(), safe_limit],
     ).fetchall()
+
+
+def list_learner_missed_polls(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    voter_wid: str,
+    text_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 25,
+) -> list[DbRow]:
+    safe_limit = min(max(limit, 1), 100)
+    where_sql, params = _learner_poll_filters(
+        tenant_id=tenant_id,
+        text_id=text_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return conn.execute(
+        f"""
+        SELECT
+            polls.id AS poll_id,
+            polls.text_id,
+            polls.question,
+            polls.sent_at,
+            polls.recipient_snapshot_source,
+            polls.recipient_snapshot_synced_at
+        FROM poll_recipient_snapshots
+        JOIN polls ON polls.id = poll_recipient_snapshots.poll_id
+        LEFT JOIN poll_votes
+            ON poll_votes.poll_id = poll_recipient_snapshots.poll_id
+           AND poll_votes.voter_wid = poll_recipient_snapshots.voter_wid
+        WHERE {where_sql}
+          AND poll_recipient_snapshots.voter_wid = %s
+          AND poll_votes.id IS NULL
+        ORDER BY polls.sent_at DESC NULLS LAST, polls.id DESC
+        LIMIT %s
+        """,
+        [*params, voter_wid.strip(), safe_limit],
+    ).fetchall()
+
+
+def get_poll_coverage_page(
+    conn: psycopg.Connection[DbRow],
+    *,
+    poll_id: int,
+    page: int = 1,
+    page_size: int = 25,
+) -> dict[str, Any]:
+    page, page_size, offset = _page_bounds(page, page_size)
+    poll = get_poll(conn, poll_id)
+    if poll is None:
+        raise RuntimeError("Poll not found")
+    snapshot_source = poll.get("recipient_snapshot_source")
+    snapshot_synced_at = poll.get("recipient_snapshot_synced_at")
+    assigned_count = int(
+        conn.execute(
+            "SELECT COUNT(*) AS count FROM poll_recipient_snapshots WHERE poll_id = %s",
+            (poll_id,),
+        ).fetchone()["count"]
+    )
+    responded_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM poll_recipient_snapshots
+            JOIN poll_votes
+              ON poll_votes.poll_id = poll_recipient_snapshots.poll_id
+             AND poll_votes.voter_wid = poll_recipient_snapshots.voter_wid
+            WHERE poll_recipient_snapshots.poll_id = %s
+            """,
+            (poll_id,),
+        ).fetchone()["count"]
+    )
+    total = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM poll_recipient_snapshots
+            LEFT JOIN poll_votes
+              ON poll_votes.poll_id = poll_recipient_snapshots.poll_id
+             AND poll_votes.voter_wid = poll_recipient_snapshots.voter_wid
+            WHERE poll_recipient_snapshots.poll_id = %s AND poll_votes.id IS NULL
+            """,
+            (poll_id,),
+        ).fetchone()["count"]
+    )
+    items = conn.execute(
+        """
+        SELECT
+            poll_recipient_snapshots.voter_wid,
+            COALESCE(
+                NULLIF(poll_recipient_snapshots.display_name, ''),
+                NULLIF(poll_recipient_snapshots.phone_number, ''),
+                poll_recipient_snapshots.voter_wid
+            ) AS display_name,
+            COALESCE(
+                NULLIF(poll_recipient_snapshots.phone_number, ''),
+                NULLIF(regexp_replace(split_part(poll_recipient_snapshots.voter_wid, '@', 1), '\\D', '', 'g'), ''),
+                split_part(poll_recipient_snapshots.voter_wid, '@', 1)
+            ) AS phone_number,
+            poll_recipient_snapshots.created_at AS assigned_at
+        FROM poll_recipient_snapshots
+        LEFT JOIN poll_votes
+          ON poll_votes.poll_id = poll_recipient_snapshots.poll_id
+         AND poll_votes.voter_wid = poll_recipient_snapshots.voter_wid
+        WHERE poll_recipient_snapshots.poll_id = %s AND poll_votes.id IS NULL
+        ORDER BY display_name ASC, poll_recipient_snapshots.voter_wid ASC
+        LIMIT %s OFFSET %s
+        """,
+        (poll_id, page_size, offset),
+    ).fetchall()
+    missed_count = max(assigned_count - responded_count, 0)
+    return {
+        "poll_id": poll_id,
+        "coverage_available": snapshot_source != "unavailable",
+        "recipient_snapshot_source": snapshot_source,
+        "recipient_snapshot_synced_at": snapshot_synced_at,
+        "assigned_count": assigned_count,
+        "responded_count": responded_count,
+        "missed_count": missed_count,
+        "response_rate": round((responded_count / assigned_count * 100), 2) if assigned_count else 0.0,
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_next": page * page_size < total,
+    }
 
 
 def get_poll_vote(conn: psycopg.Connection[DbRow], vote_id: int) -> DbRow | None:

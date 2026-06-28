@@ -56,7 +56,9 @@ def test_handle_greenapi_webhook_ignores_changes_after_change_window(monkeypatch
     assert TEST_DATABASE_URL is not None
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
-        conn.execute("TRUNCATE poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
+        conn.execute(
+            "TRUNCATE chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+        )
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         poll_id = create_poll(
@@ -141,7 +143,9 @@ def test_handle_greenapi_webhook_fetches_contact_name_from_greenapi(monkeypatch)
     assert TEST_DATABASE_URL is not None
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
-        conn.execute("TRUNCATE poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
+        conn.execute(
+            "TRUNCATE chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+        )
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
@@ -200,7 +204,9 @@ def test_handle_greenapi_webhook_accumulates_votes_across_delta_updates():
     assert TEST_DATABASE_URL is not None
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
-        conn.execute("TRUNCATE poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
+        conn.execute(
+            "TRUNCATE chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+        )
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
@@ -260,7 +266,9 @@ def test_handle_greenapi_webhook_records_vote_history_when_vote_changes():
     assert TEST_DATABASE_URL is not None
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
-        conn.execute("TRUNCATE poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
+        conn.execute(
+            "TRUNCATE chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+        )
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
@@ -348,7 +356,9 @@ def test_delete_poll_vote_records_unvote_event():
     assert TEST_DATABASE_URL is not None
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
-        conn.execute("TRUNCATE poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE")
+        conn.execute(
+            "TRUNCATE chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+        )
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         poll_id = create_poll(

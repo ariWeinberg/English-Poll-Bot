@@ -81,6 +81,8 @@ type Poll = {
   change_window_seconds?: number | null;
   manual_lock: boolean;
   auto_lock_seconds?: number | null;
+  recipient_snapshot_source?: string | null;
+  recipient_snapshot_synced_at?: string | null;
   created_at: string;
 };
 
@@ -150,6 +152,10 @@ type LearnerSummary = {
   correct_rate: number;
   accepted_changes_count: number;
   ignored_changes_count: number;
+  assigned_polls_count: number;
+  responded_polls_count: number;
+  missed_polls_count: number;
+  response_rate: number;
   first_activity?: string | null;
   latest_activity?: string | null;
 };
@@ -174,6 +180,57 @@ type LearnerHistoryItem = {
 type LearnerDetail = {
   learner: LearnerSummary;
   history: LearnerHistoryItem[];
+  missed_polls: LearnerMissedPollItem[];
+};
+
+type LearnerMissedPollItem = {
+  poll_id: number;
+  text_id: number;
+  question: string;
+  sent_at?: string | null;
+  recipient_snapshot_source?: string | null;
+  recipient_snapshot_synced_at?: string | null;
+};
+
+type RosterMember = {
+  voter_wid: string;
+  display_name: string;
+  phone_number: string;
+  is_active_in_chat: boolean;
+  excluded_from_coverage: boolean;
+  last_synced_at?: string | null;
+};
+
+type TextRoster = {
+  text_id: number;
+  chat_id: string;
+  last_synced_at?: string | null;
+  active_count: number;
+  excluded_count: number;
+  items: RosterMember[];
+};
+
+type PollCoverageItem = {
+  voter_wid: string;
+  display_name: string;
+  phone_number: string;
+  assigned_at?: string | null;
+};
+
+type PollCoverage = {
+  poll_id: number;
+  coverage_available: boolean;
+  recipient_snapshot_source?: string | null;
+  recipient_snapshot_synced_at?: string | null;
+  assigned_count: number;
+  responded_count: number;
+  missed_count: number;
+  response_rate: number;
+  items: PollCoverageItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_next: boolean;
 };
 
 type GeneratedQuestion = {
@@ -202,7 +259,13 @@ type LearnerFilters = {
   textId: string;
   dateFrom: string;
   dateTo: string;
-  sortBy: "latest_activity" | "total_counted_votes" | "correct_rate";
+  sortBy:
+    | "latest_activity"
+    | "total_counted_votes"
+    | "correct_rate"
+    | "assigned_polls_count"
+    | "missed_polls_count"
+    | "response_rate";
   sortDir: "asc" | "desc";
 };
 type Route =
@@ -470,6 +533,13 @@ function formatActivity(value?: string | null) {
   return value || "—";
 }
 
+function formatSnapshotSource(value?: string | null) {
+  if (value === "live_sync") return "Live sync";
+  if (value === "cached_roster") return "Cached roster";
+  if (value === "unavailable") return "Unavailable";
+  return value || "Unavailable";
+}
+
 function learnerQueryString(tenantId: number, filters: LearnerFilters, extra?: Record<string, string | number | undefined>) {
   const params = new URLSearchParams();
   params.set("tenant_id", String(tenantId));
@@ -700,6 +770,8 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [preview, setPreview] = useState<GeneratedQuestion | null>(null);
   const [currentPool, setCurrentPool] = useState<PollPool | null>(null);
+  const [currentRoster, setCurrentRoster] = useState<TextRoster | null>(null);
+  const [currentCoverage, setCurrentCoverage] = useState<PollCoverage | null>(null);
   const [learnerFilters, setLearnerFilters] = useState<LearnerFilters>({
     search: "",
     textId: "",
@@ -720,12 +792,18 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
         api<Page<VoteEvent>>(`/poll-vote-events?tenant_id=${me.id}&page_size=200`),
         route.name === "text-detail" ? api<PollPool>(`/texts/${route.id}/poll-pool`) : Promise.resolve(null),
       ]);
+      const [roster, coverage] = await Promise.all([
+        route.name === "text-detail" ? api<TextRoster>(`/texts/${route.id}/roster`) : Promise.resolve(null),
+        route.name === "poll-detail" ? api<PollCoverage>(`/polls/${route.id}/coverage?page_size=50`) : Promise.resolve(null),
+      ]);
       setTenant(me);
       setTexts(textPage.items);
       setPolls(pollPage.items);
       setPollStats(stats);
       setVoteEvents(votePage.items);
       setCurrentPool(pool);
+      setCurrentRoster(roster);
+      setCurrentCoverage(coverage);
     } catch (err) {
       setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to load workspace" });
     } finally {
@@ -810,6 +888,32 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
       handleSuccess("Poll pool refilled");
     } catch (err) {
       handleError(err instanceof Error ? err.message : "Poll pool refill failed");
+    }
+  }
+
+  async function handleSyncRoster(textId: number) {
+    try {
+      const result = await api<TextRoster>(`/texts/${textId}/roster/sync`, { method: "POST" });
+      setCurrentRoster(result);
+      handleSuccess("Roster synced");
+    } catch (err) {
+      handleError(err instanceof Error ? err.message : "Roster sync failed");
+    }
+  }
+
+  async function handleToggleRosterExclusion(textId: number, voterWid: string, excluded: boolean) {
+    try {
+      await api<RosterMember>(`/texts/${textId}/roster/${encodeURIComponent(voterWid)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ excluded_from_coverage: excluded }),
+      });
+      if (route.name === "text-detail" && route.id === textId) {
+        const roster = await api<TextRoster>(`/texts/${textId}/roster`);
+        setCurrentRoster(roster);
+      }
+      handleSuccess(excluded ? "Learner excluded from coverage" : "Learner restored to coverage");
+    } catch (err) {
+      handleError(err instanceof Error ? err.message : "Failed to update roster member");
     }
   }
 
@@ -925,10 +1029,13 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
             <TextDetailPage
               text={currentText}
               pool={currentPool}
+              roster={currentRoster}
               onBack={() => navigateTo({ name: "texts" })}
               onEdit={(text) => setTextModal({ mode: "edit", text })}
               onPreview={handlePreview}
               onSendPoll={handleSendPoll}
+              onSyncRoster={handleSyncRoster}
+              onToggleRosterExclusion={handleToggleRosterExclusion}
               onRefillPool={handleRefillPool}
               onMovePoolPoll={handleMovePoolPoll}
               onDelete={(text) => void handleDeleteText(text.id)}
@@ -950,6 +1057,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
             <PollDetailPage
               poll={currentPoll}
               stats={currentPollStats}
+              coverage={currentCoverage}
               voteStatus={currentVoteStatus}
               events={currentPollEvents}
               onBack={() => navigateTo({ name: "polls" })}
@@ -1317,7 +1425,7 @@ function LearnersPage({
         <div>
           <p className="section-kicker">Learner Progress Dashboard</p>
           <h2>Leaderboard</h2>
-          <p className="hero-subtitle">Track participation, answer accuracy, and ignored changes by contact.</p>
+          <p className="hero-subtitle">Track participation, answer accuracy, ignored changes, and missed polls by contact.</p>
         </div>
       </div>
       <div className="toolbar learner-toolbar">
@@ -1362,6 +1470,9 @@ function LearnersPage({
             <option value="latest_activity:desc">Latest activity</option>
             <option value="total_counted_votes:desc">Total answers</option>
             <option value="correct_rate:desc">Accuracy</option>
+            <option value="response_rate:desc">Response rate</option>
+            <option value="missed_polls_count:desc">Most missed polls</option>
+            <option value="assigned_polls_count:desc">Most assigned polls</option>
             <option value="correct_rate:asc">Lowest accuracy</option>
           </select>
         </label>
@@ -1385,6 +1496,9 @@ function LearnersPage({
                   <th>Learner</th>
                   <th>Total answers</th>
                   <th>Polls seen</th>
+                  <th>Assigned</th>
+                  <th>Missed</th>
+                  <th>Response rate</th>
                   <th>Correct</th>
                   <th>Accuracy</th>
                   <th>Accepted changes</th>
@@ -1403,6 +1517,9 @@ function LearnersPage({
                     </td>
                     <td>{item.total_counted_votes}</td>
                     <td>{item.total_polls_seen}</td>
+                    <td>{item.assigned_polls_count}</td>
+                    <td>{item.missed_polls_count}</td>
+                    <td>{item.response_rate.toFixed(1)}%</td>
                     <td>{item.correct_count}/{item.incorrect_count}</td>
                     <td>{item.correct_rate.toFixed(1)}%</td>
                     <td>{item.accepted_changes_count}</td>
@@ -1502,6 +1619,9 @@ function LearnerDetailPage({
         <div className="detail-summary">
           <StatBlock label="Total answers" value={detail.learner.total_counted_votes} />
           <StatBlock label="Polls seen" value={detail.learner.total_polls_seen} />
+          <StatBlock label="Assigned polls" value={detail.learner.assigned_polls_count} />
+          <StatBlock label="Missed polls" value={detail.learner.missed_polls_count} />
+          <StatBlock label="Response rate" value={`${detail.learner.response_rate.toFixed(1)}%`} />
           <StatBlock label="Correct" value={detail.learner.correct_count} />
           <StatBlock label="Incorrect" value={detail.learner.incorrect_count} />
           <StatBlock label="Accuracy" value={`${detail.learner.correct_rate.toFixed(1)}%`} />
@@ -1538,6 +1658,31 @@ function LearnerDetailPage({
             </article>
           ))}
           {detail.history.length === 0 && <EmptyState title="No history in this filter range" body="Try widening the date or text filters." />}
+        </div>
+      </section>
+      <section className="surface">
+        <div className="section-header">
+          <div>
+            <p className="section-kicker">Recent Missed Polls</p>
+            <h3>Coverage gaps</h3>
+          </div>
+        </div>
+        <div className="stack">
+          {detail.missed_polls.map((item) => (
+            <article className="event-row" key={`${item.poll_id}:${item.sent_at || "na"}`}>
+              <div className="event-row-top">
+                <span className="pill">{item.question}</span>
+                <span className="meta-inline">{formatWhen(item.sent_at)}</span>
+              </div>
+              <strong>Poll #{item.poll_id}</strong>
+              <p className="subtle">
+                Snapshot {formatSnapshotSource(item.recipient_snapshot_source)} · synced {formatWhen(item.recipient_snapshot_synced_at)}
+              </p>
+            </article>
+          ))}
+          {detail.missed_polls.length === 0 && (
+            <EmptyState title="No missed polls in this filter range" body="This learner responded to every assigned poll in the current scope." />
+          )}
         </div>
       </section>
     </section>
@@ -1622,10 +1767,13 @@ function TextsPage({
 function TextDetailPage({
   text,
   pool,
+  roster,
   onBack,
   onEdit,
   onPreview,
   onSendPoll,
+  onSyncRoster,
+  onToggleRosterExclusion,
   onRefillPool,
   onMovePoolPoll,
   onDelete,
@@ -1633,10 +1781,13 @@ function TextDetailPage({
 }: {
   text: Text | null;
   pool: PollPool | null;
+  roster: TextRoster | null;
   onBack: () => void;
   onEdit: (text: Text) => void;
   onPreview: (textId: number) => void;
   onSendPoll: (textId: number) => void;
+  onSyncRoster: (textId: number) => void;
+  onToggleRosterExclusion: (textId: number, voterWid: string, excluded: boolean) => void;
   onRefillPool: (textId: number) => void;
   onMovePoolPoll: (pollId: number, poolRank: number) => void;
   onDelete: (text: Text) => void;
@@ -1707,6 +1858,59 @@ function TextDetailPage({
           </button>
         </aside>
       </div>
+
+      <section className="surface">
+        <div className="section-header">
+          <div>
+            <p className="section-kicker">Group Roster</p>
+            <h3>Coverage membership</h3>
+          </div>
+          <button className="button button-secondary" onClick={() => onSyncRoster(text.id)}>
+            <RefreshCw size={16} /> Sync roster
+          </button>
+        </div>
+        <div className="detail-summary">
+          <StatBlock label="Active participants" value={roster?.active_count ?? 0} />
+          <StatBlock label="Excluded" value={roster?.excluded_count ?? 0} />
+          <StatBlock label="Last sync" value={formatWhen(roster?.last_synced_at)} />
+        </div>
+        <div className="status-table-wrap">
+          {roster && roster.items.length > 0 ? (
+            <table className="status-table">
+              <thead>
+                <tr>
+                  <th>Learner</th>
+                  <th>Active in chat</th>
+                  <th>Coverage</th>
+                  <th>Last sync</th>
+                </tr>
+              </thead>
+              <tbody>
+                {roster.items.map((item) => (
+                  <tr key={item.voter_wid}>
+                    <td>
+                      <strong>{item.display_name}</strong>
+                      <div className="meta-inline">{item.phone_number} · {item.voter_wid}</div>
+                    </td>
+                    <td>{item.is_active_in_chat ? "Active" : "Inactive"}</td>
+                    <td>
+                      <button
+                        className={item.excluded_from_coverage ? "button button-ghost" : "button button-secondary"}
+                        onClick={() => onToggleRosterExclusion(text.id, item.voter_wid, !item.excluded_from_coverage)}
+                      >
+                        {item.excluded_from_coverage ? "Excluded" : "Included"}
+                      </button>
+                    </td>
+                    <td>{formatWhen(item.last_synced_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <EmptyState title="No roster synced yet" body="Sync the WhatsApp group participants to track missed responses for this text." />
+          )}
+        </div>
+      </section>
 
       <section className="surface">
         <div className="section-header">
@@ -1857,6 +2061,7 @@ function PollsPage({
 function PollDetailPage({
   poll,
   stats,
+  coverage,
   voteStatus,
   events,
   onBack,
@@ -1865,6 +2070,7 @@ function PollDetailPage({
 }: {
   poll: Poll | null;
   stats: PollStats | null;
+  coverage: PollCoverage | null;
   voteStatus: VoteStatus[];
   events: VoteEvent[];
   onBack: () => void;
@@ -1924,6 +2130,57 @@ function PollDetailPage({
             <StatBlock label="Auto-lock" value={minutesLabel(poll.auto_lock_seconds)} />
           </div>
           <div className="prose-block subtle">{poll.explanation || "No explanation provided."}</div>
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Participation Coverage</p>
+              <h3>Assigned vs responded</h3>
+            </div>
+          </div>
+          <div className="detail-summary">
+            <StatBlock label="Assigned" value={coverage?.assigned_count ?? 0} />
+            <StatBlock label="Responded" value={coverage?.responded_count ?? 0} />
+            <StatBlock label="Missed" value={coverage?.missed_count ?? 0} />
+            <StatBlock label="Response rate" value={`${coverage?.response_rate.toFixed(1) ?? "0.0"}%`} />
+          </div>
+          <div className="prose-block subtle">
+            {coverage?.coverage_available
+              ? `Snapshot ${formatSnapshotSource(coverage?.recipient_snapshot_source)} · synced ${formatWhen(
+                  coverage?.recipient_snapshot_synced_at,
+                )}`
+              : "Coverage was unavailable when this poll was sent, so non-responders could not be determined."}
+          </div>
+          <div className="status-table-wrap">
+            {coverage && coverage.items.length > 0 ? (
+              <table className="status-table">
+                <thead>
+                  <tr>
+                    <th>Non-responder</th>
+                    <th>Assigned at</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {coverage.items.map((item) => (
+                    <tr key={item.voter_wid}>
+                      <td>
+                        <strong>{item.display_name}</strong>
+                        <div className="meta-inline">{item.phone_number} · {item.voter_wid}</div>
+                      </td>
+                      <td>{formatWhen(item.assigned_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <EmptyState
+                title="No missed responses"
+                body={
+                  coverage?.coverage_available
+                    ? "Everyone assigned to this poll has responded."
+                    : "Coverage tracking was unavailable for this poll."
+                }
+              />
+            )}
+          </div>
         </section>
 
         <aside className="surface side-surface">

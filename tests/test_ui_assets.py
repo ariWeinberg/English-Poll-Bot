@@ -14,7 +14,12 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Workspace Settings" in app
     assert "Learner Progress Dashboard" in app
     assert "Recent Answer History" in app
+    assert "Recent Missed Polls" in app
     assert "Participation and accuracy" in app
+    assert "Group Roster" in app
+    assert "Participation Coverage" in app
+    assert "Coverage membership" in app
+    assert "Assigned vs responded" in app
     assert "Poll Events" in app
     assert "Current Vote Status" in app
     assert "formatVoteContact" in app
