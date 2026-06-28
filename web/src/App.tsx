@@ -79,6 +79,15 @@ type ScheduleRule = {
   label?: string | null;
 };
 
+type GroupChat = {
+  chat_id: string;
+  name: string;
+  policy: "allow" | "neutral" | "block";
+  last_synced_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
 type Poll = {
   id: number;
   tenant_id: number;
@@ -300,6 +309,7 @@ type Route =
   | { name: "dashboard" }
   | { name: "learners" }
   | { name: "learner-detail"; voterWid: string }
+  | { name: "chats" }
   | { name: "texts" }
   | { name: "text-detail"; id: number }
   | { name: "rules" }
@@ -502,6 +512,7 @@ function parseRoute(pathname: string): Route {
   if (path === "/register") return { name: "register" };
   if (path === "/dashboard" || path === "/") return { name: "dashboard" };
   if (path === "/learners") return { name: "learners" };
+  if (path === "/chats") return { name: "chats" };
   if (path === "/texts") return { name: "texts" };
   if (path === "/rules") return { name: "rules" };
   if (path === "/polls") return { name: "polls" };
@@ -526,6 +537,8 @@ function routeHref(route: Route): string {
       return "/learners";
     case "learner-detail":
       return `/learners/${encodeURIComponent(route.voterWid)}`;
+    case "chats":
+      return "/chats";
     case "texts":
       return "/texts";
     case "text-detail":
@@ -577,6 +590,12 @@ function describeIgnoredReason(reason?: string | null) {
   if (reason === "auto_lock_expired") return "auto-lock expired";
   if (reason === "change_window_expired") return "change window expired";
   return "rule blocked";
+}
+
+function chatPolicyLabel(policy: GroupChat["policy"]) {
+  if (policy === "allow") return "Allowlist";
+  if (policy === "block") return "Blocklist";
+  return "Neutral";
 }
 
 function minutesLabel(seconds?: number | null) {
@@ -896,6 +915,7 @@ function HeroPoint({ icon, label }: { icon: React.ReactNode; label: string }) {
 
 function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => void }) {
   const [tenant, setTenant] = useState<Tenant | null>(null);
+  const [groupChats, setGroupChats] = useState<GroupChat[]>([]);
   const [texts, setTexts] = useState<Text[]>([]);
   const [scheduleRules, setScheduleRules] = useState<ScheduleRule[]>([]);
   const [polls, setPolls] = useState<Poll[]>([]);
@@ -926,7 +946,8 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
     setLoading(true);
     try {
       const me = await api<Tenant>("/auth/me");
-      const [textPage, ruleList, pollPage, stats, votePage, pool] = await Promise.all([
+      const [chatList, textPage, ruleList, pollPage, stats, votePage, pool] = await Promise.all([
+        api<GroupChat[]>("/chats"),
         api<Page<Text>>(`/texts?tenant_id=${me.id}&page_size=100`),
         api<ScheduleRule[]>("/schedule-rules"),
         api<Page<Poll>>(`/polls?tenant_id=${me.id}&page_size=100`),
@@ -939,6 +960,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
         route.name === "poll-detail" ? api<PollCoverage>(`/polls/${route.id}/coverage?page_size=50`) : Promise.resolve(null),
       ]);
       setTenant(me);
+      setGroupChats(chatList);
       setTexts(textPage.items);
       setScheduleRules(ruleList);
       setPolls(pollPage.items);
@@ -1097,6 +1119,28 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
     handleSuccess("Poll deleted");
   }
 
+  async function handleRefreshChats() {
+    try {
+      const chats = await api<GroupChat[]>("/chats/refresh", { method: "POST" });
+      setGroupChats(chats);
+      handleSuccess("Chats refreshed");
+    } catch (err) {
+      handleError(err instanceof Error ? err.message : "Chat refresh failed");
+    }
+  }
+
+  async function handleUpdateChatPolicy(chatId: string, policy: GroupChat["policy"]) {
+    try {
+      await api<GroupChat>(`/chats/${encodeURIComponent(chatId)}/policy`, {
+        method: "PATCH",
+        body: JSON.stringify({ policy }),
+      });
+      handleSuccess(`Chat moved to ${chatPolicyLabel(policy).toLowerCase()}`);
+    } catch (err) {
+      handleError(err instanceof Error ? err.message : "Failed to update chat policy");
+    }
+  }
+
   if (loading && !tenant) {
     return <LoadingScreen />;
   }
@@ -1156,6 +1200,9 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
               filters={learnerFilters}
               onBack={() => navigateTo({ name: "learners" })}
             />
+          )}
+          {route.name === "chats" && (
+            <ChatsPage chats={groupChats} onRefresh={handleRefreshChats} onSetPolicy={handleUpdateChatPolicy} />
           )}
           {route.name === "texts" && (
             <TextsPage
@@ -1235,6 +1282,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
         <TextModal
           tenant={tenant}
           initialText={textModal.text}
+          availableChats={groupChats}
           availableRules={scheduleRules}
           onClose={() => setTextModal(null)}
           onSaved={(message) => {
@@ -1314,6 +1362,12 @@ function Sidebar({
       label: "Learners",
       route: { name: "learners" } as Route,
       active: route.name === "learners" || route.name === "learner-detail",
+    },
+    {
+      icon: <Building2 size={18} />,
+      label: "Chats",
+      route: { name: "chats" } as Route,
+      active: route.name === "chats",
     },
     {
       icon: <FileText size={18} />,
@@ -1424,6 +1478,8 @@ function routeTitle(route: Route) {
       return "Learners";
     case "learner-detail":
       return "Learner Detail";
+    case "chats":
+      return "Group Chats";
     case "texts":
       return "Texts";
     case "text-detail":
@@ -1938,6 +1994,68 @@ function TextsPage({
           </article>
         ))}
         {filtered.length === 0 && <EmptyState title="No matching texts" body="Try a different search or create a new text." />}
+      </div>
+    </section>
+  );
+}
+
+function ChatsPage({
+  chats,
+  onRefresh,
+  onSetPolicy,
+}: {
+  chats: GroupChat[];
+  onRefresh: () => void;
+  onSetPolicy: (chatId: string, policy: GroupChat["policy"]) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const filtered = chats.filter((chat) => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return true;
+    return [chat.name, chat.chat_id, chatPolicyLabel(chat.policy)].some((value) => value.toLowerCase().includes(needle));
+  });
+
+  return (
+    <section className="resource-page">
+      <div className="section-header">
+        <div>
+          <p className="section-kicker">Chats</p>
+          <h2>Chat Allowlist / Blocklist</h2>
+        </div>
+        <button className="button button-primary" onClick={onRefresh}>
+          <RefreshCw size={16} /> Refresh chats
+        </button>
+      </div>
+      <div className="toolbar">
+        <TextInput label="Search chats" value={search} onChange={setSearch} placeholder="Group name or chat ID" />
+      </div>
+      <div className="resource-grid">
+        {filtered.map((chat) => (
+          <article className="resource-card" key={chat.chat_id}>
+            <div className="resource-main">
+              <div className="resource-topline">
+                <span className="resource-id">{chat.chat_id}</span>
+                <span className={chat.policy === "allow" ? "pill success" : "pill"}>{chatPolicyLabel(chat.policy)}</span>
+              </div>
+              <h3>{chat.name}</h3>
+              <p>Last synced {formatWhen(chat.last_synced_at)}</p>
+            </div>
+            <div className="card-actions">
+              <button className="button button-ghost" onClick={() => onSetPolicy(chat.chat_id, "allow")}>
+                Allow
+              </button>
+              <button className="button button-ghost" onClick={() => onSetPolicy(chat.chat_id, "neutral")}>
+                Neutral
+              </button>
+              <button className="button button-danger" onClick={() => onSetPolicy(chat.chat_id, "block")}>
+                Block
+              </button>
+            </div>
+          </article>
+        ))}
+        {filtered.length === 0 && (
+          <EmptyState title="No chats loaded" body="Refresh group chats from GreenAPI, then manage the allowlist and blocklist here." />
+        )}
       </div>
     </section>
   );
@@ -2641,6 +2759,7 @@ function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () => void }
 function TextModal({
   tenant,
   initialText,
+  availableChats,
   availableRules,
   onClose,
   onSaved,
@@ -2648,6 +2767,7 @@ function TextModal({
 }: {
   tenant: Tenant;
   initialText?: Text;
+  availableChats: GroupChat[];
   availableRules: ScheduleRule[];
   onClose: () => void;
   onSaved: (message: string) => void;
@@ -2662,11 +2782,18 @@ function TextModal({
   const [selectedRuleId, setSelectedRuleId] = useState("");
   const [submitError, setSubmitError] = useState("");
 
+  const selectableChats = availableChats.filter((chat) => chat.policy !== "block");
   const assignedExistingRules = availableRules.filter((rule) => rule.id && form.assigned_rule_ids.includes(rule.id));
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitError("");
+    if (!form.chat_id.trim()) {
+      const message = "Select a WhatsApp group chat before saving the text.";
+      setSubmitError(message);
+      onError(message);
+      return;
+    }
     try {
       const payload = {
         ...form,
@@ -2746,7 +2873,25 @@ function TextModal({
           Body
           <textarea rows={8} value={form.body} onChange={(event) => setForm({ ...form, body: event.target.value })} />
         </label>
-        <TextInput label="WhatsApp group chat ID" value={form.chat_id} onChange={(value) => setForm({ ...form, chat_id: value })} />
+        <label>
+          WhatsApp group chat
+          <select value={form.chat_id} onChange={(event) => setForm({ ...form, chat_id: event.target.value })}>
+            <option value="">{selectableChats.length > 0 ? "Select a group chat" : "No group chats loaded"}</option>
+            {form.chat_id && !selectableChats.some((chat) => chat.chat_id === form.chat_id) && (
+              <option value={form.chat_id}>{form.chat_id}</option>
+            )}
+            {selectableChats.map((chat) => (
+              <option key={chat.chat_id} value={chat.chat_id}>
+                {chat.name} · {chat.chat_id}
+              </option>
+            ))}
+          </select>
+        </label>
+        {selectableChats.length === 0 && (
+          <div className="alert warning">
+            Refresh chats from the Chats page after configuring GreenAPI, then create texts from the dropdown instead of typing chat IDs manually.
+          </div>
+        )}
         <div className="surface">
           <div className="section-header">
             <div>

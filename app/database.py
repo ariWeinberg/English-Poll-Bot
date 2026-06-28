@@ -330,6 +330,7 @@ DEFAULT_POLL_POOL_THRESHOLD_PERCENT = 80
 SCHEDULE_RULE_TYPES = {"daily_time", "weekday_time", "month_date_time", "random_window"}
 SCHEDULE_DELIVERY_TYPES = {"poll", "summary"}
 SCHEDULE_COUNT_MODES = {"fixed", "range"}
+CHAT_POLICIES = {"allow", "neutral", "block"}
 
 
 def normalize_phone_number(value: str) -> str:
@@ -686,6 +687,18 @@ def init_db(database_url: str) -> None:
                 UNIQUE (tenant_id, chat_id, voter_wid)
             );
 
+            CREATE TABLE IF NOT EXISTS tenant_group_chats (
+                id SERIAL PRIMARY KEY,
+                tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                chat_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                policy TEXT NOT NULL DEFAULT 'neutral',
+                last_synced_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (tenant_id, chat_id)
+            );
+
             CREATE TABLE IF NOT EXISTS poll_recipient_snapshots (
                 id SERIAL PRIMARY KEY,
                 poll_id INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
@@ -746,6 +759,8 @@ def init_db(database_url: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_chat_participants_tenant_chat ON chat_participants(tenant_id, chat_id);
             CREATE INDEX IF NOT EXISTS idx_chat_participants_tenant_chat_active
                 ON chat_participants(tenant_id, chat_id, is_active_in_chat, excluded_from_coverage);
+            CREATE INDEX IF NOT EXISTS idx_tenant_group_chats_tenant ON tenant_group_chats(tenant_id);
+            CREATE INDEX IF NOT EXISTS idx_tenant_group_chats_policy ON tenant_group_chats(tenant_id, policy);
             CREATE INDEX IF NOT EXISTS idx_poll_recipient_snapshots_poll ON poll_recipient_snapshots(poll_id);
             CREATE INDEX IF NOT EXISTS idx_poll_recipient_snapshots_tenant_voter
                 ON poll_recipient_snapshots(tenant_id, voter_wid);
@@ -790,6 +805,9 @@ def init_db(database_url: str) -> None:
         _migrate_text_owned_rules_to_shared_rules(conn)
         conn.execute("SELECT setval(pg_get_serial_sequence('tenants', 'id'), COALESCE(MAX(id), 1)) FROM tenants")
         conn.execute("SELECT setval(pg_get_serial_sequence('texts', 'id'), COALESCE(MAX(id), 1)) FROM texts")
+        conn.execute(
+            "SELECT setval(pg_get_serial_sequence('tenant_group_chats', 'id'), COALESCE(MAX(id), 1)) FROM tenant_group_chats"
+        )
         conn.execute(
             "SELECT setval(pg_get_serial_sequence('text_schedule_rules', 'id'), COALESCE(MAX(id), 1)) FROM text_schedule_rules"
         )
@@ -1618,6 +1636,11 @@ def upsert_text(
     new_rules: list[dict[str, Any]] | None = None,
 ) -> int:
     timestamp = now_iso()
+    normalized_chat_id = chat_id.strip()
+    if normalized_chat_id:
+        known_chat = get_tenant_group_chat(conn, tenant_id=tenant_id, chat_id=normalized_chat_id)
+        if known_chat is not None and str(known_chat["policy"]) == "block":
+            raise ValueError("Blocked chats cannot be assigned to texts")
     if text_id is None:
         row = conn.execute(
             """
@@ -1634,7 +1657,7 @@ def upsert_text(
                 body.strip(),
                 attachment_name,
                 attachment_path,
-                chat_id.strip(),
+                normalized_chat_id,
                 max(0, min(100, int(poll_pool_threshold_percent))) if poll_pool_threshold_percent is not None else None,
                 enabled,
                 timestamp,
@@ -1668,7 +1691,7 @@ def upsert_text(
             body.strip(),
             attachment_name if attachment_name is not None else existing["attachment_name"] if existing else None,
             attachment_path if attachment_path is not None else existing["attachment_path"] if existing else None,
-            chat_id.strip(),
+            normalized_chat_id,
             max(0, min(100, int(poll_pool_threshold_percent))) if poll_pool_threshold_percent is not None else None,
             enabled,
             timestamp,
@@ -2073,6 +2096,99 @@ def upsert_contact_profile(
             now_iso(),
         ),
     )
+
+
+def list_tenant_group_chats(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    policy: str | None = None,
+    include_blocked: bool = True,
+) -> list[DbRow]:
+    where = ["tenant_id = %s"]
+    params: list[Any] = [tenant_id]
+    if policy:
+        normalized_policy = policy.strip()
+        if normalized_policy not in CHAT_POLICIES:
+            raise ValueError("policy must be allow, neutral, or block")
+        where.append("policy = %s")
+        params.append(normalized_policy)
+    elif not include_blocked:
+        where.append("policy <> 'block'")
+    return conn.execute(
+        f"""
+        SELECT chat_id, name, policy, last_synced_at, created_at, updated_at
+        FROM tenant_group_chats
+        WHERE {" AND ".join(where)}
+        ORDER BY
+            CASE policy WHEN 'allow' THEN 0 WHEN 'neutral' THEN 1 ELSE 2 END,
+            LOWER(name) ASC,
+            chat_id ASC
+        """,
+        params,
+    ).fetchall()
+
+
+def get_tenant_group_chat(conn: psycopg.Connection[DbRow], *, tenant_id: int, chat_id: str) -> DbRow | None:
+    return conn.execute(
+        """
+        SELECT chat_id, name, policy, last_synced_at, created_at, updated_at
+        FROM tenant_group_chats
+        WHERE tenant_id = %s AND chat_id = %s
+        """,
+        (tenant_id, chat_id.strip()),
+    ).fetchone()
+
+
+def sync_tenant_group_chats(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    chats: list[dict[str, str]],
+    synced_at: str | None = None,
+) -> list[DbRow]:
+    timestamp = synced_at or now_iso()
+    rows: list[tuple[int, str, str, str, str, str]] = []
+    for chat in chats:
+        chat_id = str(chat.get("chat_id") or "").strip()
+        if not chat_id.endswith("@g.us"):
+            continue
+        name = str(chat.get("name") or chat_id).strip() or chat_id
+        rows.append((tenant_id, chat_id, name, timestamp, timestamp, timestamp))
+    if rows:
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO tenant_group_chats (
+                    tenant_id, chat_id, name, last_synced_at, created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (tenant_id, chat_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    last_synced_at = EXCLUDED.last_synced_at,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                rows,
+            )
+    return list_tenant_group_chats(conn, tenant_id=tenant_id)
+
+
+def update_tenant_group_chat_policy(
+    conn: psycopg.Connection[DbRow], *, tenant_id: int, chat_id: str, policy: str
+) -> None:
+    normalized_policy = policy.strip()
+    if normalized_policy not in CHAT_POLICIES:
+        raise ValueError("policy must be allow, neutral, or block")
+    updated = conn.execute(
+        """
+        UPDATE tenant_group_chats
+        SET policy = %s, updated_at = %s
+        WHERE tenant_id = %s AND chat_id = %s
+        """,
+        (normalized_policy, now_iso(), tenant_id, chat_id.strip()),
+    )
+    if updated.rowcount == 0:
+        raise RuntimeError("Chat not found")
 
 
 def list_chat_participants(

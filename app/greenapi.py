@@ -25,7 +25,7 @@ class GreenAPIClient:
             f"/{method}/{self.config.api_token_instance}"
         )
 
-    async def _post(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _post_json(self, method: str, payload: dict[str, Any]) -> Any:
         try:
             import httpx
         except ModuleNotFoundError as exc:
@@ -34,7 +34,10 @@ class GreenAPIClient:
             response = await client.post(self._url(method), json=payload)
         if response.status_code >= 400:
             raise GreenAPIError(f"{method} failed {response.status_code}: {response.text}")
-        data = response.json()
+        return response.json()
+
+    async def _post(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        data = await self._post_json(method, payload)
         if not isinstance(data, dict):
             raise GreenAPIError(f"{method} returned an unexpected payload: {data}")
         return data
@@ -80,6 +83,26 @@ class GreenAPIClient:
         if not isinstance(raw_items, list):
             raise GreenAPIError(f"getGroupData returned an unexpected participants payload: {data}")
         return [participant for item in raw_items if (participant := parse_group_participant(item)) is not None]
+
+    async def get_group_chats(self) -> list[dict[str, str]]:
+        data = await self._post_json("getChats", {})
+        raw_items: Any = data
+        if isinstance(raw_items, dict):
+            raw_items = (
+                raw_items.get("chats")
+                or raw_items.get("items")
+                or raw_items.get("data")
+                or raw_items.get("results")
+                or []
+            )
+        if not isinstance(raw_items, list):
+            raise GreenAPIError(f"getChats returned an unexpected payload: {data}")
+        chats: list[dict[str, str]] = []
+        for item in raw_items:
+            parsed = parse_group_chat(item)
+            if parsed is not None:
+                chats.append(parsed)
+        return chats
 
 
 def build_poll_payload(
@@ -131,6 +154,25 @@ def parse_group_participant(value: Any) -> dict[str, str | None] | None:
         "display_name": display_name,
         "phone_number": phone_number,
     }
+
+
+def parse_group_chat(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    chat_id = str(
+        value.get("chatId") or value.get("id") or value.get("groupId") or value.get("wid") or value.get("chat") or ""
+    ).strip()
+    if not chat_id.endswith("@g.us"):
+        return None
+    name = str(
+        value.get("name")
+        or value.get("subject")
+        or value.get("title")
+        or value.get("groupName")
+        or value.get("chatName")
+        or chat_id
+    ).strip()
+    return {"chat_id": chat_id, "name": name or chat_id}
 
 
 def normalize_phone(value: str) -> str:

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.routes import actions, auth, docs, learners, polls, schedule_rules, tenants, texts, votes
+from app.api.routes import actions, auth, chats, docs, learners, polls, schedule_rules, tenants, texts, votes
 from app.config import settings
 from app.core.logging import RequestLoggingRoute, configure_logging, get_logger
 from app.database import init_db
@@ -46,6 +46,7 @@ def create_app() -> FastAPI:
     application.include_router(auth.router)
     application.include_router(docs.router)
     application.include_router(tenants.router)
+    application.include_router(chats.router)
     application.include_router(texts.router)
     application.include_router(schedule_rules.router)
     application.include_router(polls.router)

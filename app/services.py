@@ -23,6 +23,7 @@ from app.database import (
     get_text_pool_tail_rank,
     list_coverage_participants,
     list_chat_participants,
+    list_tenant_group_chats,
     list_pending_texts,
     list_unsummarized_polls,
     mark_poll_failed,
@@ -31,6 +32,7 @@ from app.database import (
     poll_stats,
     replace_poll_votes,
     snapshot_poll_recipients,
+    sync_tenant_group_chats,
     sync_chat_participants,
     upsert_contact_profile,
 )
@@ -317,6 +319,28 @@ async def sync_text_roster(
         "excluded_count": excluded_count,
         "items": items,
     }
+
+
+async def refresh_tenant_group_chats(
+    *,
+    settings: RuntimeConfig,
+    database_url: str,
+) -> list[dict[str, Any]]:
+    if not settings.greenapi_ready:
+        raise ValueError("GreenAPI configuration is incomplete.")
+    chats = await create_greenapi_client(settings).get_group_chats()
+    with db_session(database_url) as conn:
+        return sync_tenant_group_chats(conn, tenant_id=settings.tenant_id, chats=chats)
+
+
+def list_known_tenant_group_chats(
+    *,
+    database_url: str,
+    tenant_id: int,
+    include_blocked: bool = True,
+) -> list[dict[str, Any]]:
+    with db_session(database_url) as conn:
+        return list_tenant_group_chats(conn, tenant_id=tenant_id, include_blocked=include_blocked)
 
 
 async def prepare_poll_recipient_snapshot(

@@ -1,4 +1,4 @@
-from app.greenapi import build_poll_payload, parse_group_participant
+from app.greenapi import build_poll_payload, parse_group_chat, parse_group_participant
 
 
 def test_build_poll_payload_matches_greenapi_send_poll_shape():
@@ -29,3 +29,11 @@ def test_parse_group_participant_normalizes_supported_shapes():
         "phone_number": "222",
     }
     assert parse_group_participant({"id": "", "name": "Missing"}) is None
+
+
+def test_parse_group_chat_filters_non_groups_and_keeps_name():
+    assert parse_group_chat({"chatId": "120363000@g.us", "name": "Morning Group"}) == {
+        "chat_id": "120363000@g.us",
+        "name": "Morning Group",
+    }
+    assert parse_group_chat({"id": "111@c.us", "name": "Direct chat"}) is None

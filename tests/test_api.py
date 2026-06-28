@@ -19,7 +19,7 @@ def reset_db() -> str:
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
-            "TRUNCATE text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+            "TRUNCATE tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
         )
     init_db(TEST_DATABASE_URL)
     return TEST_DATABASE_URL
@@ -446,6 +446,48 @@ def test_text_create_supports_assigned_rule_ids_and_inline_new_rules():
             },
         )
         assert invalid.status_code == 422
+
+
+def test_chat_catalog_routes_and_blocked_chat_rejection(monkeypatch):
+    reset_db()
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+
+        async def fake_refresh(*, settings, database_url):
+            del settings, database_url
+            with db_session(TEST_DATABASE_URL) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO tenant_group_chats
+                        (tenant_id, chat_id, name, policy, last_synced_at, created_at, updated_at)
+                    VALUES
+                        (1, 'group-a@g.us', 'Group A', 'neutral', '2026-06-28T12:00:00+00:00', '2026-06-28T12:00:00+00:00', '2026-06-28T12:00:00+00:00')
+                    ON CONFLICT (tenant_id, chat_id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        last_synced_at = EXCLUDED.last_synced_at,
+                        updated_at = EXCLUDED.updated_at
+                    """
+                )
+                return conn.execute(
+                    "SELECT chat_id, name, policy, last_synced_at FROM tenant_group_chats WHERE tenant_id = 1"
+                ).fetchall()
+
+        monkeypatch.setattr("app.api.routes.chats.refresh_tenant_group_chats", fake_refresh)
+
+        refreshed = client.post("/api/v1/chats/refresh", headers=headers)
+        assert refreshed.status_code == 200
+        assert refreshed.json()[0]["chat_id"] == "group-a@g.us"
+
+        updated = client.patch("/api/v1/chats/group-a@g.us/policy", headers=headers, json={"policy": "block"})
+        assert updated.status_code == 200
+        assert updated.json()["policy"] == "block"
+
+        blocked_text = client.post(
+            "/api/v1/texts",
+            headers=headers,
+            data={"tenant_id": "1", "title": "Blocked", "body": "Body", "chat_id": "group-a@g.us", "enabled": "true"},
+        )
+        assert blocked_text.status_code == 422
 
 
 def test_tenant_routes_hide_password_and_blank_update_keeps_existing_login():
