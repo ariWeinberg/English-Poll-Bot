@@ -64,7 +64,9 @@ async def run_due_jobs(*, database_url: str) -> int:
         for rule in rules:
             if rule["rule_type"] == "random_window":
                 with db_session(database_url) as conn:
-                    plan = get_random_rule_plan(conn, rule_id=int(rule["id"]), local_date=local_date.isoformat())
+                    plan = get_random_rule_plan(
+                        conn, text_id=int(text["id"]), rule_id=int(rule["id"]), local_date=local_date.isoformat()
+                    )
                     if plan is None:
                         planned_times = _build_random_plan(rule, local_date)
                         plan = upsert_random_rule_plan(
@@ -103,6 +105,7 @@ async def run_due_jobs(*, database_url: str) -> int:
                 with db_session(database_url) as conn:
                     mark_random_rule_plan_executed(
                         conn,
+                        text_id=int(text["id"]),
                         rule_id=int(rule["id"]),
                         local_date=local_date.isoformat(),
                         executed_times=[*plan["executed_times"], *([minute_key] * actual_count)],

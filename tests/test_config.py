@@ -15,7 +15,7 @@ def reset_db() -> str:
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
-            "TRUNCATE text_schedule_rule_random_plans, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+            "TRUNCATE text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
         )
     init_db(TEST_DATABASE_URL)
     return TEST_DATABASE_URL
@@ -65,7 +65,7 @@ def test_tenant_and_text_can_be_updated_in_db():
             body="Body",
             chat_id="group@g.us",
             enabled=True,
-            schedule_rules=[
+            new_rules=[
                 {
                     "delivery_type": "poll",
                     "rule_type": "daily_time",
@@ -82,6 +82,9 @@ def test_tenant_and_text_can_be_updated_in_db():
     assert runtime.gemini_ready is True
     with db_session(database_url) as conn:
         text = conn.execute("SELECT * FROM texts WHERE id = %s", (text_id,)).fetchone()
-        rules = conn.execute("SELECT * FROM text_schedule_rules WHERE text_id = %s", (text_id,)).fetchall()
+        rules = conn.execute(
+            "SELECT schedule_rules.* FROM text_schedule_rule_assignments JOIN schedule_rules ON schedule_rules.id = text_schedule_rule_assignments.rule_id WHERE text_schedule_rule_assignments.text_id = %s",
+            (text_id,),
+        ).fetchall()
     assert text["title"] == "Text A"
     assert len(rules) == 1

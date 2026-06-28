@@ -41,6 +41,8 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Lock poll manually" in app
     assert "Edit Text" in app
     assert "Schedule rules" in app
+    assert "Reusable Rules" in app
+    assert "Assign existing rule" in app
     assert "Auto-create matching summary rule" in app
     assert "Manual only" in app
     assert "Edit Poll" in app

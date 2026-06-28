@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -18,7 +19,7 @@ def reset_db() -> str:
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
-            "TRUNCATE text_schedule_rule_random_plans, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+            "TRUNCATE text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
         )
     init_db(TEST_DATABASE_URL)
     return TEST_DATABASE_URL
@@ -309,9 +310,10 @@ def test_text_schedule_rule_crud_and_validation():
         assert created.json()["schedule_rules"] == []
 
         created_rule = client.post(
-            f"/api/v1/texts/{text_id}/schedule-rules",
+            "/api/v1/schedule-rules",
             headers=headers,
             json={
+                "name": "Weekday drill",
                 "delivery_type": "poll",
                 "rule_type": "weekday_time",
                 "enabled": True,
@@ -327,12 +329,20 @@ def test_text_schedule_rule_crud_and_validation():
         rule_id = created_rule.json()["id"]
         assert created_rule.json()["weekdays"] == [0, 2, 4]
 
+        assigned = client.post(
+            f"/api/v1/texts/{text_id}/schedule-rules/assign",
+            headers=headers,
+            json={"rule_id": rule_id},
+        )
+        assert assigned.status_code == 201
+        assert len(assigned.json()) == 1
+
         listed = client.get(f"/api/v1/texts/{text_id}/schedule-rules", headers=headers)
         assert listed.status_code == 200
         assert len(listed.json()) == 1
 
         patched = client.patch(
-            f"/api/v1/texts/{text_id}/schedule-rules/{rule_id}",
+            f"/api/v1/schedule-rules/{rule_id}",
             headers=headers,
             json={"rule_type": "month_date_time", "weekdays": [], "month_dates": [1, 15], "time": "09:00"},
         )
@@ -341,9 +351,10 @@ def test_text_schedule_rule_crud_and_validation():
         assert patched.json()["month_dates"] == [1, 15]
 
         invalid = client.post(
-            f"/api/v1/texts/{text_id}/schedule-rules",
+            "/api/v1/schedule-rules",
             headers=headers,
             json={
+                "name": "Broken window",
                 "delivery_type": "poll",
                 "rule_type": "random_window",
                 "enabled": True,
@@ -356,9 +367,10 @@ def test_text_schedule_rule_crud_and_validation():
         assert invalid.status_code == 422
 
         bad_weekday = client.post(
-            f"/api/v1/texts/{text_id}/schedule-rules",
+            "/api/v1/schedule-rules",
             headers=headers,
             json={
+                "name": "Bad weekday",
                 "delivery_type": "poll",
                 "rule_type": "weekday_time",
                 "enabled": True,
@@ -372,6 +384,68 @@ def test_text_schedule_rule_crud_and_validation():
 
         deleted = client.delete(f"/api/v1/texts/{text_id}/schedule-rules/{rule_id}", headers=headers)
         assert deleted.status_code == 204
+
+
+def test_text_create_supports_assigned_rule_ids_and_inline_new_rules():
+    reset_db()
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+
+        shared = client.post(
+            "/api/v1/schedule-rules",
+            headers=headers,
+            json={
+                "name": "Morning poll",
+                "delivery_type": "poll",
+                "rule_type": "daily_time",
+                "time": "08:30",
+                "count_mode": "fixed",
+                "count_value": 1,
+            },
+        )
+        assert shared.status_code == 201
+        shared_id = shared.json()["id"]
+
+        created = client.post(
+            "/api/v1/texts",
+            headers=headers,
+            data={
+                "tenant_id": "1",
+                "title": "Inline rules",
+                "body": "Body",
+                "chat_id": "group@g.us",
+                "assigned_rule_ids_json": json.dumps([shared_id]),
+                "new_rules_json": json.dumps(
+                    [
+                        {
+                            "name": "Inline summary",
+                            "delivery_type": "summary",
+                            "rule_type": "daily_time",
+                            "time": "08:29",
+                            "count_mode": "fixed",
+                            "count_value": 1,
+                        }
+                    ]
+                ),
+            },
+        )
+        assert created.status_code == 201
+        rule_names = [rule["name"] for rule in created.json()["schedule_rules"]]
+        assert "Morning poll" in rule_names
+        assert "Inline summary" in rule_names
+
+        invalid = client.post(
+            "/api/v1/texts",
+            headers=headers,
+            data={
+                "tenant_id": "1",
+                "title": "Broken inline",
+                "body": "Body",
+                "chat_id": "group@g.us",
+                "new_rules_json": json.dumps([{"delivery_type": "poll", "rule_type": "weekday_time", "time": "08:30"}]),
+            },
+        )
+        assert invalid.status_code == 422
 
 
 def test_tenant_routes_hide_password_and_blank_update_keeps_existing_login():

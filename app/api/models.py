@@ -52,10 +52,12 @@ class TextPayload(BaseModel):
     chat_id: str
     poll_pool_threshold_percent: int | None = Field(default=None, ge=0, le=100)
     enabled: bool = True
-    schedule_rules: list["ScheduleRulePayload"] | None = None
+    assigned_rule_ids: list[int] = Field(default_factory=list)
+    new_rules: list["ScheduleRulePayload"] = Field(default_factory=list)
 
 
 class ScheduleRulePayload(BaseModel):
+    name: str | None = None
     delivery_type: str
     rule_type: str
     enabled: bool = True
@@ -106,6 +108,7 @@ class ScheduleRulePayload(BaseModel):
 
 
 class ScheduleRuleUpdatePayload(BaseModel):
+    name: str | None = None
     delivery_type: str | None = None
     rule_type: str | None = None
     enabled: bool | None = None
@@ -219,6 +222,10 @@ class LearnerDetailResponse(BaseModel):
 
 class RosterMemberUpdatePayload(BaseModel):
     excluded_from_coverage: bool
+
+
+class TextScheduleRuleAssignmentPayload(BaseModel):
+    rule_id: int
 
 
 class RosterMember(BaseModel):

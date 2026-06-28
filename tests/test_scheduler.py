@@ -16,7 +16,7 @@ def reset_db() -> str:
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
-            "TRUNCATE text_schedule_rule_random_plans, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+            "TRUNCATE text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
         )
     init_db(TEST_DATABASE_URL)
     return TEST_DATABASE_URL
@@ -50,7 +50,7 @@ def test_scheduler_registers_minute_tick():
             body="Body",
             chat_id="group@g.us",
             enabled=True,
-            schedule_rules=[
+            new_rules=[
                 {
                     "delivery_type": "poll",
                     "rule_type": "daily_time",
@@ -120,7 +120,7 @@ async def test_run_due_jobs_uses_rule_labels_and_counts(monkeypatch):
             body="Body",
             chat_id="group@g.us",
             enabled=True,
-            schedule_rules=[
+            new_rules=[
                 {
                     "delivery_type": "poll",
                     "rule_type": "daily_time",
@@ -195,7 +195,7 @@ async def test_random_window_rules_plan_once_per_day(monkeypatch):
             body="Body",
             chat_id="group@g.us",
             enabled=True,
-            schedule_rules=[
+            new_rules=[
                 {
                     "delivery_type": "poll",
                     "rule_type": "random_window",

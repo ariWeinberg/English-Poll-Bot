@@ -61,7 +61,9 @@ type Text = {
 
 type ScheduleRule = {
   id?: number;
+  tenant_id?: number;
   text_id?: number;
+  name?: string | null;
   delivery_type: "poll" | "summary";
   rule_type: "daily_time" | "weekday_time" | "month_date_time" | "random_window";
   enabled: boolean;
@@ -272,7 +274,8 @@ type TextFormState = {
   chat_id: string;
   poll_pool_threshold_percent?: number | null;
   enabled: boolean;
-  schedule_rules: ScheduleRule[];
+  assigned_rule_ids: number[];
+  new_rules: ScheduleRule[];
 };
 type PollFormState = Omit<Poll, "id" | "created_at">;
 type TenantFormState = Omit<Tenant, "id"> & { password: string };
@@ -299,6 +302,7 @@ type Route =
   | { name: "learner-detail"; voterWid: string }
   | { name: "texts" }
   | { name: "text-detail"; id: number }
+  | { name: "rules" }
   | { name: "polls" }
   | { name: "poll-detail"; id: number }
   | { name: "doc" }
@@ -332,6 +336,26 @@ function setToken(token: string | null) {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+function formatApiDetail(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object") {
+          const record = item as Record<string, unknown>;
+          const path = Array.isArray(record.loc) ? record.loc.join(".") : "";
+          const message = typeof record.msg === "string" ? record.msg : JSON.stringify(item);
+          return path ? `${path}: ${message}` : message;
+        }
+        return String(item);
+      })
+      .join("; ");
+  }
+  if (detail && typeof detail === "object") return JSON.stringify(detail);
+  return String(detail);
+}
+
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   const token = getToken();
@@ -348,7 +372,7 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
     let detail = response.statusText;
     try {
       const body = await response.json();
-      detail = body.detail || detail;
+      detail = formatApiDetail(body.detail ?? detail);
     } catch {
       // Keep status text when body is not JSON.
     }
@@ -381,7 +405,8 @@ function blankText(tenantId: number): TextFormState {
     chat_id: "",
     poll_pool_threshold_percent: null,
     enabled: true,
-    schedule_rules: [],
+    assigned_rule_ids: [],
+    new_rules: [],
   };
 }
 
@@ -422,7 +447,8 @@ function textToForm(text: Text): TextFormState {
     chat_id: text.chat_id,
     poll_pool_threshold_percent: text.poll_pool_threshold_percent ?? null,
     enabled: text.enabled,
-    schedule_rules: text.schedule_rules.map((rule) => ({ ...rule })),
+    assigned_rule_ids: text.schedule_rules.map((rule) => rule.id || 0).filter((ruleId) => ruleId > 0),
+    new_rules: [],
   };
 }
 
@@ -477,6 +503,7 @@ function parseRoute(pathname: string): Route {
   if (path === "/dashboard" || path === "/") return { name: "dashboard" };
   if (path === "/learners") return { name: "learners" };
   if (path === "/texts") return { name: "texts" };
+  if (path === "/rules") return { name: "rules" };
   if (path === "/polls") return { name: "polls" };
   if (path === "/doc") return { name: "doc" };
   if (path === "/settings") return { name: "settings" };
@@ -503,6 +530,8 @@ function routeHref(route: Route): string {
       return "/texts";
     case "text-detail":
       return `/texts/${route.id}`;
+    case "rules":
+      return "/rules";
     case "polls":
       return "/polls";
     case "poll-detail":
@@ -591,21 +620,23 @@ function ruleCountLabel(rule: ScheduleRule) {
 }
 
 function describeRule(rule: ScheduleRule) {
+  const name = rule.name?.trim();
   const prefix = `${rule.delivery_type === "summary" ? "Summary" : "Poll"} ${rule.enabled ? "" : "(disabled) "}`.trim();
   const countText = rule.delivery_type === "poll" ? ` • ${ruleCountLabel(rule)}` : "";
   const label = rule.label?.trim();
-  if (rule.rule_type === "daily_time") return `${label ? `${label}: ` : ""}${prefix} daily at ${rule.time}${countText}`;
+  const titlePrefix = name || label ? `${name || label}: ` : "";
+  if (rule.rule_type === "daily_time") return `${titlePrefix}${prefix} daily at ${rule.time}${countText}`;
   if (rule.rule_type === "weekday_time") {
     const days = (rule.weekdays || []).map((day) => WEEKDAY_OPTIONS.find((item) => item.value === day)?.label || String(day)).join(", ");
-    return `${label ? `${label}: ` : ""}${prefix} on ${days} at ${rule.time}${countText}`;
+    return `${titlePrefix}${prefix} on ${days} at ${rule.time}${countText}`;
   }
   if (rule.rule_type === "month_date_time") {
-    return `${label ? `${label}: ` : ""}${prefix} on days ${(rule.month_dates || []).join(", ")} at ${rule.time}${countText}`;
+    return `${titlePrefix}${prefix} on days ${(rule.month_dates || []).join(", ")} at ${rule.time}${countText}`;
   }
-  return `${label ? `${label}: ` : ""}${prefix} random ${rule.window_start}-${rule.window_end}${countText}`;
+  return `${titlePrefix}${prefix} random ${rule.window_start}-${rule.window_end}${countText}`;
 }
 
-function scheduleSummary(text: Text | TextFormState) {
+function scheduleSummary(text: Text) {
   const rules = text.schedule_rules || [];
   const pollRules = rules.filter((rule) => rule.delivery_type === "poll" && rule.enabled);
   if (pollRules.length === 0) return "Manual only";
@@ -866,6 +897,7 @@ function HeroPoint({ icon, label }: { icon: React.ReactNode; label: string }) {
 function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => void }) {
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [texts, setTexts] = useState<Text[]>([]);
+  const [scheduleRules, setScheduleRules] = useState<ScheduleRule[]>([]);
   const [polls, setPolls] = useState<Poll[]>([]);
   const [pollStats, setPollStats] = useState<PollStats[]>([]);
   const [voteEvents, setVoteEvents] = useState<VoteEvent[]>([]);
@@ -874,6 +906,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
   const [toast, setToast] = useState<Toast>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [textModal, setTextModal] = useState<{ mode: "create" | "edit"; text?: Text } | null>(null);
+  const [ruleModal, setRuleModal] = useState<{ mode: "create" | "edit"; rule?: ScheduleRule } | null>(null);
   const [pollModal, setPollModal] = useState<{ mode: "create" | "edit"; poll?: Poll } | null>(null);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [preview, setPreview] = useState<GeneratedQuestion | null>(null);
@@ -893,8 +926,9 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
     setLoading(true);
     try {
       const me = await api<Tenant>("/auth/me");
-      const [textPage, pollPage, stats, votePage, pool] = await Promise.all([
+      const [textPage, ruleList, pollPage, stats, votePage, pool] = await Promise.all([
         api<Page<Text>>(`/texts?tenant_id=${me.id}&page_size=100`),
+        api<ScheduleRule[]>("/schedule-rules"),
         api<Page<Poll>>(`/polls?tenant_id=${me.id}&page_size=100`),
         api<PollStats[]>(`/polls/stats?tenant_id=${me.id}&limit=100`),
         api<Page<VoteEvent>>(`/poll-vote-events?tenant_id=${me.id}&page_size=200`),
@@ -906,6 +940,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
       ]);
       setTenant(me);
       setTexts(textPage.items);
+      setScheduleRules(ruleList);
       setPolls(pollPage.items);
       setPollStats(stats);
       setVoteEvents(votePage.items);
@@ -1133,6 +1168,22 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
               onDelete={(text) => void handleDeleteText(text.id)}
             />
           )}
+          {route.name === "rules" && (
+            <RulesPage
+              rules={scheduleRules}
+              onCreate={() => setRuleModal({ mode: "create" })}
+              onEdit={(rule) => setRuleModal({ mode: "edit", rule })}
+              onDelete={async (rule) => {
+                if (!window.confirm("Delete this shared rule?")) return;
+                try {
+                  await api(`/schedule-rules/${rule.id}`, { method: "DELETE" });
+                  handleSuccess("Rule deleted");
+                } catch (err) {
+                  handleError(err instanceof Error ? err.message : "Failed to delete rule");
+                }
+              }}
+            />
+          )}
           {route.name === "text-detail" && (
             <TextDetailPage
               text={currentText}
@@ -1184,9 +1235,21 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
         <TextModal
           tenant={tenant}
           initialText={textModal.text}
+          availableRules={scheduleRules}
           onClose={() => setTextModal(null)}
           onSaved={(message) => {
             setTextModal(null);
+            handleSuccess(message);
+          }}
+          onError={handleError}
+        />
+      )}
+      {ruleModal && (
+        <ScheduleRuleModal
+          initialRule={ruleModal.rule}
+          onClose={() => setRuleModal(null)}
+          onSaved={(message) => {
+            setRuleModal(null);
             handleSuccess(message);
           }}
           onError={handleError}
@@ -1257,6 +1320,12 @@ function Sidebar({
       label: "Texts",
       route: { name: "texts" } as Route,
       active: route.name === "texts" || route.name === "text-detail",
+    },
+    {
+      icon: <BellRing size={18} />,
+      label: "Rules",
+      route: { name: "rules" } as Route,
+      active: route.name === "rules",
     },
     {
       icon: <Vote size={18} />,
@@ -1359,6 +1428,8 @@ function routeTitle(route: Route) {
       return "Texts";
     case "text-detail":
       return "Text Detail";
+    case "rules":
+      return "Reusable Rules";
     case "polls":
       return "Polls";
     case "poll-detail":
@@ -2084,6 +2155,65 @@ function TextDetailPage({
   );
 }
 
+function RulesPage({
+  rules,
+  onCreate,
+  onEdit,
+  onDelete,
+}: {
+  rules: ScheduleRule[];
+  onCreate: () => void;
+  onEdit: (rule: ScheduleRule) => void;
+  onDelete: (rule: ScheduleRule) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const filtered = rules.filter((rule) => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return true;
+    return [rule.name || "", rule.label || "", describeRule(rule)].some((value) => value.toLowerCase().includes(needle));
+  });
+
+  return (
+    <section className="resource-page">
+      <div className="section-header">
+        <div>
+          <p className="section-kicker">Rules</p>
+          <h2>Reusable Rules</h2>
+        </div>
+        <button className="button button-primary" onClick={onCreate}>
+          <Plus size={16} /> New rule
+        </button>
+      </div>
+      <div className="toolbar">
+        <TextInput label="Search rules" value={search} onChange={setSearch} placeholder="Name, label, or timing" />
+      </div>
+      <div className="resource-grid">
+        {filtered.map((rule) => (
+          <article className="resource-card" key={rule.id}>
+            <div className="resource-main">
+              <div className="resource-topline">
+                <span className="resource-id">#{rule.id}</span>
+                <span className={rule.enabled ? "pill success" : "pill"}>{rule.enabled ? "Enabled" : "Disabled"}</span>
+              </div>
+              <h3>{rule.name || "Untitled rule"}</h3>
+              <p>{describeRule(rule)}</p>
+            </div>
+            <div className="card-actions">
+              <button className="button button-ghost" onClick={() => onEdit(rule)}>
+                <Pencil size={16} /> Edit
+              </button>
+              <button className="icon-button button-danger" onClick={() => onDelete(rule)} title="Delete rule">
+                <Trash2 size={18} />
+              </button>
+            </div>
+          </article>
+        ))}
+        {filtered.length === 0 && <EmptyState title="No matching rules" body="Create a reusable rule or adjust the search." />}
+      </div>
+    </section>
+  );
+}
+
 function PollsPage({
   polls,
   texts,
@@ -2511,12 +2641,14 @@ function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () => void }
 function TextModal({
   tenant,
   initialText,
+  availableRules,
   onClose,
   onSaved,
   onError,
 }: {
   tenant: Tenant;
   initialText?: Text;
+  availableRules: ScheduleRule[];
   onClose: () => void;
   onSaved: (message: string) => void;
   onError: (message: string) => void;
@@ -2527,12 +2659,22 @@ function TextModal({
   const [draftRule, setDraftRule] = useState<ScheduleRule>(blankScheduleRule());
   const [editingRuleIndex, setEditingRuleIndex] = useState<number | null>(null);
   const [autoSummary, setAutoSummary] = useState(true);
+  const [selectedRuleId, setSelectedRuleId] = useState("");
+  const [submitError, setSubmitError] = useState("");
+
+  const assignedExistingRules = availableRules.filter((rule) => rule.id && form.assigned_rule_ids.includes(rule.id));
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setSubmitError("");
     try {
+      const payload = {
+        ...form,
+        assigned_rule_ids: form.assigned_rule_ids,
+        new_rules: form.new_rules.map(({ id: _id, tenant_id: _tenantId, text_id: _textId, ...rule }) => rule),
+      };
       if (editing && initialText) {
-        await api<Text>(`/texts/${initialText.id}`, { method: "PATCH", body: JSON.stringify(form) });
+        await api<Text>(`/texts/${initialText.id}`, { method: "PATCH", body: JSON.stringify(payload) });
         onSaved("Text updated");
         return;
       }
@@ -2541,52 +2683,64 @@ function TextModal({
       data.set("title", form.title);
       data.set("body", form.body);
       data.set("chat_id", form.chat_id);
-      data.set("schedule_rules_json", JSON.stringify(form.schedule_rules));
+      data.set("assigned_rule_ids_json", JSON.stringify(form.assigned_rule_ids));
+      data.set("new_rules_json", JSON.stringify(payload.new_rules));
       if (form.poll_pool_threshold_percent != null) data.set("poll_pool_threshold_percent", String(form.poll_pool_threshold_percent));
       data.set("enabled", String(form.enabled));
       if (attachment) data.set("attachment", attachment);
       await api<Text>("/texts", { method: "POST", body: data });
       onSaved("Text created");
     } catch (err) {
-      onError(err instanceof Error ? err.message : "Failed to save text");
+      const message = err instanceof Error ? err.message : "Failed to save text";
+      setSubmitError(message);
+      onError(message);
     }
   }
 
   function saveRule() {
     const rule: ScheduleRule = {
       ...draftRule,
+      id: undefined,
       weekdays: draftRule.rule_type === "weekday_time" ? draftRule.weekdays || [] : [],
       month_dates: draftRule.rule_type === "month_date_time" ? draftRule.month_dates || [] : [],
     };
-    const nextRules = [...form.schedule_rules];
+    const nextRules = [...form.new_rules];
     if (editingRuleIndex == null) nextRules.push(rule);
     else nextRules[editingRuleIndex] = rule;
     if (autoSummary && rule.delivery_type === "poll" && editingRuleIndex == null) {
       nextRules.push(autoSummaryRuleFor(rule));
     }
-    setForm({ ...form, schedule_rules: nextRules });
+    setForm({ ...form, new_rules: nextRules });
     setDraftRule(blankScheduleRule());
     setEditingRuleIndex(null);
     setAutoSummary(true);
   }
 
   function editRule(index: number) {
-    setDraftRule({ ...form.schedule_rules[index] });
+    setDraftRule({ ...form.new_rules[index] });
     setEditingRuleIndex(index);
     setAutoSummary(false);
   }
 
   function removeRule(index: number) {
-    setForm({ ...form, schedule_rules: form.schedule_rules.filter((_, ruleIndex) => ruleIndex !== index) });
+    setForm({ ...form, new_rules: form.new_rules.filter((_, ruleIndex) => ruleIndex !== index) });
     if (editingRuleIndex === index) {
       setDraftRule(blankScheduleRule());
       setEditingRuleIndex(null);
     }
   }
 
+  function assignExistingRule() {
+    const ruleId = Number(selectedRuleId);
+    if (!ruleId || form.assigned_rule_ids.includes(ruleId)) return;
+    setForm({ ...form, assigned_rule_ids: [...form.assigned_rule_ids, ruleId] });
+    setSelectedRuleId("");
+  }
+
   return (
     <Modal title={editing ? "Edit Text" : "Create Text"} onClose={onClose}>
       <form className="modal-form" onSubmit={submit}>
+        {submitError && <div className="alert error">{submitError}</div>}
         <TextInput label="Title" value={form.title} onChange={(value) => setForm({ ...form, title: value })} />
         <label>
           Body
@@ -2597,27 +2751,66 @@ function TextModal({
           <div className="section-header">
             <div>
               <p className="section-kicker">Schedule rules</p>
-              <h3>{form.schedule_rules.some((rule) => rule.delivery_type === "poll" && rule.enabled) ? "Rules configured" : "Manual only"}</h3>
+              <h3>
+                {[...assignedExistingRules, ...form.new_rules].some((rule) => rule.delivery_type === "poll" && rule.enabled)
+                  ? "Rules configured"
+                  : "Manual only"}
+              </h3>
+            </div>
+          </div>
+          <div className="time-grid">
+            <label>
+              Assign existing rule
+              <select value={selectedRuleId} onChange={(event) => setSelectedRuleId(event.target.value)}>
+                <option value="">Select shared rule</option>
+                {availableRules
+                  .filter((rule) => rule.id && !form.assigned_rule_ids.includes(rule.id))
+                  .map((rule) => (
+                    <option key={rule.id} value={rule.id}>
+                      {rule.name || describeRule(rule)}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <div className="modal-actions">
+              <button className="button button-secondary" type="button" onClick={assignExistingRule}>
+                Assign rule
+              </button>
             </div>
           </div>
           <div className="stack">
-            {form.schedule_rules.length > 0 ? (
-              form.schedule_rules.map((rule, index) => (
-                <div className="result-row" key={rule.id || `${rule.delivery_type}-${index}`}>
-                  <span>{describeRule(rule)}</span>
-                  <span>
-                    <button className="button button-ghost" type="button" onClick={() => editRule(index)}>
-                      Edit
-                    </button>
-                    <button className="button button-ghost" type="button" onClick={() => removeRule(index)}>
-                      Delete
-                    </button>
-                  </span>
-                </div>
-              ))
-            ) : (
+            {assignedExistingRules.map((rule) => (
+              <div className="result-row" key={rule.id}>
+                <span>{describeRule(rule)}</span>
+                <span>
+                  <button
+                    className="button button-ghost"
+                    type="button"
+                    onClick={() =>
+                      setForm({ ...form, assigned_rule_ids: form.assigned_rule_ids.filter((ruleId) => ruleId !== rule.id) })
+                    }
+                  >
+                    Remove
+                  </button>
+                </span>
+              </div>
+            ))}
+            {form.new_rules.map((rule, index) => (
+              <div className="result-row" key={rule.id || `${rule.delivery_type}-${index}`}>
+                <span>{describeRule(rule)}</span>
+                <span>
+                  <button className="button button-ghost" type="button" onClick={() => editRule(index)}>
+                    Edit
+                  </button>
+                  <button className="button button-ghost" type="button" onClick={() => removeRule(index)}>
+                    Delete
+                  </button>
+                </span>
+              </div>
+            ))}
+            {assignedExistingRules.length === 0 && form.new_rules.length === 0 ? (
               <div>No enabled poll rules yet. This text will stay manual-only.</div>
-            )}
+            ) : null}
           </div>
           <div className="time-grid">
             <label>
@@ -2720,6 +2913,7 @@ function TextModal({
               </>
             )}
             <TextInput label="Label" value={draftRule.label || ""} onChange={(value) => setDraftRule({ ...draftRule, label: value })} />
+            <TextInput label="Rule name" value={draftRule.name || ""} onChange={(value) => setDraftRule({ ...draftRule, name: value })} />
           </div>
           {draftRule.delivery_type === "poll" && (
             <label className="check">
@@ -2908,6 +3102,155 @@ function PollModal({
           </button>
           <button className="button button-primary" type="submit">
             <Save size={16} /> {editing ? "Save changes" : "Create poll"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function ScheduleRuleModal({
+  initialRule,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  initialRule?: ScheduleRule;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+  onError: (message: string) => void;
+}) {
+  const editing = Boolean(initialRule);
+  const [form, setForm] = useState<ScheduleRule>(initialRule ? { ...initialRule } : blankScheduleRule());
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const payload = {
+      name: form.name || null,
+      delivery_type: form.delivery_type,
+      rule_type: form.rule_type,
+      enabled: form.enabled,
+      time: form.rule_type === "random_window" ? null : form.time || null,
+      weekdays: form.rule_type === "weekday_time" ? form.weekdays || [] : [],
+      month_dates: form.rule_type === "month_date_time" ? form.month_dates || [] : [],
+      window_start: form.rule_type === "random_window" ? form.window_start || null : null,
+      window_end: form.rule_type === "random_window" ? form.window_end || null : null,
+      count_mode: form.count_mode,
+      count_value: form.count_mode === "fixed" ? form.count_value ?? 1 : null,
+      count_min: form.count_mode === "range" ? form.count_min ?? 1 : null,
+      count_max: form.count_mode === "range" ? form.count_max ?? 2 : null,
+      label: form.label || null,
+    };
+    try {
+      if (editing && initialRule?.id) {
+        await api<ScheduleRule>(`/schedule-rules/${initialRule.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+        onSaved("Rule updated");
+        return;
+      }
+      await api<ScheduleRule>("/schedule-rules", { method: "POST", body: JSON.stringify(payload) });
+      onSaved("Rule created");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Failed to save rule");
+    }
+  }
+
+  return (
+    <Modal title={editing ? "Edit Rule" : "Create Rule"} onClose={onClose}>
+      <form className="modal-form" onSubmit={submit}>
+        <TextInput label="Rule name" value={form.name || ""} onChange={(value) => setForm({ ...form, name: value })} />
+        <div className="time-grid">
+          <label>
+            Delivery type
+            <select
+              value={form.delivery_type}
+              onChange={(event) => setForm({ ...form, delivery_type: event.target.value as ScheduleRule["delivery_type"] })}
+            >
+              <option value="poll">Poll</option>
+              <option value="summary">Summary</option>
+            </select>
+          </label>
+          <label>
+            Rule type
+            <select value={form.rule_type} onChange={(event) => setForm({ ...form, rule_type: event.target.value as ScheduleRule["rule_type"] })}>
+              <option value="daily_time">Daily time</option>
+              <option value="weekday_time">Weekday time</option>
+              <option value="month_date_time">Month date time</option>
+              <option value="random_window">Random window</option>
+            </select>
+          </label>
+          {form.rule_type === "random_window" ? (
+            <>
+              <TextInput label="Window start" value={form.window_start || ""} onChange={(value) => setForm({ ...form, window_start: value })} />
+              <TextInput label="Window end" value={form.window_end || ""} onChange={(value) => setForm({ ...form, window_end: value })} />
+            </>
+          ) : (
+            <TextInput label="Time" value={form.time || ""} onChange={(value) => setForm({ ...form, time: value })} />
+          )}
+          {form.rule_type === "weekday_time" && (
+            <label>
+              Weekdays
+              <select
+                multiple
+                value={(form.weekdays || []).map(String)}
+                onChange={(event) =>
+                  setForm({ ...form, weekdays: Array.from(event.target.selectedOptions).map((option) => Number(option.value)) })
+                }
+              >
+                {WEEKDAY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {form.rule_type === "month_date_time" && (
+            <TextInput
+              label="Month dates"
+              value={(form.month_dates || []).join(",")}
+              onChange={(value) =>
+                setForm({
+                  ...form,
+                  month_dates: value
+                    .split(",")
+                    .map((item) => Number(item.trim()))
+                    .filter((item) => Number.isFinite(item) && item > 0),
+                })
+              }
+            />
+          )}
+          <label>
+            Count mode
+            <select value={form.count_mode} onChange={(event) => setForm({ ...form, count_mode: event.target.value as ScheduleRule["count_mode"] })}>
+              <option value="fixed">Fixed</option>
+              <option value="range">Range</option>
+            </select>
+          </label>
+          {form.count_mode === "fixed" ? (
+            <TextInput
+              label="Count"
+              type="number"
+              value={String(form.count_value ?? 1)}
+              onChange={(value) => setForm({ ...form, count_value: Number(value) || 1 })}
+            />
+          ) : (
+            <>
+              <TextInput label="Min count" type="number" value={String(form.count_min ?? 1)} onChange={(value) => setForm({ ...form, count_min: Number(value) || 1 })} />
+              <TextInput label="Max count" type="number" value={String(form.count_max ?? 2)} onChange={(value) => setForm({ ...form, count_max: Number(value) || 2 })} />
+            </>
+          )}
+          <TextInput label="Label" value={form.label || ""} onChange={(value) => setForm({ ...form, label: value })} />
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
+          Enable this rule
+        </label>
+        <div className="modal-actions">
+          <button className="button button-ghost" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="button button-primary" type="submit">
+            <Save size={16} /> {editing ? "Save rule" : "Create rule"}
           </button>
         </div>
       </form>
