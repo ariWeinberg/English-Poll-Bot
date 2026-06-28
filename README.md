@@ -49,8 +49,23 @@ Authenticated API routes live under `/api/v1` and use `Authorization: Bearer <to
 - CRUD: `/api/v1/tenants`, `/api/v1/texts`, `/api/v1/polls`, `/api/v1/poll-votes`
 - Actions: `/api/v1/questions/preview`, `/api/v1/polls/send-now`, `/api/v1/summaries/send-now`
 - CSV export: `/api/v1/polls/export.csv`
+- Protected docs: `POST /api/v1/docs/session`, then open `/api/v1/docs?token=...` or `/api/v1/openapi.json?token=...`
 
 List endpoints support `page` and `page_size`. Resource-specific filters include tenant/text IDs, active/enabled/status fields, search fields, and poll sent date bounds.
+
+Public FastAPI Swagger and OpenAPI endpoints are disabled. Logged-in UI users can open `/doc` to launch a short-lived Swagger session.
+
+## Logging
+
+Local logging is enabled by default with JSON and human-readable files:
+
+- `LOG_LEVEL`, default `INFO`
+- `LOG_FORMAT`, default `human`
+- `LOG_FILE`, default `logs/app.jsonl`
+- `LOG_HUMAN_FILE`, default `logs/app.log`
+- `LOG_REQUEST_BODY_ENABLED`, default `false`
+
+Logs include request IDs, request lifecycle events, scheduler decisions, webhook decisions, poll sends, pool refills, summaries, and exceptions with secret redaction.
 
 ## What You Can Configure
 
@@ -74,6 +89,8 @@ Enable these GreenAPI settings:
 
 - `incomingWebhook`
 - `pollMessageWebhook`
+
+Operational guidance for scheduler behavior, webhook diagnostics, logging, and release checks lives in `docs/runbook.md` and is summarized in the authenticated `/doc` app page.
 
 ## Test
 

@@ -73,6 +73,27 @@ def test_default_admin_login_works_after_password_hash_migration():
     assert response.status_code == 200
 
 
+def test_authenticated_docs_session_opens_swagger_and_openapi():
+    reset_db()
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+
+        session = client.post("/api/v1/docs/session", headers=headers)
+        assert session.status_code == 200
+        body = session.json()
+        assert body["docs_token"]
+        assert body["docs_url"].startswith("/api/v1/docs?token=")
+        assert body["openapi_url"].startswith("/api/v1/openapi.json?token=")
+
+        swagger = client.get(body["docs_url"])
+        assert swagger.status_code == 200
+        assert "Swagger UI" in swagger.text
+
+        openapi = client.get(body["openapi_url"])
+        assert openapi.status_code == 200
+        assert openapi.json()["info"]["title"] == "English WhatsApp Poll Bot API"
+
+
 def test_auth_and_text_pagination_filtering():
     reset_db()
     with TestClient(app) as client:

@@ -11,12 +11,15 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from app.auth import verify_password
 from app.config import settings
+from app.core.docs import create_docs_token, decode_docs_token
+from app.core.logging import RequestLoggingRoute, configure_logging, get_logger
 from app.database import (
     POLL_POOL_REFILL_BATCH_SIZE,
     POLL_POOL_TARGET_SIZE,
@@ -66,22 +69,40 @@ from app.services import (
 
 UPLOAD_DIR = Path("uploads")
 security = HTTPBearer()
+logger = get_logger("api")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging(settings)
+    logger.info("application.start")
     init_db(settings.database_url)
     scheduler = build_scheduler(settings.database_url)
     scheduler.start()
+    logger.info("scheduler.started", extra={"job_count": len(scheduler.get_jobs())})
     app.state.scheduler = scheduler
     try:
         yield
     finally:
         if scheduler:
             scheduler.shutdown(wait=False)
+            logger.info("scheduler.stopped")
+        logger.info("application.stop")
 
 
-app = FastAPI(title="English WhatsApp Poll Bot API", lifespan=lifespan)
+configure_logging(settings)
+app = FastAPI(
+    title="English WhatsApp Poll Bot API",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+app.router.route_class = RequestLoggingRoute
+
+
+def create_app() -> FastAPI:
+    return app
 
 
 class LoginRequest(BaseModel):
@@ -93,6 +114,14 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_at: str
+
+
+class DocsSessionResponse(BaseModel):
+    docs_token: str
+    token_type: str = "docs"
+    expires_at: str
+    docs_url: str
+    openapi_url: str
 
 
 class RegisterRequest(BaseModel):
@@ -290,6 +319,37 @@ async def login(payload: LoginRequest):
 @app.get("/api/v1/auth/me")
 async def me(user: dict[str, Any] = Depends(current_user)):
     return user
+
+
+@app.post("/api/v1/docs/session", response_model=DocsSessionResponse)
+async def create_docs_session(user: dict[str, Any] = Depends(current_user)):
+    docs_token, expires_at = create_docs_token(
+        secret=settings.jwt_secret,
+        tenant_id=int(user["id"]),
+        username=str(user["username"]),
+        ttl_seconds=settings.docs_token_ttl_seconds,
+    )
+    return DocsSessionResponse(
+        docs_token=docs_token,
+        expires_at=expires_at,
+        docs_url=f"/api/v1/docs?token={docs_token}",
+        openapi_url=f"/api/v1/openapi.json?token={docs_token}",
+    )
+
+
+@app.get("/api/v1/docs", include_in_schema=False)
+async def protected_docs(token: str = Query(...)):
+    decode_docs_token(token, secret=settings.jwt_secret)
+    return get_swagger_ui_html(
+        openapi_url=f"/api/v1/openapi.json?token={token}",
+        title="English WhatsApp Poll Bot API - Swagger UI",
+    )
+
+
+@app.get("/api/v1/openapi.json", include_in_schema=False)
+async def protected_openapi(token: str = Query(...)):
+    decode_docs_token(token, secret=settings.jwt_secret)
+    return app.openapi()
 
 
 @app.post("/api/v1/auth/register", response_model=TokenResponse, status_code=201)

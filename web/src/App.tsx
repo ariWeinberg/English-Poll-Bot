@@ -3,9 +3,11 @@ import {
   ArrowLeft,
   BarChart3,
   BellRing,
+  BookOpen,
   Building2,
   CheckCircle2,
   Download,
+  ExternalLink,
   FilePenLine,
   FileText,
   LogOut,
@@ -143,6 +145,14 @@ type GeneratedQuestion = {
   explanation: string;
 };
 
+type DocsSession = {
+  docs_token: string;
+  token_type: string;
+  expires_at: string;
+  docs_url: string;
+  openapi_url: string;
+};
+
 type Toast = { kind: "success" | "error"; message: string } | null;
 
 type TextFormState = Omit<Text, "id" | "tenant_name" | "attachment_name">;
@@ -157,6 +167,7 @@ type Route =
   | { name: "text-detail"; id: number }
   | { name: "polls" }
   | { name: "poll-detail"; id: number }
+  | { name: "doc" }
   | { name: "settings" };
 
 const defaultTenantForm: TenantFormState = {
@@ -320,6 +331,7 @@ function parseRoute(pathname: string): Route {
   if (path === "/dashboard" || path === "/") return { name: "dashboard" };
   if (path === "/texts") return { name: "texts" };
   if (path === "/polls") return { name: "polls" };
+  if (path === "/doc") return { name: "doc" };
   if (path === "/settings") return { name: "settings" };
   const textMatch = path.match(/^\/texts\/(\d+)$/);
   if (textMatch) return { name: "text-detail", id: Number(textMatch[1]) };
@@ -342,6 +354,8 @@ function routeHref(route: Route): string {
       return "/polls";
     case "poll-detail":
       return `/polls/${route.id}`;
+    case "doc":
+      return "/doc";
     case "settings":
       return "/settings";
     default:
@@ -730,6 +744,16 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
     }
   }
 
+  async function handleOpenSwagger() {
+    try {
+      const result = await api<DocsSession>("/docs/session", { method: "POST" });
+      window.open(result.docs_url, "_blank", "noopener,noreferrer");
+      setToast({ kind: "success", message: `Swagger session expires at ${result.expires_at}` });
+    } catch (err) {
+      handleError(err instanceof Error ? err.message : "Failed to open API docs");
+    }
+  }
+
   async function handleDeleteText(textId: number) {
     if (!window.confirm("Delete this text?")) return;
     await api(`/texts/${textId}`, { method: "DELETE" });
@@ -835,6 +859,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
           {route.name === "settings" && (
             <SettingsPage tenant={tenant} onEdit={() => setSettingsModalOpen(true)} />
           )}
+          {route.name === "doc" && <DocPage onOpenSwagger={() => void handleOpenSwagger()} />}
         </div>
       </div>
 
@@ -916,6 +941,7 @@ function Sidebar({
       route: { name: "polls" } as Route,
       active: route.name === "polls" || route.name === "poll-detail",
     },
+    { icon: <BookOpen size={18} />, label: "Docs", route: { name: "doc" } as Route, active: route.name === "doc" },
     { icon: <Settings size={18} />, label: "Settings", route: { name: "settings" } as Route, active: route.name === "settings" },
   ];
 
@@ -1010,6 +1036,8 @@ function routeTitle(route: Route) {
       return "Polls";
     case "poll-detail":
       return "Poll Detail";
+    case "doc":
+      return "Operations Docs";
     case "settings":
       return "Workspace Settings";
     default:
@@ -1568,6 +1596,95 @@ function PollDetailPage({
         </aside>
       </div>
     </section>
+  );
+}
+
+function DocPage({ onOpenSwagger }: { onOpenSwagger: () => void }) {
+  const qualityGates = [
+    "python -m compileall app tests",
+    "ruff check app tests",
+    "ruff format --check app tests",
+    "pytest",
+    "cd web && npm run typecheck",
+    "cd web && npm run build",
+    "docker compose config --quiet",
+  ];
+  const loggingVars = ["LOG_LEVEL", "LOG_FORMAT", "LOG_FILE", "LOG_HUMAN_FILE", "LOG_REQUEST_BODY_ENABLED"];
+
+  return (
+    <section className="detail-page">
+      <div className="detail-hero">
+        <div>
+          <p className="section-kicker">Operations Docs</p>
+          <h2>Runbook and API access</h2>
+          <p className="hero-subtitle">Authenticated local guidance for deployment checks, diagnostics, webhooks, and scheduler behavior.</p>
+        </div>
+        <div className="hero-actions">
+          <button className="button button-primary" onClick={onOpenSwagger}>
+            <ExternalLink size={16} /> Open Swagger
+          </button>
+        </div>
+      </div>
+
+      <div className="doc-grid">
+        <section className="surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Daily Operations</p>
+              <h3>Deployment checklist</h3>
+            </div>
+          </div>
+          <div className="doc-list">
+            <DocItem title="Configuration" body="Set tenant credentials in Workspace Settings and keep production secrets out of source." />
+            <DocItem title="Scheduler" body="Tenant and text toggles must both be enabled before timed polls or summaries are sent." />
+            <DocItem title="Webhooks" body="GreenAPI callbacks post to /webhooks/greenapi/{tenant_id}; unmatched poll updates are logged and ignored." />
+            <DocItem title="API docs" body="Swagger and OpenAPI are disabled publicly. Use this page to mint a short-lived docs session." />
+          </div>
+        </section>
+
+        <aside className="surface side-surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Logging</p>
+              <h3>Local diagnostics</h3>
+            </div>
+          </div>
+          <p className="subtle">
+            JSON logs and human-readable logs are written locally by default with request IDs and secret redaction.
+          </p>
+          <div className="option-badges">
+            {loggingVars.map((item) => (
+              <span className="pill" key={item}>
+                {item}
+              </span>
+            ))}
+          </div>
+        </aside>
+      </div>
+
+      <section className="surface">
+        <div className="section-header">
+          <div>
+            <p className="section-kicker">Quality Gates</p>
+            <h3>Before release</h3>
+          </div>
+        </div>
+        <div className="command-list">
+          {qualityGates.map((command) => (
+            <code key={command}>{command}</code>
+          ))}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function DocItem({ title, body }: { title: string; body: string }) {
+  return (
+    <article className="doc-item">
+      <strong>{title}</strong>
+      <p>{body}</p>
+    </article>
   );
 }
 

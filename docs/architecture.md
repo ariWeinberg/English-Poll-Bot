@@ -4,7 +4,9 @@ English WhatsApp Poll Bot is a split FastAPI and React application. Keep changes
 
 ## Backend Boundaries
 
-- `app/main.py` owns HTTP routes, request and response models, auth dependencies, and route-level validation.
+- `app/main.py` owns the FastAPI app factory, HTTP routes, request and response models, auth dependencies, and route-level validation.
+- `app/core/docs.py` owns short-lived signed tokens for protected Swagger and OpenAPI access.
+- `app/core/logging.py` owns JSON/human logging setup, request IDs, request lifecycle logging, and secret redaction.
 - `app/services.py` owns workflow orchestration for question generation, poll sending, pool refill, webhook processing, and summaries.
 - `app/database.py` owns SQL, row serialization, persistence helpers, and database initialization.
 - `app/scheduler.py` owns APScheduler job registration and lifecycle integration.
@@ -15,6 +17,7 @@ Route handlers should stay thin. New business rules belong in service functions.
 ## Frontend Boundaries
 
 - `web/src/App.tsx` currently owns the main dashboard shell, route state, API types, and views.
+- The authenticated `/doc` route renders operational guidance and opens Swagger through `POST /api/v1/docs/session`.
 - `web/src/main.tsx` only mounts React.
 - `web/src/styles.css` owns global styling and page-specific class rules.
 
@@ -38,6 +41,24 @@ Database-backed tests require PostgreSQL and should be run before release change
 ```bash
 TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/english_bot pytest
 ```
+
+## Protected API Docs
+
+Public FastAPI docs are disabled at `/docs` and `/openapi.json`. Authenticated users call `POST /api/v1/docs/session` with the existing bearer token to receive a short-lived docs token. Swagger UI is served from `/api/v1/docs?token=...`, and OpenAPI JSON is served from `/api/v1/openapi.json?token=...`.
+
+## Logging
+
+The API configures local JSON and human-readable logs through:
+
+- `LOG_LEVEL`
+- `LOG_FORMAT`
+- `LOG_FILE`
+- `LOG_HUMAN_FILE`
+- `LOG_REQUEST_BODY_ENABLED`
+
+Logs include request lifecycle events, request IDs, scheduler decisions, webhook decisions, poll sending, pool refill, summaries, provider-call failures, and exception traces. Secret-like keys are redacted before log records are written.
+
+See `docs/runbook.md` for the operator-facing checklist.
 
 ## Documentation Rule
 

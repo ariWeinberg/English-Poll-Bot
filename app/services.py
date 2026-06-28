@@ -31,8 +31,11 @@ from app.database import (
     upsert_contact_profile,
 )
 from app.database import normalize_phone_number
+from app.core.logging import get_logger
 from app.greenapi import GreenAPIClient, GreenAPIConfig
 from app.question_generator import GeminiQuestionGenerator, GeneratedQuestion
+
+logger = get_logger("services")
 
 
 @dataclass(frozen=True)
@@ -209,6 +212,10 @@ async def fill_poll_pool(
     text_id: int,
     count: int = POLL_POOL_REFILL_BATCH_SIZE,
 ) -> list[int]:
+    logger.info(
+        "poll_pool.refill_start",
+        extra={"tenant_id": settings.tenant_id, "text_id": text_id, "requested_count": count},
+    )
     with db_session(database_url) as conn:
         text = get_text(conn, text_id)
         if text is None:
@@ -245,11 +252,19 @@ async def fill_poll_pool(
                     pool_rank=next_rank,
                 )
             )
+    logger.info(
+        "poll_pool.refill_complete",
+        extra={"tenant_id": settings.tenant_id, "text_id": text_id, "created_count": len(created_ids)},
+    )
     return created_ids
 
 
 async def _refill_pool_if_needed(*, settings: RuntimeConfig, database_url: str, text_id: int) -> None:
     if not settings.gemini_ready:
+        logger.info(
+            "poll_pool.refill_skip",
+            extra={"tenant_id": settings.tenant_id, "text_id": text_id, "reason": "gemini_not_ready"},
+        )
         return
     with db_session(database_url) as conn:
         queued_count = count_queued_polls(conn, text_id=text_id)
@@ -287,6 +302,10 @@ async def generate_and_send_poll(
 ) -> int:
     if not settings.greenapi_ready:
         raise ValueError("GreenAPI configuration is incomplete.")
+    logger.info(
+        "poll_send.start",
+        extra={"tenant_id": settings.tenant_id, "text_id": text_id, "scheduled_slot": scheduled_slot},
+    )
     with db_session(database_url) as conn:
         text = get_text(conn, text_id)
         if text is None:
@@ -326,6 +345,10 @@ async def generate_and_send_poll(
             options=generated.options,
         )
     except Exception as exc:
+        logger.exception(
+            "poll_send.failed",
+            extra={"tenant_id": settings.tenant_id, "text_id": text_id, "poll_id": poll_id},
+        )
         with db_session(database_url) as conn:
             mark_poll_failed(conn, poll_id, str(exc))
             if used_pool:
@@ -337,6 +360,16 @@ async def generate_and_send_poll(
             compact_queued_poll_ranks(conn, text_id=text_id)
     if used_pool or settings.gemini_ready:
         await _refill_pool_if_needed(settings=settings, database_url=database_url, text_id=text_id)
+    logger.info(
+        "poll_send.complete",
+        extra={
+            "tenant_id": settings.tenant_id,
+            "text_id": text_id,
+            "poll_id": poll_id,
+            "used_pool": used_pool,
+            "greenapi_message_id": message_id,
+        },
+    )
     return poll_id
 
 
@@ -463,8 +496,13 @@ async def handle_greenapi_webhook_async(
 ) -> bool:
     parsed = parse_poll_update(payload)
     if parsed is None:
+        logger.info(
+            "webhook.ignored",
+            extra={"tenant_id": tenant_id, "reason": "not_poll_update", "type": payload.get("typeWebhook")},
+        )
         return False
     message_id, option_voters = parsed
+    logger.info("webhook.poll_update", extra={"tenant_id": tenant_id, "greenapi_message_id": message_id})
     with db_session(database_url) as conn:
         poll = (
             get_poll_by_message_id_for_tenant(conn, message_id=message_id, tenant_id=tenant_id)
@@ -472,6 +510,10 @@ async def handle_greenapi_webhook_async(
             else get_poll_by_message_id(conn, message_id)
         )
     if poll is None:
+        logger.info(
+            "webhook.ignored",
+            extra={"tenant_id": tenant_id, "reason": "poll_not_found", "greenapi_message_id": message_id},
+        )
         return False
     tenant_key = int(poll["tenant_id"])
     enriched: dict[str, list[dict[str, str | None]]] = {}
@@ -503,8 +545,25 @@ async def handle_greenapi_webhook_async(
             else get_poll_by_message_id(conn, message_id)
         )
         if live_poll is None:
+            logger.info(
+                "webhook.ignored",
+                extra={
+                    "tenant_id": tenant_id,
+                    "reason": "poll_not_found_after_enrichment",
+                    "greenapi_message_id": message_id,
+                },
+            )
             return False
         replace_poll_votes(conn, poll=live_poll, option_voters=enriched)
+    logger.info(
+        "webhook.handled",
+        extra={
+            "tenant_id": tenant_key,
+            "poll_id": int(poll["id"]),
+            "greenapi_message_id": message_id,
+            "option_count": len(enriched),
+        },
+    )
     return True
 
 
@@ -534,7 +593,17 @@ def build_summary_text(stats: dict[str, Any]) -> str:
 
 async def send_pending_summaries(*, settings: RuntimeConfig, database_url: str, text_id: int | None = None) -> int:
     if not settings.summary_enabled or not settings.greenapi_ready:
+        logger.info(
+            "summary.skip",
+            extra={
+                "tenant_id": settings.tenant_id,
+                "text_id": text_id,
+                "summary_enabled": settings.summary_enabled,
+                "greenapi_ready": settings.greenapi_ready,
+            },
+        )
         return 0
+    logger.info("summary.start", extra={"tenant_id": settings.tenant_id, "text_id": text_id})
     sent = 0
     client = create_greenapi_client(settings)
     with db_session(database_url) as conn:
@@ -548,6 +617,8 @@ async def send_pending_summaries(*, settings: RuntimeConfig, database_url: str, 
         with db_session(database_url) as conn:
             mark_summary_sent(conn, poll["id"])
         sent += 1
+        logger.info("summary.sent", extra={"tenant_id": settings.tenant_id, "poll_id": int(poll["id"])})
+    logger.info("summary.complete", extra={"tenant_id": settings.tenant_id, "text_id": text_id, "sent_count": sent})
     return sent
 
 

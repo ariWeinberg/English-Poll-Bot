@@ -22,6 +22,11 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Change window minutes" in app
     assert "Auto-lock minutes" in app
     assert "Poll Pool" in app
+    assert '"/doc"' in app
+    assert "Operations Docs" in app
+    assert "Open Swagger" in app
+    assert "/docs/session" in app
+    assert "LOG_REQUEST_BODY_ENABLED" in app
     assert "Refill pool" in app
     assert "Pool threshold percent used" in app
     assert "Preview next poll" in app
