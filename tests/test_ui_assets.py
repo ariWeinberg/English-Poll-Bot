@@ -48,7 +48,7 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "All statuses" in src_bundle
     assert "Clear filters" in src_bundle
     assert "Webhook Inbox" in src_bundle
-    assert "Review incoming GreenAPI events" in src_bundle
+    assert "Review incoming WhatsApp webhook events" in src_bundle
     assert "Exact payload" in src_bundle
     assert "Accepted" in src_bundle
     assert "Ignored" in src_bundle
