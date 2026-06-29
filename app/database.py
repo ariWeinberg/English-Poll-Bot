@@ -85,16 +85,17 @@ def _learner_poll_filters(
 ) -> tuple[str, list[Any]]:
     where = ["polls.tenant_id = %s"]
     params: list[Any] = [tenant_id]
+    scoped_timestamp = "COALESCE(polls.sent_at, polls.created_at)"
     if text_id is not None:
         where.append("polls.text_id = %s")
         params.append(text_id)
     if date_from:
         operator, value = _coerce_filter_datetime(date_from, end=False)
-        where.append(f"polls.sent_at {operator} %s")
+        where.append(f"{scoped_timestamp} {operator} %s")
         params.append(value)
     if date_to:
         operator, value = _coerce_filter_datetime(date_to, end=True)
-        where.append(f"polls.sent_at {operator} %s")
+        where.append(f"{scoped_timestamp} {operator} %s")
         params.append(value)
     return " AND ".join(where), params
 
@@ -1901,8 +1902,9 @@ def list_polls(
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> list[DbRow]:
-    where: list[str] = []
+    where: list[str] = ["status = 'sent'"]
     params: list[Any] = []
+    scoped_timestamp = "COALESCE(sent_at, created_at)"
     if tenant_id is not None:
         where.append("tenant_id = %s")
         params.append(tenant_id)
@@ -1911,15 +1913,15 @@ def list_polls(
         params.append(text_id)
     if date_from:
         operator, value = _coerce_filter_datetime(date_from, end=False)
-        where.append(f"sent_at {operator} %s")
+        where.append(f"{scoped_timestamp} {operator} %s")
         params.append(value)
     if date_to:
         operator, value = _coerce_filter_datetime(date_to, end=True)
-        where.append(f"sent_at {operator} %s")
+        where.append(f"{scoped_timestamp} {operator} %s")
         params.append(value)
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
     return conn.execute(
-        f"SELECT * FROM polls {where_sql} ORDER BY sent_at DESC NULLS LAST, created_at DESC LIMIT %s",
+        f"SELECT * FROM polls {where_sql} ORDER BY {scoped_timestamp} DESC NULLS LAST, created_at DESC LIMIT %s",
         [*params, limit],
     ).fetchall()
 

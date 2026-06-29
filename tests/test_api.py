@@ -1006,3 +1006,50 @@ def test_poll_stats_support_text_and_date_filters_with_tenant_isolation():
     assert body[0]["total"] == 1
     assert body[0]["correct_rate"] == 100.0
     assert forbidden.status_code == 403
+
+
+def test_bi_analytics_date_filters_fall_back_to_created_at_when_sent_at_is_missing():
+    database_url = reset_db()
+    with db_session(database_url) as conn:
+        poll_id = create_poll(
+            conn,
+            tenant_id=1,
+            text_id=1,
+            question="Created fallback poll",
+            options=["A", "B"],
+            correct_option="A",
+            explanation="",
+            chat_id="group@g.us",
+            generated_from_text="Body",
+            scheduled_slot="manual",
+        )
+        conn.execute(
+            "UPDATE polls SET status = 'sent', sent_at = NULL, created_at = %s WHERE id = %s",
+            ("2026-06-29T08:00:00+00:00", poll_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO poll_recipient_snapshots
+                (poll_id, tenant_id, chat_id, voter_wid, phone_number, display_name, created_at)
+            VALUES
+                (%s, 1, 'group@g.us', '111@c.us', '111', 'Dana Cohen', '2026-06-29T07:59:00+00:00')
+            """,
+            (poll_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO poll_votes (poll_id, option_name, voter_wid, voter_name, phone_number, first_accepted_at, updated_at)
+            VALUES (%s, 'A', '111@c.us', 'Dana Cohen', '111', '2026-06-29T08:05:00+00:00', '2026-06-29T08:05:00+00:00')
+            """,
+            (poll_id,),
+        )
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        stats = client.get("/api/v1/polls/stats?date_from=2026-06-29&date_to=2026-06-29", headers=headers)
+        learners = client.get("/api/v1/learners?date_from=2026-06-29&date_to=2026-06-29", headers=headers)
+
+    assert stats.status_code == 200
+    assert [item["poll"]["id"] for item in stats.json()] == [poll_id]
+    assert learners.status_code == 200
+    assert [item["voter_wid"] for item in learners.json()["items"]] == ["111@c.us"]
