@@ -3,7 +3,7 @@ import os
 import pytest
 
 from app.database import db_session, get_active_tenant, init_db, list_texts, upsert_text, upsert_tenant
-from app.services import load_runtime_config
+from app.services import load_runtime_config, runtime_config_from_row
 
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -88,3 +88,24 @@ def test_tenant_and_text_can_be_updated_in_db():
         ).fetchall()
     assert text["title"] == "Text A"
     assert len(rules) == 1
+
+
+def test_runtime_config_accepts_scheduler_text_rows():
+    runtime = runtime_config_from_row(
+        {
+            "id": 1,
+            "tenant_name": "Tenant A",
+            "greenapi_api_url": "https://api.green-api.com",
+            "greenapi_id_instance": "7103000000",
+            "greenapi_api_token_instance": "abc123",
+            "gemini_api_key": "gemini-key",
+            "gemini_model": "gemini-3.5-flash",
+            "timezone": "Asia/Jerusalem",
+            "summary_enabled": True,
+            "scheduler_enabled": True,
+        }
+    )
+
+    assert runtime.tenant_name == "Tenant A"
+    assert runtime.greenapi_ready is True
+    assert runtime.gemini_ready is True

@@ -93,9 +93,12 @@ def load_runtime_config(database_url: str, tenant_id: int | None = None) -> Runt
 
 
 def runtime_config_from_row(tenant: dict[str, Any]) -> RuntimeConfig:
+    tenant_name = tenant.get("name")
+    if tenant_name is None:
+        tenant_name = tenant.get("tenant_name")
     return RuntimeConfig(
         tenant_id=int(tenant["id"]),
-        tenant_name=str(tenant["name"]),
+        tenant_name=str(tenant_name or ""),
         greenapi_api_url=str(tenant["greenapi_api_url"]).rstrip("/"),
         greenapi_id_instance=str(tenant["greenapi_id_instance"]),
         greenapi_api_token_instance=str(tenant["greenapi_api_token_instance"]),
