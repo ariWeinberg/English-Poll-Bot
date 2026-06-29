@@ -561,26 +561,58 @@ def _parse_voter_record(value: Any) -> dict[str, str | None] | None:
     }
 
 
+def _extract_poll_message_data(payload: dict[str, Any]) -> dict[str, Any] | None:
+    top_level_poll = payload.get("pollMessageData")
+    if isinstance(top_level_poll, dict):
+        return top_level_poll
+    candidates: list[Any] = [payload.get("messageData"), payload.get("editedMessageData"), payload.get("quotedMessageData")]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if isinstance(candidate.get("pollMessageData"), dict):
+            return candidate["pollMessageData"]
+        if candidate.get("typeMessage") == "pollUpdateMessage":
+            return candidate
+    return None
+
+
+def _extract_poll_votes(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        nested = value.get("votes") or value.get("items") or value.get("results")
+        if isinstance(nested, list):
+            return [item for item in nested if isinstance(item, dict)]
+        rows: list[dict[str, Any]] = []
+        for option_name, voters in value.items():
+            if isinstance(option_name, str):
+                rows.append({"optionName": option_name, "optionVoters": voters})
+        return rows
+    return []
+
+
 def parse_poll_update(payload: dict[str, Any]) -> tuple[str, dict[str, list[dict[str, str | None]]]] | None:
-    if payload.get("typeWebhook") != "incomingMessageReceived":
+    poll_data = _extract_poll_message_data(payload)
+    if poll_data is None:
         return None
-    message_data = payload.get("messageData") or {}
-    if message_data.get("typeMessage") != "pollUpdateMessage":
-        return None
-    poll_data = message_data.get("pollMessageData") or {}
-    stanza_id = poll_data.get("stanzaId")
-    votes = poll_data.get("votes")
-    if not stanza_id or not isinstance(votes, list):
+    stanza_id = poll_data.get("stanzaId") or poll_data.get("idMessage") or poll_data.get("messageId")
+    votes = _extract_poll_votes(poll_data.get("votes"))
+    if not stanza_id or not votes:
         return None
 
     option_voters: dict[str, list[dict[str, str | None]]] = {}
     for vote in votes:
-        if not isinstance(vote, dict):
-            continue
         option = str(vote.get("optionName", "")).strip()
-        voters = vote.get("optionVoters") or []
+        raw_voters = vote.get("optionVoters")
+        if raw_voters is None:
+            raw_voters = vote.get("voters")
+        if raw_voters is None:
+            raw_voters = vote.get("participants")
+        voters = raw_voters if isinstance(raw_voters, list) else []
         if option:
             option_voters[option] = [record for voter in voters if (record := _parse_voter_record(voter)) is not None]
+    if not option_voters:
+        return None
     return str(stanza_id), option_voters
 
 

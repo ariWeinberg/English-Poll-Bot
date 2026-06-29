@@ -65,6 +65,63 @@ def test_parse_poll_update_extracts_contact_name_and_phone():
     )
 
 
+def test_parse_poll_update_accepts_top_level_poll_message_data():
+    payload = {
+        "typeWebhook": "incomingMessageReceived",
+        "pollMessageData": {
+            "stanzaId": "poll-message-id",
+            "votes": [{"optionName": "A", "optionVoters": ["111@c.us"]}],
+        },
+    }
+
+    assert parse_poll_update(payload) == (
+        "poll-message-id",
+        {
+            "A": [
+                {
+                    "voter_wid": "111@c.us",
+                    "voter_name": None,
+                    "phone_number": "111",
+                }
+            ]
+        },
+    )
+
+
+def test_parse_poll_update_accepts_edited_message_data_and_vote_maps():
+    payload = {
+        "typeWebhook": "outgoingAPIMessageReceived",
+        "editedMessageData": {
+            "typeMessage": "pollUpdateMessage",
+            "messageId": "poll-message-id",
+            "votes": {
+                "A": [{"wid": "111@c.us", "pushName": "Dana"}],
+                "B": [{"chatId": "222@c.us", "phone": "222"}],
+            },
+        },
+    }
+
+    assert parse_poll_update(payload) == (
+        "poll-message-id",
+        {
+            "A": [
+                {
+                    "voter_wid": "111@c.us",
+                    "voter_name": "Dana",
+                    "phone_number": "111",
+                }
+            ],
+            "B": [
+                {
+                    "voter_wid": "222@c.us",
+                    "voter_name": None,
+                    "phone_number": "222",
+                }
+            ],
+        },
+    )
+
+
 @pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
 def test_handle_greenapi_webhook_ignores_changes_after_change_window(monkeypatch):
     assert TEST_DATABASE_URL is not None
