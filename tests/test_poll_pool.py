@@ -30,9 +30,19 @@ def reset_db() -> str:
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
-            "TRUNCATE tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+            "TRUNCATE app_config, tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
         )
     init_db(TEST_DATABASE_URL)
+    with db_session(TEST_DATABASE_URL) as conn:
+        conn.execute(
+            """
+            INSERT INTO texts (
+                tenant_id, title, body, chat_id, enabled, created_at, updated_at
+            )
+            VALUES (1, 'Fixture text', 'Body', 'group@g.us', TRUE, %s, %s)
+            """,
+            ("2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
+        )
     return TEST_DATABASE_URL
 
 

@@ -17,6 +17,8 @@ Default tenant login on first run:
 
 Change these in the dashboard after logging in. Passwords are stored as salted password hashes.
 
+Startup seeding is intentionally minimal: on a brand-new database the app creates only the default admin tenant. It does not auto-create a sample text or sample schedule rules, and normal restarts do not recreate deleted sample data.
+
 The Compose stack starts:
 
 - `ui`: React app served by nginx on port `8988`
@@ -70,9 +72,9 @@ Local logging is enabled by default with JSON and human-readable files:
 - `LOG_REQUEST_BODY_ENABLED`, default `false`
 - `SCHEDULER_DEBUG_ENABLED`, default `false`. When `true`, only the dedicated `scheduler` worker emits high-volume structured per-step scheduling traces. Secret redaction still applies.
 
-Logs include request IDs, request lifecycle events, scheduler decisions, webhook decisions, poll sends, pool refills, summaries, and exceptions with secret redaction.
+Logs include request IDs, request lifecycle events, scheduler decisions, webhook decisions, poll sends, pool refills, summaries, and exceptions with secret redaction. These events are written through the existing file handlers and also emitted to container stdout, so `docker compose logs scheduler` shows the worker lifecycle and per-tick activity under normal operator settings.
 
-The checked-in Compose config currently enables temporary scheduler troubleshooting mode on the `scheduler` service with `SCHEDULER_DEBUG_ENABLED=true` and `LOG_LEVEL=DEBUG`. Turn it back off by changing only the worker environment.
+The checked-in Compose config leaves `SCHEDULER_DEBUG_ENABLED` off by default. Turn it on temporarily only when you need dense scheduling traces from the dedicated worker.
 
 `GET /api/v1/health` returns basic worker heartbeat data, including the last scheduler tick and the last recorded worker error summary when available.
 

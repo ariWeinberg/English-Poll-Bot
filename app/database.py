@@ -331,6 +331,7 @@ SCHEDULE_RULE_TYPES = {"daily_time", "weekday_time", "month_date_time", "random_
 SCHEDULE_DELIVERY_TYPES = {"poll", "summary"}
 SCHEDULE_COUNT_MODES = {"fixed", "range"}
 CHAT_POLICIES = {"allow", "neutral", "block"}
+LEGACY_TEXT_TIMING_MIGRATION_CUTOFF_KEY = "migration.legacy_text_timing_cutoff"
 
 
 def normalize_phone_number(value: str) -> str:
@@ -788,20 +789,21 @@ def init_db(database_url: str) -> None:
             """
         )
         timestamp = now_iso()
-        conn.execute(
-            """
-            INSERT INTO tenants
-                (id, name, username, password, greenapi_api_url, greenapi_id_instance, greenapi_api_token_instance,
-                 gemini_api_key, gemini_model, timezone, poll_pool_threshold_percent, summary_enabled, scheduler_enabled,
-                 is_active, created_at, updated_at)
-            VALUES
-                (1, 'Default tenant', 'admin', 'admin', 'https://api.green-api.com', '', '',
-                 '', 'gemini-3.5-flash', 'Asia/Jerusalem', 80, TRUE, TRUE,
-                 TRUE, %s, %s)
-            ON CONFLICT (id) DO NOTHING
-            """,
-            (timestamp, timestamp),
-        )
+        tenant_count = conn.execute("SELECT COUNT(*) AS count FROM tenants").fetchone()
+        if int(tenant_count["count"]) == 0:
+            conn.execute(
+                """
+                INSERT INTO tenants
+                    (id, name, username, password, greenapi_api_url, greenapi_id_instance, greenapi_api_token_instance,
+                     gemini_api_key, gemini_model, timezone, poll_pool_threshold_percent, summary_enabled, scheduler_enabled,
+                     is_active, created_at, updated_at)
+                VALUES
+                    (1, 'Default tenant', 'admin', 'admin', 'https://api.green-api.com', '', '',
+                     '', 'gemini-3.5-flash', 'Asia/Jerusalem', 80, TRUE, TRUE,
+                     TRUE, %s, %s)
+                """,
+                (timestamp, timestamp),
+            )
         existing_tenants = conn.execute("SELECT id, password FROM tenants").fetchall()
         for tenant in existing_tenants:
             password = str(tenant["password"] or "")
@@ -811,17 +813,6 @@ def init_db(database_url: str) -> None:
                 "UPDATE tenants SET password = %s, updated_at = %s WHERE id = %s",
                 (hash_password(password), now_iso(), tenant["id"]),
             )
-        conn.execute(
-            """
-            INSERT INTO texts
-                (id, tenant_id, title, body, chat_id, morning_time, evening_time,
-                 summary_time_morning, summary_time_evening, poll_pool_threshold_percent, enabled, created_at, updated_at)
-            VALUES
-                (1, 1, 'Default text', '', '', '08:30', '18:00', '08:25', '17:55', NULL, TRUE, %s, %s)
-            ON CONFLICT (id) DO NOTHING
-            """,
-            (timestamp, timestamp),
-        )
         _migrate_legacy_text_schedule_rules(conn)
         _migrate_text_owned_rules_to_shared_rules(conn)
         conn.execute("SELECT setval(pg_get_serial_sequence('tenants', 'id'), COALESCE(MAX(id), 1)) FROM tenants")
@@ -841,6 +832,10 @@ def init_db(database_url: str) -> None:
 
 
 def _migrate_legacy_text_schedule_rules(conn: psycopg.Connection[DbRow]) -> None:
+    cutoff = get_app_config(conn, key=LEGACY_TEXT_TIMING_MIGRATION_CUTOFF_KEY)
+    if cutoff is None:
+        cutoff = now_iso()
+        set_app_config(conn, key=LEGACY_TEXT_TIMING_MIGRATION_CUTOFF_KEY, value=cutoff)
     rows = conn.execute(
         """
         SELECT
@@ -851,9 +846,14 @@ def _migrate_legacy_text_schedule_rules(conn: psycopg.Connection[DbRow]) -> None
             texts.summary_time_evening
         FROM texts
         LEFT JOIN text_schedule_rules ON text_schedule_rules.text_id = texts.id
+        LEFT JOIN text_schedule_rule_assignments ON text_schedule_rule_assignments.text_id = texts.id
+        WHERE texts.created_at::timestamptz <= %s::timestamptz
         GROUP BY texts.id
         HAVING COUNT(text_schedule_rules.id) = 0
-        """
+           AND COUNT(text_schedule_rule_assignments.id) = 0
+        ORDER BY texts.id ASC
+        """,
+        (cutoff,),
     ).fetchall()
     for row in rows:
         legacy_rules = [
@@ -895,9 +895,6 @@ def _migrate_legacy_text_schedule_rules(conn: psycopg.Connection[DbRow]) -> None
 
 
 def _migrate_text_owned_rules_to_shared_rules(conn: psycopg.Connection[DbRow]) -> None:
-    existing = conn.execute("SELECT COUNT(*) AS count FROM schedule_rules").fetchone()
-    if int(existing["count"]) > 0:
-        return
     legacy_rows = conn.execute(
         """
         SELECT
@@ -906,6 +903,8 @@ def _migrate_text_owned_rules_to_shared_rules(conn: psycopg.Connection[DbRow]) -
             texts.title AS text_title
         FROM text_schedule_rules
         JOIN texts ON texts.id = text_schedule_rules.text_id
+        LEFT JOIN text_schedule_rule_assignments ON text_schedule_rule_assignments.text_id = texts.id
+        WHERE text_schedule_rule_assignments.id IS NULL
         ORDER BY text_schedule_rules.created_at ASC, text_schedule_rules.id ASC
         """
     ).fetchall()

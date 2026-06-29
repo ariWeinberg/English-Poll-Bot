@@ -111,10 +111,9 @@ def configure_logging(settings: Any) -> None:
         human_handler.setFormatter(human_formatter)
         logger.addHandler(human_handler)
 
-    if not logger.handlers:
-        stream_handler = logging.StreamHandler(sys.stdout)
-        stream_handler.setFormatter(json_formatter if settings.log_format == "json" else human_formatter)
-        logger.addHandler(stream_handler)
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(json_formatter if settings.log_format == "json" else human_formatter)
+    logger.addHandler(stream_handler)
 
 
 def get_logger(name: str) -> logging.Logger:

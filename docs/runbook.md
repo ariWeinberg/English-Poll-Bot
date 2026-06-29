@@ -12,13 +12,13 @@
 The API writes local logs with secret redaction by default:
 
 - `LOG_LEVEL`: standard Python log level, default `INFO`.
-- `LOG_FORMAT`: `human` or `json` for stdout fallback, default `human`.
+- `LOG_FORMAT`: `human` or `json` for stdout and stream formatting, default `human`.
 - `LOG_FILE`: JSON-lines file, default `logs/app.jsonl`.
 - `LOG_HUMAN_FILE`: readable log file, default `logs/app.log`.
 - `LOG_REQUEST_BODY_ENABLED`: log redacted JSON request bodies when set to `true`, default `false`.
 - `SCHEDULER_DEBUG_ENABLED`: worker-only ultra-verbose scheduler tracing when set to `true`, default `false`.
 
-Logged events include request start/finish with request IDs, scheduler ticks, skipped scheduler work, per-slot send attempts, pool refills, summary sends, webhook decisions, and exceptions.
+Logged events include request start/finish with request IDs, scheduler ticks, skipped scheduler work, per-slot send attempts, pool refills, summary sends, webhook decisions, and exceptions. The same logging stack also writes to stdout, so Compose and container log collectors can see API and scheduler worker events without enabling debug mode.
 
 ## Scheduler
 
@@ -29,6 +29,8 @@ Each automatic slot produces a persisted attempt record. Poll sends keep their `
 `GET /api/v1/health` exposes the latest worker heartbeat payload from the database, including `last_tick_at`, `last_success_at`, `polls_sent`, `summaries_sent`, and the last worker error summary when present.
 
 For short-term troubleshooting, set `SCHEDULER_DEBUG_ENABLED=true` on the `scheduler` service. This emits high-volume structured logs for row payloads, runtime config derivation, timezone conversion, rule matching, due-count math, send calls, failures, and heartbeat writes. Turn it back off by removing or setting that one environment flag to `false`.
+
+Startup initialization seeds only the default admin tenant on a blank database. It does not create a sample text or sample rules, and normal restarts or updates will not recreate deleted sample scheduling data.
 
 ## Webhooks
 
