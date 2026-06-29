@@ -58,6 +58,10 @@ export function formatActivity(value?: string | null) {
   return value || "—";
 }
 
+export function formatPercent(value: number, digits = 1) {
+  return `${value.toFixed(digits)}%`;
+}
+
 export function formatSnapshotSource(value?: string | null) {
   if (value === "live_sync") return "Live sync";
   if (value === "cached_roster") return "Cached roster";
@@ -145,6 +149,7 @@ export function learnerQueryString(tenantId: number, filters: LearnerFilters, ex
   params.set("tenant_id", String(tenantId));
   params.set("sort_by", filters.sortBy);
   params.set("sort_dir", filters.sortDir);
+  params.set("segment", filters.segment);
   if (filters.search.trim()) params.set("search", filters.search.trim());
   if (filters.textId) params.set("text_id", filters.textId);
   if (filters.dateFrom) params.set("date_from", filters.dateFrom);

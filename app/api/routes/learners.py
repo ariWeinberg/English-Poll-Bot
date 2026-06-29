@@ -9,6 +9,7 @@ from app.core.auth import current_user
 from app.database import (
     db_session,
     get_learner_summary,
+    get_learners_summary,
     list_learner_history,
     list_learner_missed_polls,
     list_learners_page,
@@ -36,6 +37,7 @@ async def learners(
     date_from: str | None = None,
     date_to: str | None = None,
     search: str | None = None,
+    segment: str = "all",
     sort_by: str = "latest_activity",
     sort_dir: str = "desc",
     user: dict[str, Any] = Depends(current_user),
@@ -51,8 +53,28 @@ async def learners(
             date_from=date_from,
             date_to=date_to,
             search=search,
+            segment=segment,
             sort_by=sort_by,
             sort_dir=sort_dir,
+        )
+
+
+@router.get("/summary")
+async def learners_summary(
+    tenant_id: int | None = None,
+    text_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+):
+    scoped_tenant = _scoped_tenant_id(tenant_id, user)
+    with db_session(settings.database_url) as conn:
+        return get_learners_summary(
+            conn,
+            tenant_id=scoped_tenant,
+            text_id=text_id,
+            date_from=date_from,
+            date_to=date_to,
         )
 
 

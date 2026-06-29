@@ -25,7 +25,8 @@ Route handlers should stay thin. New business rules belong in service functions.
 ## Frontend Boundaries
 
 - `web/src/App.tsx` currently owns the main dashboard shell, route state, API types, and views.
-- The authenticated `/learners` route renders the learner progress dashboard and uses tenant-scoped analytics and missed-response endpoints.
+- The authenticated `/dashboard` route renders the executive BI overview, including time-scoped poll stats, delivery-health summaries, and drill-through links into learners and poll/text detail views.
+- The authenticated `/learners` route renders the learner intervention dashboard and uses tenant-scoped learner summary, ranked risk slices, segment filters, and missed-response endpoints.
 - The authenticated text and poll detail routes render roster sync controls, schedule-rule summaries, and poll coverage summaries on top of the existing delivery views.
 - The authenticated `/doc` route renders operational guidance and opens Swagger through `POST /api/v1/docs/session`.
 - `web/src/main.tsx` only mounts React.

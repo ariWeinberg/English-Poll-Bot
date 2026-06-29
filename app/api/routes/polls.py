@@ -89,12 +89,24 @@ async def create_poll_route(payload: PollPayload, _: dict[str, Any] = Depends(cu
 @router.get("/api/v1/polls/stats")
 async def poll_stats_route(
     tenant_id: int | None = None,
+    text_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     limit: int = 25,
     user: dict[str, Any] = Depends(current_user),
 ):
-    scoped_tenant = tenant_id if tenant_id is not None else int(user["id"])
+    scoped_tenant = int(user["id"])
+    if tenant_id is not None and tenant_id != scoped_tenant:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant access denied")
     with db_session(settings.database_url) as conn:
-        return all_poll_stats(conn, limit=limit, tenant_id=scoped_tenant)
+        return all_poll_stats(
+            conn,
+            limit=limit,
+            tenant_id=scoped_tenant,
+            text_id=text_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
 
 
 @router.get("/api/v1/polls/export.csv")

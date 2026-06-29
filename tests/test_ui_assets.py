@@ -20,10 +20,16 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Chat Allowlist / Blocklist" in src_bundle
     assert "Refresh chats" in src_bundle
     assert "Select a group chat" in src_bundle
-    assert "Learner Progress Dashboard" in src_bundle
+    assert "Learner Intervention Dashboard" in src_bundle
     assert "Recent Answer History" in src_bundle
     assert "Recent Missed Polls" in src_bundle
-    assert "Participation and accuracy" in src_bundle
+    assert "Top missed learners" in src_bundle
+    assert "Lowest response learners" in src_bundle
+    assert "Detailed Table" in src_bundle
+    assert "Executive BI Overview" in src_bundle
+    assert "Top Performing Content" in src_bundle
+    assert "Delivery Health" in src_bundle
+    assert "Learners needing attention" in src_bundle
     assert "Group Roster" in src_bundle
     assert "Participation Coverage" in src_bundle
     assert "Coverage membership" in src_bundle

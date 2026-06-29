@@ -815,6 +815,50 @@ def test_learners_filters_apply_text_and_date_ranges():
         assert items[2]["missed_polls_count"] == 1
 
 
+def test_learners_summary_returns_kpis_segments_and_ranked_slices():
+    database_url = reset_db()
+    seed_learner_analytics_fixture(database_url)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.get("/api/v1/learners/summary", headers=headers)
+        assert response.status_code == 200
+        body = response.json()
+
+    assert body["learners_total"] == 4
+    assert body["assigned_polls_total"] == 7
+    assert body["responded_polls_total"] == 4
+    assert body["missed_polls_total"] == 3
+    assert body["response_rate"] == pytest.approx(57.14, abs=0.01)
+    assert body["total_counted_votes"] == 5
+    assert body["correct_rate"] == 80.0
+    assert body["ignored_changes_total"] == 1
+    assert body["needs_attention_count"] == 3
+    assert body["inactive_count"] == 2
+    assert body["engaged_count"] == 1
+    assert [item["voter_wid"] for item in body["top_missed"]] == ["333@c.us", "444@c.us", "222@c.us", "111@c.us"]
+    assert [item["voter_wid"] for item in body["lowest_response"]] == ["333@c.us", "444@c.us", "222@c.us", "111@c.us"]
+    assert [item["voter_wid"] for item in body["most_active"]] == ["111@c.us", "222@c.us", "333@c.us", "444@c.us"]
+
+
+def test_learners_segment_filter_matches_backend_definitions():
+    database_url = reset_db()
+    seed_learner_analytics_fixture(database_url)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        needs_attention = client.get("/api/v1/learners?segment=needs_attention", headers=headers)
+        inactive = client.get("/api/v1/learners?segment=inactive", headers=headers)
+        engaged = client.get("/api/v1/learners?segment=engaged", headers=headers)
+
+    assert needs_attention.status_code == 200
+    assert [item["voter_wid"] for item in needs_attention.json()["items"]] == ["222@c.us", "333@c.us", "444@c.us"]
+    assert inactive.status_code == 200
+    assert [item["voter_wid"] for item in inactive.json()["items"]] == ["333@c.us", "444@c.us"]
+    assert engaged.status_code == 200
+    assert [item["voter_wid"] for item in engaged.json()["items"]] == ["111@c.us"]
+
+
 def test_learner_detail_returns_recent_history_with_accepted_and_ignored_state():
     database_url = reset_db()
     poll_ids = seed_learner_analytics_fixture(database_url)
@@ -944,4 +988,21 @@ def test_learner_routes_do_not_leak_cross_tenant_contact_collisions():
     assert body["learner"]["display_name"] == "Dana Cohen"
     assert all(item["display_name"] == "Dana Cohen" for item in body["history"])
     assert all(item["phone_number"] == "111" for item in body["history"])
+    assert forbidden.status_code == 403
+
+
+def test_poll_stats_support_text_and_date_filters_with_tenant_isolation():
+    database_url = reset_db()
+    poll_ids = seed_learner_analytics_fixture(database_url)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        filtered = client.get("/api/v1/polls/stats?text_id=1&date_from=2026-02-01&date_to=2026-02-28", headers=headers)
+        forbidden = client.get("/api/v1/polls/stats?tenant_id=2", headers=headers)
+
+    assert filtered.status_code == 200
+    body = filtered.json()
+    assert [item["poll"]["id"] for item in body] == [poll_ids["poll_2"]]
+    assert body[0]["total"] == 1
+    assert body[0]["correct_rate"] == 100.0
     assert forbidden.status_code == 403

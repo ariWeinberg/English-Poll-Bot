@@ -188,6 +188,23 @@ class LearnerSummary(BaseModel):
     latest_activity: str | None = None
 
 
+class LearnerSummaryResponse(BaseModel):
+    learners_total: int
+    assigned_polls_total: int
+    responded_polls_total: int
+    missed_polls_total: int
+    response_rate: float
+    total_counted_votes: int
+    correct_rate: float
+    ignored_changes_total: int
+    needs_attention_count: int
+    inactive_count: int
+    engaged_count: int
+    top_missed: list[LearnerSummary]
+    lowest_response: list[LearnerSummary]
+    most_active: list[LearnerSummary]
+
+
 class LearnerHistoryItem(BaseModel):
     id: int
     poll_id: int

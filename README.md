@@ -89,7 +89,7 @@ The checked-in Compose config leaves `SCHEDULER_DEBUG_ENABLED` off by default. T
 - Learner progress dashboard with tenant-scoped leaderboard, missed-response tracking, and per-contact answer history
 - Text-level WhatsApp group roster sync with coverage exclusions
 - Poll-level participation coverage with non-responder lists
-- Separate landing, login, dashboard, learner analytics, and texts pages
+- Separate landing, login, executive BI dashboard, learner intervention dashboard, and texts pages
 
 ## Webhooks
 

@@ -155,6 +155,23 @@ export type LearnerSummary = {
   latest_activity?: string | null;
 };
 
+export type LearnerSummaryResponse = {
+  learners_total: number;
+  assigned_polls_total: number;
+  responded_polls_total: number;
+  missed_polls_total: number;
+  response_rate: number;
+  total_counted_votes: number;
+  correct_rate: number;
+  ignored_changes_total: number;
+  needs_attention_count: number;
+  inactive_count: number;
+  engaged_count: number;
+  top_missed: LearnerSummary[];
+  lowest_response: LearnerSummary[];
+  most_active: LearnerSummary[];
+};
+
 export type LearnerHistoryItem = {
   id: number;
   poll_id: number;
@@ -259,12 +276,14 @@ export type TextFormState = {
 export type PollFormState = Omit<Poll, "id" | "created_at">;
 export type TenantFormState = Omit<Tenant, "id"> & { password: string };
 export type RegisterFormState = { name: string; username: string; password: string; confirmPassword: string; timezone: string };
+export type LearnerSegment = "all" | "needs_attention" | "inactive" | "engaged";
 
 export type LearnerFilters = {
   search: string;
   textId: string;
   dateFrom: string;
   dateTo: string;
+  segment: LearnerSegment;
   sortBy:
     | "latest_activity"
     | "total_counted_votes"

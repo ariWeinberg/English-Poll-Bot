@@ -1,5 +1,7 @@
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import {
+  Activity,
+  AlertTriangle,
   BarChart3,
   BellRing,
   BookOpen,
@@ -24,7 +26,8 @@ import {
 import { EmptyState, TextInput } from "./components/common";
 import { PollModal, PreviewModal, ScheduleRuleModal, SettingsModal, TextModal } from "./components/modals";
 import { api, downloadCsv, getToken, setToken } from "./lib/api";
-import { chatPolicyLabel, excerpt, formatWhen, minutesLabel, scheduleSummary } from "./lib/format";
+import { dateRangeForPreset, type AnalyticsRangePreset } from "./lib/analytics";
+import { chatPolicyLabel, excerpt, formatPercent, formatWhen, minutesLabel, scheduleSummary } from "./lib/format";
 import { navigateTo, parseRoute } from "./lib/routes";
 import { DocPage } from "./pages/DocPage";
 import { LearnerDetailPage } from "./pages/LearnerDetailPage";
@@ -38,6 +41,8 @@ import {
   type GeneratedQuestion,
   type GroupChat,
   type LearnerFilters,
+  type LearnerSummary,
+  type LearnerSummaryResponse,
   type Page,
   type Poll,
   type PollFilters,
@@ -62,6 +67,15 @@ const defaultPollFilters: PollFilters = {
   dateFrom: "",
   dateTo: "",
 };
+
+const defaultLearnerFilters = (): LearnerFilters => ({
+  search: "",
+  textId: "",
+  ...dateRangeForPreset("7d"),
+  segment: "all",
+  sortBy: "latest_activity",
+  sortDir: "desc",
+});
 
 function buildPollListPath(tenantId: number, filters: PollFilters) {
   const params = new URLSearchParams({ tenant_id: String(tenantId), page_size: "100" });
@@ -285,14 +299,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
   const [currentRoster, setCurrentRoster] = useState<TextRoster | null>(null);
   const [currentCoverage, setCurrentCoverage] = useState<PollCoverage | null>(null);
   const [pollFilters, setPollFilters] = useState<PollFilters>(defaultPollFilters);
-  const [learnerFilters, setLearnerFilters] = useState<LearnerFilters>({
-    search: "",
-    textId: "",
-    dateFrom: "",
-    dateTo: "",
-    sortBy: "latest_activity",
-    sortDir: "desc",
-  });
+  const [learnerFilters, setLearnerFilters] = useState<LearnerFilters>(defaultLearnerFilters);
 
   async function loadData() {
     setLoading(true);
@@ -540,8 +547,12 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
               tenant={tenant}
               texts={texts}
               polls={polls}
-              pollStats={pollStats}
-              onOpenLearners={() => navigateTo({ name: "learners" })}
+              onOpenLearners={(nextFilters) => {
+                if (nextFilters) {
+                  setLearnerFilters((current) => ({ ...current, ...nextFilters }));
+                }
+                navigateTo({ name: "learners" });
+              }}
               onOpenText={(text) => navigateTo({ name: "text-detail", id: text.id })}
               onOpenPoll={(poll) => navigateTo({ name: "poll-detail", id: poll.id })}
               onNewText={() => setTextModal({ mode: "create" })}
@@ -821,7 +832,6 @@ function DashboardPage({
   tenant,
   texts,
   polls,
-  pollStats,
   onOpenLearners,
   onOpenText,
   onOpenPoll,
@@ -831,29 +841,85 @@ function DashboardPage({
   tenant: Tenant;
   texts: Text[];
   polls: Poll[];
-  pollStats: PollStats[];
-  onOpenLearners: () => void;
+  onOpenLearners: (nextFilters?: Partial<LearnerFilters>) => void;
   onOpenText: (text: Text) => void;
   onOpenPoll: (poll: Poll) => void;
   onNewText: () => void;
   onNewPoll: () => void;
 }) {
-  const totalVotes = pollStats.reduce((sum, item) => sum + item.total, 0);
-  const averageCorrect = pollStats.length === 0 ? 0 : pollStats.reduce((sum, item) => sum + item.correct_rate, 0) / pollStats.length;
+  const [rangePreset, setRangePreset] = useState<AnalyticsRangePreset>("7d");
+  const [stats, setStats] = useState<PollStats[]>([]);
+  const [learnerSummary, setLearnerSummary] = useState<LearnerSummaryResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const range = useMemo(() => dateRangeForPreset(rangePreset), [rangePreset]);
   const sentPolls = polls.filter((poll) => poll.status === "sent").length;
   const queuedPolls = polls.filter((poll) => poll.status === "queued").length;
+  const enabledTexts = texts.filter((text) => text.enabled).length;
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    const params = new URLSearchParams({ tenant_id: String(tenant.id), limit: "100" });
+    if (range.dateFrom) params.set("date_from", range.dateFrom);
+    if (range.dateTo) params.set("date_to", range.dateTo);
+    Promise.all([
+      api<PollStats[]>(`/polls/stats?${params.toString()}`),
+      api<LearnerSummaryResponse>(`/learners/summary?${params.toString()}`),
+    ])
+      .then(([pollStats, summary]) => {
+        if (cancelled) return;
+        setStats(pollStats);
+        setLearnerSummary(summary);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load dashboard analytics");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tenant.id, range]);
+
+  const totalVotes = stats.reduce((sum, item) => sum + item.total, 0);
+  const averageCorrect = stats.length === 0 ? 0 : stats.reduce((sum, item) => sum + item.correct_rate, 0) / stats.length;
+  const uniqueRespondingLearners = Math.max((learnerSummary?.learners_total ?? 0) - (learnerSummary?.inactive_count ?? 0), 0);
+  const trendRows = buildDashboardTrend(stats);
+  const textPerformance = buildTextPerformance(stats, texts);
+  const topTexts = [...textPerformance].sort((left, right) => right.responseRate - left.responseRate || right.accuracy - left.accuracy).slice(0, 4);
+  const riskyTexts = [...textPerformance].sort((left, right) => left.responseRate - right.responseRate || right.sentPolls - left.sentPolls).slice(0, 4);
+  const topPolls = [...stats].sort((left, right) => right.total - left.total || right.correct_rate - left.correct_rate).slice(0, 4);
+  const weakPolls = [...stats].sort((left, right) => left.correct_rate - right.correct_rate || left.total - right.total).slice(0, 4);
+  const recentActivity = polls
+    .filter((poll) => poll.sent_at)
+    .sort((left, right) => (right.sent_at || "").localeCompare(left.sent_at || ""))
+    .slice(0, 5);
 
   return (
     <div className="dashboard-layout">
       <section className="hero-panel">
         <div>
-          <p className="eyebrow">Workspace Overview</p>
+          <p className="eyebrow">Executive BI Overview</p>
           <h2>{tenant.name}</h2>
-          <p className="hero-subtitle">A cleaner command surface for content, delivery, and post-send performance.</p>
+          <p className="hero-subtitle">Track engagement, content performance, and delivery health with a default last-7-days view.</p>
         </div>
         <div className="hero-actions">
-          <button className="button button-secondary" onClick={onOpenLearners}>
-            <Users size={16} /> Learner progress
+          <div className="preset-group">
+            {(["7d", "30d", "all"] as const).map((preset) => (
+              <button
+                key={preset}
+                className={rangePreset === preset ? "button button-secondary" : "button button-ghost"}
+                onClick={() => setRangePreset(preset)}
+              >
+                {preset === "all" ? "All time" : preset}
+              </button>
+            ))}
+          </div>
+          <button className="button button-secondary" onClick={() => onOpenLearners({ ...range, segment: "needs_attention" })}>
+            <Users size={16} /> Learners needing attention
           </button>
           <button className="button button-primary" onClick={onNewText}>
             <Plus size={16} /> New text
@@ -864,58 +930,215 @@ function DashboardPage({
         </div>
       </section>
 
-      <section className="metric-grid">
-        <MetricCard label="Texts" value={texts.length} detail="Content sources" icon={<FileText size={18} />} />
-        <MetricCard label="Polls" value={polls.length} detail="Draft + sent" icon={<Vote size={18} />} />
-        <MetricCard label="Queued polls" value={queuedPolls} detail="Ready in pool" icon={<Play size={18} />} />
-        <MetricCard label="Sent polls" value={sentPolls} detail="Delivered to groups" icon={<Send size={18} />} />
+      {error && <div className="alert error">{error}</div>}
+
+      <section className="metric-grid dashboard-metric-grid">
+        <MetricCard label="Sent polls" value={stats.length} detail="Polls sent in the selected window" icon={<Send size={18} />} />
+        <MetricCard label="Unique responding learners" value={uniqueRespondingLearners} detail="Learners with at least one response" icon={<Users size={18} />} />
+        <MetricCard label="Workspace response rate" value={formatPercent(learnerSummary?.response_rate ?? 0)} detail="Responses divided by assigned polls" icon={<Activity size={18} />} />
+        <MetricCard label="Accuracy" value={formatPercent(averageCorrect)} detail="Average poll correctness in the range" icon={<CheckCircle2 size={18} />} />
         <MetricCard label="Total votes" value={totalVotes} detail="Across all tracked polls" icon={<BarChart3 size={18} />} />
-        <MetricCard label="Avg correct" value={`${averageCorrect.toFixed(1)}%`} detail="Accuracy rate" icon={<CheckCircle2 size={18} />} />
+        <MetricCard label="Learners needing attention" value={learnerSummary?.needs_attention_count ?? 0} detail="Misses or sub-50% response rate" icon={<AlertTriangle size={18} />} />
       </section>
 
       <div className="content-grid">
         <section className="surface">
           <div className="section-header">
             <div>
-              <p className="section-kicker">Recent Texts</p>
-              <h3>Source content</h3>
+              <p className="section-kicker">Trend View</p>
+              <h3>{rangePreset === "all" ? "All-time cadence" : `${rangePreset} engagement trend`}</h3>
+            </div>
+          </div>
+          {loading ? (
+            <EmptyState title="Loading dashboard trend" body="Collecting sent poll, vote, and learner engagement data." />
+          ) : trendRows.length === 0 ? (
+            <EmptyState title="No sent polls in this range" body="Widen the time window or send polls to populate the BI view." />
+          ) : (
+            <div className="stack">
+              {trendRows.map((row) => (
+                <div className="trend-row" key={row.label}>
+                  <div className="trend-row-copy">
+                    <strong>{row.label}</strong>
+                    <span className="meta-inline">
+                      {row.sentPolls} sent · {row.votes} votes · {formatPercent(row.accuracy)}
+                    </span>
+                  </div>
+                  <div className="trend-bars">
+                    <MiniBar label="Sent" value={row.sentPolls} max={trendRows[0]?.sentPolls || 1} />
+                    <MiniBar label="Votes" value={row.votes} max={Math.max(...trendRows.map((item) => item.votes), 1)} />
+                    <MiniBar label="Accuracy" value={row.accuracy} max={100} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="surface side-surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Delivery Health</p>
+              <h3>Queue and send activity</h3>
             </div>
           </div>
           <div className="stack">
-            {texts.slice(0, 4).map((text) => (
-              <button className="list-card" key={text.id} onClick={() => onOpenText(text)}>
+            <InsightRow label="Queued polls" value={queuedPolls} detail="Ready in the poll pool." />
+            <InsightRow label="Enabled texts" value={enabledTexts} detail="Texts currently available for delivery." />
+            <InsightRow label="Total sent polls" value={sentPolls} detail="Across the full workspace, not just the filtered range." />
+            {recentActivity.slice(0, 3).map((poll) => (
+              <button className="list-card compact-card" key={poll.id} onClick={() => onOpenPoll(poll)}>
                 <div className="list-card-header">
-                  <strong>{text.title}</strong>
-                  <span className={text.enabled ? "pill success" : "pill"}>{text.enabled ? "Enabled" : "Disabled"}</span>
+                  <strong>{poll.question}</strong>
+                  <span className="pill">{poll.sent_at?.slice(0, 10) || "sent"}</span>
                 </div>
-                <p>{excerpt(text.body)}</p>
+                <p>{poll.chat_id}</p>
               </button>
             ))}
-            {texts.length === 0 && <EmptyState title="No texts yet" body="Create your first text from the floating form." />}
+          </div>
+        </section>
+      </div>
+
+      <div className="content-grid">
+        <section className="surface">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Top Performing Content</p>
+              <h3>Best texts and polls</h3>
+            </div>
+          </div>
+          <div className="stack">
+            {topTexts.map((text) => (
+              <button className="list-card" key={`text-${text.id}`} onClick={() => onOpenText(text.text)}>
+                <div className="list-card-header">
+                  <strong>{text.text.title}</strong>
+                  <span className="pill success">{formatPercent(text.responseRate)} response</span>
+                </div>
+                <p>
+                  {text.sentPolls} sent polls · {formatPercent(text.accuracy)} accuracy · {text.totalVotes} votes
+                </p>
+              </button>
+            ))}
+            {topPolls.map((item) => (
+              <button className="list-card compact-card" key={`poll-${item.poll.id}`} onClick={() => onOpenPoll(item.poll)}>
+                <div className="list-card-header">
+                  <strong>{item.poll.question}</strong>
+                  <span className="pill">{item.total} votes</span>
+                </div>
+                <p>{formatPercent(item.correct_rate)} correct</p>
+              </button>
+            ))}
+            {topTexts.length === 0 && topPolls.length === 0 && <EmptyState title="No performance data yet" body="Sent poll performance will appear here once responses start arriving." />}
           </div>
         </section>
 
         <section className="surface">
           <div className="section-header">
             <div>
-              <p className="section-kicker">Recent Polls</p>
-              <h3>Performance snapshot</h3>
+              <p className="section-kicker">Needs Attention</p>
+              <h3>Weak content and intervention candidates</h3>
             </div>
           </div>
           <div className="stack">
-            {pollStats.slice(0, 4).map((item) => (
-              <button className="list-card" key={item.poll.id} onClick={() => onOpenPoll(item.poll)}>
+            {riskyTexts.map((text) => (
+              <button className="list-card" key={`risk-text-${text.id}`} onClick={() => onOpenText(text.text)}>
                 <div className="list-card-header">
-                  <strong>{item.poll.question}</strong>
-                  <span className="pill">{item.total} votes</span>
+                  <strong>{text.text.title}</strong>
+                  <span className="pill">{formatPercent(text.responseRate)} response</span>
                 </div>
-                <p>{item.correct_rate.toFixed(1)}% correct · {item.poll.status}</p>
+                <p>{text.sentPolls} sent polls · {formatPercent(text.accuracy)} accuracy</p>
               </button>
             ))}
-            {pollStats.length === 0 && <EmptyState title="No polls yet" body="Generated and manual polls will appear here." />}
+            {weakPolls.map((item) => (
+              <button className="list-card compact-card" key={`weak-poll-${item.poll.id}`} onClick={() => onOpenPoll(item.poll)}>
+                <div className="list-card-header">
+                  <strong>{item.poll.question}</strong>
+                  <span className="pill">{formatPercent(item.correct_rate)} correct</span>
+                </div>
+                <p>{item.total} votes · {item.poll.sent_at?.slice(0, 10) || "Not sent"}</p>
+              </button>
+            ))}
+            {(learnerSummary?.top_missed ?? []).slice(0, 3).map((learner) => (
+              <button
+                className="list-card compact-card"
+                key={`learner-${learner.voter_wid}`}
+                onClick={() => onOpenLearners({ ...range, segment: "needs_attention", search: learner.display_name })}
+              >
+                <div className="list-card-header">
+                  <strong>{learner.display_name}</strong>
+                  <span className="pill">{learner.missed_polls_count} missed</span>
+                </div>
+                <p>{formatPercent(learner.response_rate)} response rate</p>
+              </button>
+            ))}
+            {riskyTexts.length === 0 && weakPolls.length === 0 && <EmptyState title="No intervention signals yet" body="Low-response texts, weak polls, and at-risk learners will surface here." />}
           </div>
         </section>
       </div>
+    </div>
+  );
+}
+
+function buildDashboardTrend(stats: PollStats[]) {
+  const grouped = new Map<string, { label: string; sentPolls: number; votes: number; accuracySum: number }>();
+  for (const item of stats) {
+    const label = item.poll.sent_at?.slice(0, 10) || "Unscheduled";
+    const current = grouped.get(label) || { label, sentPolls: 0, votes: 0, accuracySum: 0 };
+    current.sentPolls += 1;
+    current.votes += item.total;
+    current.accuracySum += item.correct_rate;
+    grouped.set(label, current);
+  }
+  return [...grouped.values()]
+    .sort((left, right) => right.label.localeCompare(left.label))
+    .slice(0, 7)
+    .reverse()
+    .map((item) => ({
+      label: item.label,
+      sentPolls: item.sentPolls,
+      votes: item.votes,
+      accuracy: item.sentPolls > 0 ? item.accuracySum / item.sentPolls : 0,
+    }));
+}
+
+function buildTextPerformance(stats: PollStats[], texts: Text[]) {
+  const byText = new Map<number, { text: Text; id: number; totalVotes: number; sentPolls: number; respondedPolls: number; correctRateSum: number }>();
+  for (const item of stats) {
+    const text = texts.find((candidate) => candidate.id === item.poll.text_id);
+    if (!text) continue;
+    const current = byText.get(text.id) || { text, id: text.id, totalVotes: 0, sentPolls: 0, respondedPolls: 0, correctRateSum: 0 };
+    current.totalVotes += item.total;
+    current.sentPolls += 1;
+    if (item.total > 0) current.respondedPolls += 1;
+    current.correctRateSum += item.correct_rate;
+    byText.set(text.id, current);
+  }
+  return [...byText.values()].map((item) => ({
+    ...item,
+    accuracy: item.sentPolls > 0 ? item.correctRateSum / item.sentPolls : 0,
+    responseRate: item.sentPolls > 0 ? (item.respondedPolls * 100) / item.sentPolls : 0,
+  }));
+}
+
+function MiniBar({ label, value, max }: { label: string; value: number; max: number }) {
+  return (
+    <div className="mini-bar">
+      <span>{label}</span>
+      <div className="mini-bar-track">
+        <div className="mini-bar-fill" style={{ width: `${Math.max((value / Math.max(max, 1)) * 100, value > 0 ? 12 : 0)}%` }} />
+      </div>
+      <strong>{Math.round(value * 10) / 10}</strong>
+    </div>
+  );
+}
+
+function InsightRow({ label, value, detail }: { label: string; value: string | number; detail: string }) {
+  return (
+    <div className="insight-row">
+      <div>
+        <strong>{label}</strong>
+        <p className="subtle">{detail}</p>
+      </div>
+      <span className="pill">{value}</span>
     </div>
   );
 }

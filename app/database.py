@@ -320,6 +320,16 @@ def _learner_select_sql() -> str:
     """
 
 
+def _learner_segment_condition(segment: str) -> str:
+    if segment == "needs_attention":
+        return "assigned_polls_count > 0 AND (missed_polls_count > 0 OR response_rate < 50)"
+    if segment == "inactive":
+        return "assigned_polls_count > 0 AND responded_polls_count = 0"
+    if segment == "engaged":
+        return "assigned_polls_count > 0 AND response_rate >= 80 AND missed_polls_count = 0"
+    return "1 = 1"
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1883,12 +1893,34 @@ def get_text_pool_tail_rank(conn: psycopg.Connection[DbRow], *, text_id: int) ->
     return int(row["max_rank"])
 
 
-def list_polls(conn: psycopg.Connection[DbRow], limit: int = 25, tenant_id: int | None = None) -> list[DbRow]:
-    if tenant_id is None:
-        return conn.execute("SELECT * FROM polls ORDER BY created_at DESC LIMIT %s", (limit,)).fetchall()
+def list_polls(
+    conn: psycopg.Connection[DbRow],
+    limit: int = 25,
+    tenant_id: int | None = None,
+    text_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[DbRow]:
+    where: list[str] = []
+    params: list[Any] = []
+    if tenant_id is not None:
+        where.append("tenant_id = %s")
+        params.append(tenant_id)
+    if text_id is not None:
+        where.append("text_id = %s")
+        params.append(text_id)
+    if date_from:
+        operator, value = _coerce_filter_datetime(date_from, end=False)
+        where.append(f"sent_at {operator} %s")
+        params.append(value)
+    if date_to:
+        operator, value = _coerce_filter_datetime(date_to, end=True)
+        where.append(f"sent_at {operator} %s")
+        params.append(value)
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
     return conn.execute(
-        "SELECT * FROM polls WHERE tenant_id = %s ORDER BY created_at DESC LIMIT %s",
-        (tenant_id, limit),
+        f"SELECT * FROM polls {where_sql} ORDER BY sent_at DESC NULLS LAST, created_at DESC LIMIT %s",
+        [*params, limit],
     ).fetchall()
 
 
@@ -2776,6 +2808,7 @@ def list_learners_page(
     date_from: str | None = None,
     date_to: str | None = None,
     search: str | None = None,
+    segment: str = "all",
     sort_by: str = "latest_activity",
     sort_dir: str = "desc",
 ) -> dict[str, Any]:
@@ -2791,11 +2824,13 @@ def list_learners_page(
     if search:
         like = _like(search)
         learner_params.extend([like, like, like])
+    segment_sql = _learner_segment_condition(segment)
     total = conn.execute(
         f"""
         {aggregate_cte}
         SELECT COUNT(*) AS count
         FROM filtered_learners
+        WHERE {segment_sql}
         """,
         learner_params,
     ).fetchone()["count"]
@@ -2803,6 +2838,7 @@ def list_learners_page(
         f"""
         {aggregate_cte}
         {_learner_select_sql()}
+        WHERE {segment_sql}
         ORDER BY {_learner_sort_sql(sort_by, sort_dir)}
         LIMIT %s OFFSET %s
         """,
@@ -2837,6 +2873,82 @@ def get_learner_summary(
         learner_params,
     ).fetchone()
     return row
+
+
+def get_learners_summary(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    text_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, Any]:
+    where_sql, params = _learner_poll_filters(
+        tenant_id=tenant_id,
+        text_id=text_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    aggregate_cte = _learner_aggregate_cte(where_sql)
+    totals = conn.execute(
+        f"""
+        {aggregate_cte}
+        SELECT
+            COUNT(*)::INT AS learners_total,
+            COALESCE(SUM(assigned_polls_count), 0)::INT AS assigned_polls_total,
+            COALESCE(SUM(responded_polls_count), 0)::INT AS responded_polls_total,
+            COALESCE(SUM(missed_polls_count), 0)::INT AS missed_polls_total,
+            CASE
+                WHEN COALESCE(SUM(assigned_polls_count), 0) > 0
+                    THEN ROUND(COALESCE(SUM(responded_polls_count), 0)::numeric * 100.0 / SUM(assigned_polls_count), 2)
+                ELSE 0
+            END AS response_rate,
+            COALESCE(SUM(total_counted_votes), 0)::INT AS total_counted_votes,
+            CASE
+                WHEN COALESCE(SUM(total_counted_votes), 0) > 0
+                    THEN ROUND(COALESCE(SUM(correct_count), 0)::numeric * 100.0 / SUM(total_counted_votes), 2)
+                ELSE 0
+            END AS correct_rate,
+            COALESCE(SUM(ignored_changes_count), 0)::INT AS ignored_changes_total,
+            COUNT(*) FILTER (
+                WHERE {_learner_segment_condition("needs_attention")}
+            )::INT AS needs_attention_count,
+            COUNT(*) FILTER (
+                WHERE {_learner_segment_condition("inactive")}
+            )::INT AS inactive_count,
+            COUNT(*) FILTER (
+                WHERE {_learner_segment_condition("engaged")}
+            )::INT AS engaged_count
+        FROM filtered_learners
+        """,
+        params,
+    ).fetchone()
+
+    def load_ranked(order_sql: str, where_filter: str = "1 = 1") -> list[DbRow]:
+        return conn.execute(
+            f"""
+            {aggregate_cte}
+            {_learner_select_sql()}
+            WHERE {where_filter}
+            ORDER BY {order_sql}
+            LIMIT 5
+            """,
+            params,
+        ).fetchall()
+
+    return {
+        **dict(totals),
+        "top_missed": load_ranked(
+            "missed_polls_count DESC, response_rate ASC, latest_activity DESC NULLS LAST, display_name ASC"
+        ),
+        "lowest_response": load_ranked(
+            "response_rate ASC, missed_polls_count DESC, assigned_polls_count DESC, latest_activity DESC NULLS LAST, display_name ASC",
+            "assigned_polls_count > 0",
+        ),
+        "most_active": load_ranked(
+            "total_counted_votes DESC, responded_polls_count DESC, latest_activity DESC NULLS LAST, display_name ASC"
+        ),
+    }
 
 
 def list_learner_history(
@@ -3211,9 +3323,24 @@ def poll_stats(conn: psycopg.Connection[DbRow], poll: DbRow) -> dict[str, Any]:
 
 
 def all_poll_stats(
-    conn: psycopg.Connection[DbRow], limit: int = 25, tenant_id: int | None = None
+    conn: psycopg.Connection[DbRow],
+    limit: int = 25,
+    tenant_id: int | None = None,
+    text_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[dict[str, Any]]:
-    return [poll_stats(conn, poll) for poll in list_polls(conn, limit, tenant_id)]
+    return [
+        poll_stats(conn, poll)
+        for poll in list_polls(
+            conn,
+            limit=limit,
+            tenant_id=tenant_id,
+            text_id=text_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    ]
 
 
 def export_stats_csv(conn: psycopg.Connection[DbRow], tenant_id: int | None = None) -> str:
