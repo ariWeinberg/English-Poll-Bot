@@ -11,12 +11,12 @@ English WhatsApp Poll Bot is a split FastAPI and React application. Keep changes
 
 ## Backend Boundaries
 
-- `app/main.py` owns the FastAPI app factory, HTTP routes, request and response models, auth dependencies, and route-level validation.
+- `app/main.py` owns the FastAPI app factory, HTTP routes, request and response models, auth dependencies, and route-level validation. It does not own scheduler lifecycle.
 - `app/core/docs.py` owns short-lived signed tokens for protected Swagger and OpenAPI access.
 - `app/core/logging.py` owns JSON/human logging setup, request IDs, request lifecycle logging, and secret redaction.
 - `app/services.py` owns workflow orchestration for question generation, poll sending, pool refill, webhook processing, and summaries.
-- `app/database.py` owns SQL, row serialization, text schedule-rule persistence, learner analytics aggregation, roster snapshots, random-rule daily plans, and database initialization.
-- `app/scheduler.py` owns APScheduler job registration and schedule-rule evaluation.
+- `app/database.py` owns SQL, row serialization, text schedule-rule persistence, learner analytics aggregation, roster snapshots, random-rule daily plans, scheduler heartbeat state, scheduled send-attempt persistence, and database initialization.
+- `app/scheduler.py` owns APScheduler job registration, tenant-local schedule-rule evaluation, worker heartbeat writes, and scheduled send-attempt bookkeeping.
 - `app/scheduler_worker.py` owns the dedicated scheduler process lifecycle used by the deployed `scheduler` service.
 - `app/greenapi.py` and `app/question_generator.py` own external service clients and provider-specific payload handling.
 
@@ -66,7 +66,7 @@ The API configures local JSON and human-readable logs through:
 - `LOG_HUMAN_FILE`
 - `LOG_REQUEST_BODY_ENABLED`
 
-Logs include request lifecycle events, request IDs, scheduler decisions, webhook decisions, poll sending, pool refill, summaries, provider-call failures, and exception traces. Secret-like keys are redacted before log records are written.
+Logs include request lifecycle events, request IDs, scheduler decisions, worker heartbeat updates, scheduled-slot attempt records, webhook decisions, poll sending, pool refill, summaries, provider-call failures, and exception traces. Secret-like keys are redacted before log records are written.
 
 See `docs/runbook.md` for the operator-facing checklist.
 

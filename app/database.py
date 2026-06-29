@@ -614,6 +614,23 @@ def init_db(database_url: str) -> None:
                 value TEXT NOT NULL DEFAULT ''
             );
 
+            CREATE TABLE IF NOT EXISTS scheduled_send_attempts (
+                id SERIAL PRIMARY KEY,
+                tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+                rule_id INTEGER NOT NULL REFERENCES schedule_rules(id) ON DELETE CASCADE,
+                delivery_type TEXT NOT NULL,
+                scheduled_slot TEXT NOT NULL,
+                local_date TEXT NOT NULL,
+                timezone TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'started',
+                poll_id INTEGER REFERENCES polls(id) ON DELETE SET NULL,
+                summary_count INTEGER,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS polls (
                 id SERIAL PRIMARY KEY,
                 tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -743,6 +760,10 @@ def init_db(database_url: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_text_rule_assignments_rule ON text_schedule_rule_assignments(rule_id);
             CREATE INDEX IF NOT EXISTS idx_text_schedule_rule_random_plans_rule_date
                 ON text_schedule_rule_random_plans(text_id, rule_id, local_date);
+            CREATE INDEX IF NOT EXISTS idx_scheduled_send_attempts_slot
+                ON scheduled_send_attempts(text_id, rule_id, local_date, scheduled_slot);
+            CREATE INDEX IF NOT EXISTS idx_scheduled_send_attempts_status
+                ON scheduled_send_attempts(status, created_at);
             CREATE INDEX IF NOT EXISTS idx_polls_tenant ON polls(tenant_id);
             CREATE INDEX IF NOT EXISTS idx_polls_text ON polls(text_id);
             CREATE INDEX IF NOT EXISTS idx_polls_status ON polls(status);
@@ -2045,6 +2066,132 @@ def list_pending_texts(conn: psycopg.Connection[DbRow], tenant_id: int | None = 
         sql += " AND texts.tenant_id = %s"
         params = (tenant_id,)
     return conn.execute(sql, params).fetchall()
+
+
+def list_scheduler_texts(conn: psycopg.Connection[DbRow], tenant_id: int | None = None) -> list[DbRow]:
+    sql = """
+        SELECT texts.*, tenants.name AS tenant_name, tenants.greenapi_api_url, tenants.greenapi_id_instance,
+               tenants.greenapi_api_token_instance, tenants.gemini_api_key, tenants.gemini_model,
+               tenants.timezone, tenants.summary_enabled, tenants.scheduler_enabled, tenants.is_active
+        FROM texts
+        JOIN tenants ON tenants.id = texts.tenant_id
+    """
+    params: tuple[Any, ...] = ()
+    if tenant_id is not None:
+        sql += " WHERE texts.tenant_id = %s"
+        params = (tenant_id,)
+    sql += " ORDER BY texts.id ASC"
+    return conn.execute(sql, params).fetchall()
+
+
+def set_app_config(conn: psycopg.Connection[DbRow], *, key: str, value: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO app_config (key, value)
+        VALUES (%s, %s)
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+        """,
+        (key, value),
+    )
+
+
+def get_app_config(conn: psycopg.Connection[DbRow], *, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM app_config WHERE key = %s", (key,)).fetchone()
+    if row is None:
+        return None
+    return str(row["value"])
+
+
+def set_app_config_json(conn: psycopg.Connection[DbRow], *, key: str, value: dict[str, Any]) -> None:
+    set_app_config(conn, key=key, value=json.dumps(value, ensure_ascii=False))
+
+
+def get_app_config_json(conn: psycopg.Connection[DbRow], *, key: str) -> dict[str, Any] | None:
+    raw = get_app_config(conn, key=key)
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def create_scheduled_send_attempt(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    text_id: int,
+    rule_id: int,
+    delivery_type: str,
+    scheduled_slot: str,
+    local_date: str,
+    timezone: str,
+    status: str = "started",
+    poll_id: int | None = None,
+    summary_count: int | None = None,
+    error: str | None = None,
+) -> int:
+    timestamp = now_iso()
+    row = conn.execute(
+        """
+        INSERT INTO scheduled_send_attempts (
+            tenant_id, text_id, rule_id, delivery_type, scheduled_slot, local_date, timezone,
+            status, poll_id, summary_count, error, created_at, updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            tenant_id,
+            text_id,
+            rule_id,
+            delivery_type,
+            scheduled_slot,
+            local_date,
+            timezone,
+            status,
+            poll_id,
+            summary_count,
+            error[:500] if error else None,
+            timestamp,
+            timestamp,
+        ),
+    ).fetchone()
+    return int(row["id"])
+
+
+def update_scheduled_send_attempt(
+    conn: psycopg.Connection[DbRow],
+    *,
+    attempt_id: int,
+    status: str,
+    poll_id: int | None = None,
+    summary_count: int | None = None,
+    error: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE scheduled_send_attempts
+        SET status = %s, poll_id = %s, summary_count = %s, error = %s, updated_at = %s
+        WHERE id = %s
+        """,
+        (status, poll_id, summary_count, error[:500] if error else None, now_iso(), attempt_id),
+    )
+
+
+def count_scheduled_send_attempts(
+    conn: psycopg.Connection[DbRow], *, text_id: int, rule_id: int, local_date: str, scheduled_slot: str
+) -> int:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM scheduled_send_attempts
+        WHERE text_id = %s AND rule_id = %s AND local_date = %s AND scheduled_slot = %s
+        """,
+        (text_id, rule_id, local_date, scheduled_slot),
+    ).fetchone()
+    return int(row["count"])
 
 
 def list_unsummarized_polls(conn: psycopg.Connection[DbRow], tenant_id: int | None = None) -> list[DbRow]:

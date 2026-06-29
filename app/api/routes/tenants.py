@@ -17,8 +17,6 @@ from app.database import (
     set_active_tenant,
     upsert_tenant,
 )
-from app.runtime import restart_default_scheduler
-from app.scheduler import build_scheduler
 
 
 router = APIRouter(prefix="/api/v1/tenants", tags=["tenants"])
@@ -48,7 +46,6 @@ async def create_tenant(payload: TenantPayload, _: dict[str, Any] = Depends(curr
         if payload.is_active:
             set_active_tenant(conn, tenant_id)
         tenant = get_tenant(conn, tenant_id)
-    restart_default_scheduler(build_scheduler=build_scheduler, database_url=settings.database_url)
     return serialize_tenant(tenant)
 
 
@@ -71,7 +68,6 @@ async def update_tenant_route(tenant_id: int, payload: TenantPayload, _: dict[st
         if payload.is_active:
             set_active_tenant(conn, saved_id)
         row = get_tenant(conn, saved_id)
-    restart_default_scheduler(build_scheduler=build_scheduler, database_url=settings.database_url)
     return serialize_tenant(row)
 
 
@@ -89,6 +85,5 @@ async def activate_tenant(tenant_id: int, _: dict[str, Any] = Depends(current_us
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
         set_active_tenant(conn, tenant_id)
         row = get_tenant(conn, tenant_id)
-    restart_default_scheduler(build_scheduler=build_scheduler, database_url=settings.database_url)
     token, expires_at = create_token(dict(row), secret=settings.jwt_secret, ttl_minutes=settings.jwt_ttl_minutes)
     return {"tenant": serialize_tenant(row), "access_token": token, "token_type": "bearer", "expires_at": expires_at}

@@ -17,11 +17,15 @@ The API writes local logs with secret redaction by default:
 - `LOG_HUMAN_FILE`: readable log file, default `logs/app.log`.
 - `LOG_REQUEST_BODY_ENABLED`: log redacted JSON request bodies when set to `true`, default `false`.
 
-Logged events include request start/finish with request IDs, scheduler ticks, skipped scheduler work, poll send attempts, pool refills, summary sends, webhook decisions, and exceptions.
+Logged events include request start/finish with request IDs, scheduler ticks, skipped scheduler work, per-slot send attempts, pool refills, summary sends, webhook decisions, and exceptions.
 
 ## Scheduler
 
-The scheduler runs every minute in UTC and evaluates each enabled text in the tenant timezone. It sends polls at the configured morning/evening times and summaries at the configured summary times. A tenant is skipped when scheduler delivery is disabled or GreenAPI settings are incomplete.
+The dedicated `scheduler` worker runs every minute in UTC and evaluates recurring rules in each tenant's local timezone. Rule times stay stored as tenant-local wall-clock values such as `19:00`, so DST changes keep the intended local send time. A text is skipped when the tenant is inactive, the text is disabled, the scheduler is disabled, no rules are assigned, or GreenAPI settings are incomplete.
+
+Each automatic slot produces a persisted attempt record. Poll sends keep their `scheduled_slot` on the poll row as `rule:<id>:poll:<HH:MM>`, and failed attempts are recorded separately so missed slots are diagnosable.
+
+`GET /api/v1/health` exposes the latest worker heartbeat payload from the database, including `last_tick_at`, `last_success_at`, `polls_sent`, `summaries_sent`, and the last worker error summary when present.
 
 ## Webhooks
 
@@ -56,6 +60,6 @@ TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/english_bot pyte
 ## Troubleshooting
 
 - `401` from `/api/v1/docs` or `/api/v1/openapi.json`: mint a new docs session from `/doc`; tokens are short-lived and signed.
-- Polls are not sending: confirm tenant GreenAPI settings, text enabled state, scheduler enabled state, and local timezone.
+- Polls are not sending: confirm the `scheduler` service is running, then inspect `GET /api/v1/health`, tenant GreenAPI settings, text enabled state, scheduler enabled state, assigned rules, and the tenant timezone.
 - Webhook events are missing: confirm the GreenAPI webhook URL includes the tenant ID and that `pollMessageWebhook` is enabled.
 - Summaries are missing: confirm summaries are enabled and polls have unsummarized sent status.

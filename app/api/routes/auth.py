@@ -8,8 +8,6 @@ from app.auth import verify_password
 from app.config import settings
 from app.core.auth import create_token, current_user
 from app.database import db_session, get_tenant, get_tenant_by_username, set_active_tenant, upsert_tenant
-from app.runtime import restart_default_scheduler
-from app.scheduler import build_scheduler
 
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -52,6 +50,5 @@ async def register(payload: RegisterRequest):
         )
         set_active_tenant(conn, tenant_id)
         tenant = get_tenant(conn, tenant_id)
-    restart_default_scheduler(build_scheduler=build_scheduler, database_url=settings.database_url)
     token, expires_at = create_token(dict(tenant), secret=settings.jwt_secret, ttl_minutes=settings.jwt_ttl_minutes)
     return TokenResponse(access_token=token, expires_at=expires_at)

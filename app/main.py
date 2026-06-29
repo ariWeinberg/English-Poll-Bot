@@ -8,8 +8,6 @@ from app.api.routes import actions, auth, chats, docs, learners, polls, schedule
 from app.config import settings
 from app.core.logging import RequestLoggingRoute, configure_logging, get_logger
 from app.database import init_db
-from app.runtime import restart_scheduler
-from app.scheduler import build_scheduler
 
 
 logger = get_logger("api")
@@ -20,16 +18,9 @@ async def lifespan(app: FastAPI):
     configure_logging(settings)
     logger.info("application.start")
     init_db(settings.database_url)
-    scheduler = build_scheduler(settings.database_url)
-    scheduler.start()
-    logger.info("scheduler.started", extra={"job_count": len(scheduler.get_jobs())})
-    app.state.scheduler = scheduler
     try:
         yield
     finally:
-        if scheduler:
-            scheduler.shutdown(wait=False)
-            logger.info("scheduler.stopped")
         logger.info("application.stop")
 
 
@@ -57,8 +48,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-
-
-def restart_scheduler_for_tenant(tenant_id: int) -> None:
-    del tenant_id
-    restart_scheduler(app, build_scheduler=build_scheduler, database_url=settings.database_url)

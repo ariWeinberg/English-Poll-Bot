@@ -21,6 +21,7 @@ The Compose stack starts:
 
 - `ui`: React app served by nginx on port `8988`
 - `api`: FastAPI REST API on the internal Compose network
+- `scheduler`: dedicated worker that evaluates recurring rules every minute in UTC and sends due polls or summaries using each tenant's local timezone
 - `db`: PostgreSQL 16
 - `postgres_data`: persistent database volume
 - `uploads_data`: persistent uploaded text attachments
@@ -69,6 +70,8 @@ Local logging is enabled by default with JSON and human-readable files:
 - `LOG_REQUEST_BODY_ENABLED`, default `false`
 
 Logs include request IDs, request lifecycle events, scheduler decisions, webhook decisions, poll sends, pool refills, summaries, and exceptions with secret redaction.
+
+`GET /api/v1/health` returns basic worker heartbeat data, including the last scheduler tick and the last recorded worker error summary when available.
 
 ## What You Can Configure
 

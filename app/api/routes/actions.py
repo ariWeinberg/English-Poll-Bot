@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.api.models import PreviewRequest, SendPollRequest, SendSummaryRequest
 from app.config import settings
 from app.core.auth import current_user
-from app.database import db_session, get_text
+from app.database import db_session, get_app_config_json, get_text
+from app.scheduler import SCHEDULER_STATUS_KEY
 from app.services import (
     generate_and_send_poll,
     handle_greenapi_webhook_async,
@@ -22,7 +23,9 @@ router = APIRouter(tags=["actions"])
 
 @router.get("/api/v1/health")
 async def health():
-    return {"ok": True}
+    with db_session(settings.database_url) as conn:
+        scheduler_status = get_app_config_json(conn, key=SCHEDULER_STATUS_KEY)
+    return {"ok": True, "scheduler": scheduler_status}
 
 
 @router.post("/api/v1/questions/preview")
