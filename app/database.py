@@ -194,21 +194,21 @@ def _learner_aggregate_cte(where_sql: str, *, search: str | None = None, voter_w
         ),
         change_rollup AS (
             SELECT
-                voter_wid,
+                poll_vote_events.voter_wid,
                 (ARRAY_AGG(
                     COALESCE(
                         NULLIF(contact_profiles.display_name, ''),
                         NULLIF(poll_vote_events.voter_name, ''),
                         NULLIF(poll_vote_events.phone_number, ''),
-                        voter_wid
+                        poll_vote_events.voter_wid
                     )
                     ORDER BY poll_vote_events.recorded_at DESC, poll_vote_events.id DESC
                 ))[1] AS display_name,
                 (ARRAY_AGG(
                     COALESCE(
                         NULLIF(poll_vote_events.phone_number, ''),
-                        NULLIF(regexp_replace(split_part(voter_wid, '@', 1), '\\D', '', 'g'), ''),
-                        split_part(voter_wid, '@', 1)
+                        NULLIF(regexp_replace(split_part(poll_vote_events.voter_wid, '@', 1), '\\D', '', 'g'), ''),
+                        split_part(poll_vote_events.voter_wid, '@', 1)
                     )
                     ORDER BY poll_vote_events.recorded_at DESC, poll_vote_events.id DESC
                 ))[1] AS phone_number,
