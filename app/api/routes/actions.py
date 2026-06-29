@@ -8,7 +8,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from app.api.models import PreviewRequest, SendPollRequest, SendSummaryRequest
 from app.config import settings
 from app.core.auth import current_user
-from app.database import create_incoming_webhook, db_session, get_app_config_json, now_iso, update_incoming_webhook, get_text
+from app.database import (
+    create_incoming_webhook,
+    db_session,
+    get_app_config_json,
+    now_iso,
+    update_incoming_webhook,
+    get_text,
+)
 from app.scheduler import SCHEDULER_STATUS_KEY
 from app.services import (
     extract_greenapi_webhook_metadata,

@@ -808,7 +808,9 @@ async def handle_greenapi_webhook_async(
 
 
 def handle_greenapi_webhook(*, database_url: str, payload: dict[str, Any], tenant_id: int | None = None) -> bool:
-    return asyncio.run(handle_greenapi_webhook_async(database_url=database_url, payload=payload, tenant_id=tenant_id)).handled
+    return asyncio.run(
+        handle_greenapi_webhook_async(database_url=database_url, payload=payload, tenant_id=tenant_id)
+    ).handled
 
 
 def build_summary_text(stats: dict[str, Any]) -> str:
