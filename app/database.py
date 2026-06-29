@@ -643,6 +643,23 @@ def init_db(database_url: str) -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS incoming_webhooks (
+                id SERIAL PRIMARY KEY,
+                tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                provider TEXT NOT NULL,
+                endpoint_path TEXT NOT NULL,
+                type_webhook TEXT,
+                message_type TEXT,
+                greenapi_message_id TEXT,
+                poll_id INTEGER,
+                decision_status TEXT,
+                decision_reason TEXT,
+                payload_json TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                processed_at TEXT,
+                error TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS polls (
                 id SERIAL PRIMARY KEY,
                 tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -776,6 +793,18 @@ def init_db(database_url: str) -> None:
                 ON scheduled_send_attempts(text_id, rule_id, local_date, scheduled_slot);
             CREATE INDEX IF NOT EXISTS idx_scheduled_send_attempts_status
                 ON scheduled_send_attempts(status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_incoming_webhooks_tenant_received
+                ON incoming_webhooks(tenant_id, received_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_incoming_webhooks_status
+                ON incoming_webhooks(decision_status);
+            CREATE INDEX IF NOT EXISTS idx_incoming_webhooks_reason
+                ON incoming_webhooks(decision_reason);
+            CREATE INDEX IF NOT EXISTS idx_incoming_webhooks_greenapi_message_id
+                ON incoming_webhooks(greenapi_message_id);
+            CREATE INDEX IF NOT EXISTS idx_incoming_webhooks_poll_id
+                ON incoming_webhooks(poll_id);
+            CREATE INDEX IF NOT EXISTS idx_incoming_webhooks_type_webhook
+                ON incoming_webhooks(type_webhook);
             CREATE INDEX IF NOT EXISTS idx_polls_tenant ON polls(tenant_id);
             CREATE INDEX IF NOT EXISTS idx_polls_text ON polls(text_id);
             CREATE INDEX IF NOT EXISTS idx_polls_status ON polls(status);
@@ -839,6 +868,9 @@ def init_db(database_url: str) -> None:
         )
         conn.execute(
             "SELECT setval(pg_get_serial_sequence('text_schedule_rule_assignments', 'id'), COALESCE(MAX(id), 1)) FROM text_schedule_rule_assignments"
+        )
+        conn.execute(
+            "SELECT setval(pg_get_serial_sequence('incoming_webhooks', 'id'), COALESCE(MAX(id), 1)) FROM incoming_webhooks"
         )
 
 
@@ -954,6 +986,10 @@ def _serialize_schedule_rule(row: DbRow) -> DbRow:
     item["weekdays"] = [int(day) for day in _parse_json_list(item.pop("weekdays_json", "[]"))]
     item["month_dates"] = [int(day) for day in _parse_json_list(item.pop("month_dates_json", "[]"))]
     return item
+
+
+def serialize_webhook_event(row: DbRow) -> DbRow:
+    return dict(row)
 
 
 def list_schedule_rules(conn: psycopg.Connection[DbRow], *, tenant_id: int, enabled_only: bool = False) -> list[DbRow]:
@@ -2211,6 +2247,164 @@ def update_scheduled_send_attempt(
         """,
         (status, poll_id, summary_count, error[:500] if error else None, now_iso(), attempt_id),
     )
+
+
+def create_incoming_webhook(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    provider: str,
+    endpoint_path: str,
+    payload_json: str,
+    type_webhook: str | None = None,
+    message_type: str | None = None,
+    greenapi_message_id: str | None = None,
+    poll_id: int | None = None,
+    decision_status: str | None = None,
+    decision_reason: str | None = None,
+    error: str | None = None,
+    received_at: str | None = None,
+    processed_at: str | None = None,
+) -> int:
+    timestamp = received_at or now_iso()
+    row = conn.execute(
+        """
+        INSERT INTO incoming_webhooks (
+            tenant_id, provider, endpoint_path, type_webhook, message_type, greenapi_message_id,
+            poll_id, decision_status, decision_reason, payload_json, received_at, processed_at, error
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            tenant_id,
+            provider.strip(),
+            endpoint_path,
+            type_webhook.strip() if type_webhook else None,
+            message_type.strip() if message_type else None,
+            greenapi_message_id.strip() if greenapi_message_id else None,
+            poll_id,
+            decision_status.strip() if decision_status else None,
+            decision_reason.strip() if decision_reason else None,
+            payload_json,
+            timestamp,
+            processed_at,
+            error[:500] if error else None,
+        ),
+    ).fetchone()
+    return int(row["id"])
+
+
+def update_incoming_webhook(
+    conn: psycopg.Connection[DbRow],
+    *,
+    webhook_id: int,
+    type_webhook: str | None = None,
+    message_type: str | None = None,
+    greenapi_message_id: str | None = None,
+    poll_id: int | None = None,
+    decision_status: str | None = None,
+    decision_reason: str | None = None,
+    processed_at: str | None = None,
+    error: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE incoming_webhooks
+        SET type_webhook = %s,
+            message_type = %s,
+            greenapi_message_id = %s,
+            poll_id = %s,
+            decision_status = %s,
+            decision_reason = %s,
+            processed_at = %s,
+            error = %s
+        WHERE id = %s
+        """,
+        (
+            type_webhook.strip() if type_webhook else None,
+            message_type.strip() if message_type else None,
+            greenapi_message_id.strip() if greenapi_message_id else None,
+            poll_id,
+            decision_status.strip() if decision_status else None,
+            decision_reason.strip() if decision_reason else None,
+            processed_at,
+            error[:500] if error else None,
+            webhook_id,
+        ),
+    )
+
+
+def get_incoming_webhook(conn: psycopg.Connection[DbRow], *, tenant_id: int, webhook_id: int) -> DbRow | None:
+    row = conn.execute(
+        "SELECT * FROM incoming_webhooks WHERE tenant_id = %s AND id = %s",
+        (tenant_id, webhook_id),
+    ).fetchone()
+    return serialize_webhook_event(row) if row else None
+
+
+def list_incoming_webhooks_page(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    page: int = 1,
+    page_size: int = 25,
+    search: str | None = None,
+    status: str | None = None,
+    reason: str | None = None,
+    type_webhook: str | None = None,
+    greenapi_message_id: str | None = None,
+    poll_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, Any]:
+    page, page_size, offset = _page_bounds(page, page_size)
+    where = ["tenant_id = %s"]
+    params: list[Any] = [tenant_id]
+    if search:
+        where.append(
+            """
+            (
+                payload_json ILIKE %s
+                OR COALESCE(greenapi_message_id, '') ILIKE %s
+                OR COALESCE(type_webhook, '') ILIKE %s
+                OR COALESCE(decision_reason, '') ILIKE %s
+                OR COALESCE(CAST(poll_id AS TEXT), '') ILIKE %s
+            )
+            """
+        )
+        params.extend([_like(search), _like(search), _like(search), _like(search), _like(search)])
+    for column, value in (
+        ("decision_status", status),
+        ("decision_reason", reason),
+        ("type_webhook", type_webhook),
+        ("greenapi_message_id", greenapi_message_id),
+        ("poll_id", poll_id),
+    ):
+        if value is not None and value != "":
+            where.append(f"{column} = %s")
+            params.append(value)
+    if date_from:
+        operator, value = _coerce_filter_datetime(date_from, end=False)
+        where.append(f"received_at {operator} %s")
+        params.append(value)
+    if date_to:
+        operator, value = _coerce_filter_datetime(date_to, end=True)
+        where.append(f"received_at {operator} %s")
+        params.append(value)
+    where_sql = f"WHERE {' AND '.join(where)}"
+    total = conn.execute(f"SELECT COUNT(*) AS count FROM incoming_webhooks {where_sql}", params).fetchone()["count"]
+    items = conn.execute(
+        f"""
+        SELECT *
+        FROM incoming_webhooks
+        {where_sql}
+        ORDER BY received_at DESC, id DESC
+        LIMIT %s OFFSET %s
+        """,
+        [*params, page_size, offset],
+    ).fetchall()
+    return paginated_response([serialize_webhook_event(item) for item in items], int(total), page, page_size)
 
 
 def count_scheduled_send_attempts(

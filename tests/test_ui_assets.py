@@ -6,6 +6,7 @@ def test_react_ui_and_nginx_proxy_are_configured():
     nginx = Path("web/nginx.conf").read_text()
     package = Path("web/package.json").read_text()
     api = Path("web/src/lib/api.ts").read_text()
+    routes = Path("web/src/lib/routes.ts").read_text()
     src_bundle = (
         "\n".join(path.read_text() for path in Path("web/src").rglob("*.tsx"))
         + "\n"
@@ -46,8 +47,15 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Poll Pool" in src_bundle
     assert "All statuses" in src_bundle
     assert "Clear filters" in src_bundle
+    assert "Webhook Inbox" in src_bundle
+    assert "Review incoming GreenAPI events" in src_bundle
+    assert "Exact payload" in src_bundle
+    assert "Accepted" in src_bundle
+    assert "Ignored" in src_bundle
+    assert "Error" in src_bundle
     assert 'status: "sent"' in src_bundle
     assert '"/doc"' in src_bundle
+    assert '"/webhooks"' in src_bundle
     assert "Operations Docs" in src_bundle
     assert "Open Swagger" in src_bundle
     assert "/docs/session" in src_bundle
@@ -66,6 +74,8 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Edit Workspace" in src_bundle
     assert "Leave blank to keep current password" in src_bundle
     assert 'import { App } from "./App"' in entry
+    assert 'if (path === "/webhooks") return { name: "webhooks" };' in routes
+    assert 'case "webhooks":' in routes
     assert "proxy_pass http://api:8000/api/" in nginx
     assert "proxy_pass http://api:8000/webhooks/" in nginx
     assert '"build": "tsc && vite build"' in package

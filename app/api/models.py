@@ -165,6 +165,31 @@ class SendSummaryRequest(BaseModel):
     text_id: int | None = None
 
 
+class WebhookEvent(BaseModel):
+    id: int
+    tenant_id: int
+    provider: str
+    endpoint_path: str
+    type_webhook: str | None = None
+    message_type: str | None = None
+    greenapi_message_id: str | None = None
+    poll_id: int | None = None
+    decision_status: str | None = None
+    decision_reason: str | None = None
+    payload_json: str
+    received_at: str
+    processed_at: str | None = None
+    error: str | None = None
+
+
+class WebhookEventPage(BaseModel):
+    items: list[WebhookEvent]
+    total: int
+    page: int
+    page_size: int
+    has_next: bool
+
+
 class PoolRankPayload(BaseModel):
     pool_rank: int = Field(ge=1)
 

@@ -37,6 +37,8 @@ def test_create_app_registers_expected_routes():
         "/api/v1/polls/{poll_id}/vote-status",
         "/api/v1/polls/{poll_id}/pool-rank",
         "/api/v1/polls/send-now",
+        "/api/v1/webhooks",
+        "/api/v1/webhooks/{id}",
         "/api/v1/learners",
         "/api/v1/learners/{voter_wid}",
         "/api/v1/poll-votes",

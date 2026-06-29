@@ -19,7 +19,7 @@ def reset_db() -> str:
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
-            "TRUNCATE app_config, tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+            "TRUNCATE app_config, tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, incoming_webhooks, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
         )
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
@@ -649,6 +649,312 @@ def test_greenapi_webhook_is_tenant_scoped():
     with db_session(database_url) as conn:
         rows = conn.execute("SELECT poll_id, option_name FROM poll_votes ORDER BY poll_id").fetchall()
     assert rows == [{"poll_id": poll_b, "option_name": "B"}]
+
+
+def test_webhook_inbox_records_accepted_poll_update():
+    database_url = reset_db()
+    with db_session(database_url) as conn:
+        poll_id = create_poll(
+            conn,
+            tenant_id=1,
+            text_id=1,
+            question="Choose",
+            options=["A", "B"],
+            correct_option="A",
+            explanation="",
+            chat_id="group@g.us",
+            generated_from_text="Body",
+            scheduled_slot="manual",
+        )
+        conn.execute(
+            "UPDATE polls SET greenapi_message_id = %s, status = 'sent' WHERE id = %s",
+            ("accepted-message-id", poll_id),
+        )
+
+    payload = {
+        "typeWebhook": "incomingMessageReceived",
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "accepted-message-id",
+                "votes": [{"optionName": "A", "optionVoters": ["111@c.us"]}],
+            },
+        },
+    }
+    raw_payload = json.dumps(payload)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/greenapi/1",
+            content=raw_payload,
+            headers={"Content-Type": "application/json"},
+        )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "handled": True}
+
+    with db_session(database_url) as conn:
+        row = conn.execute("SELECT * FROM incoming_webhooks ORDER BY id DESC LIMIT 1").fetchone()
+    assert row is not None
+    assert row["tenant_id"] == 1
+    assert row["provider"] == "greenapi"
+    assert row["endpoint_path"] == "/webhooks/greenapi/1"
+    assert row["type_webhook"] == "incomingMessageReceived"
+    assert row["message_type"] == "pollUpdateMessage"
+    assert row["greenapi_message_id"] == "accepted-message-id"
+    assert row["poll_id"] == poll_id
+    assert row["decision_status"] == "accepted"
+    assert row["decision_reason"] == "handled"
+    assert row["payload_json"] == raw_payload
+    assert row["processed_at"] is not None
+    assert row["error"] is None
+
+
+def test_webhook_inbox_records_ignored_non_poll_payload():
+    database_url = reset_db()
+    payload = {"typeWebhook": "incomingMessageReceived", "messageData": {"typeMessage": "textMessage"}}
+    raw_payload = json.dumps(payload)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/greenapi/1",
+            content=raw_payload,
+            headers={"Content-Type": "application/json"},
+        )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "handled": False}
+
+    with db_session(database_url) as conn:
+        row = conn.execute("SELECT * FROM incoming_webhooks ORDER BY id DESC LIMIT 1").fetchone()
+    assert row is not None
+    assert row["decision_status"] == "ignored"
+    assert row["decision_reason"] == "not_poll_update"
+    assert row["payload_json"] == raw_payload
+
+
+def test_webhook_inbox_records_ignored_unknown_message_id():
+    database_url = reset_db()
+    payload = {
+        "typeWebhook": "incomingMessageReceived",
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "missing-poll-message-id",
+                "votes": [{"optionName": "A", "optionVoters": ["111@c.us"]}],
+            },
+        },
+    }
+
+    with TestClient(app) as client:
+        response = client.post("/webhooks/greenapi/1", json=payload)
+    assert response.status_code == 200
+    assert response.json()["handled"] is False
+
+    with db_session(database_url) as conn:
+        row = conn.execute("SELECT * FROM incoming_webhooks ORDER BY id DESC LIMIT 1").fetchone()
+    assert row is not None
+    assert row["decision_status"] == "ignored"
+    assert row["decision_reason"] == "poll_not_found"
+    assert row["greenapi_message_id"] == "missing-poll-message-id"
+
+
+def test_webhook_inbox_records_processing_exception(monkeypatch):
+    database_url = reset_db()
+
+    async def broken_handler(*, database_url: str, payload: dict[str, object], tenant_id: int | None = None):
+        del database_url, payload, tenant_id
+        raise RuntimeError("webhook exploded")
+
+    monkeypatch.setattr("app.api.routes.actions.handle_greenapi_webhook_async", broken_handler)
+
+    payload = {
+        "typeWebhook": "incomingMessageReceived",
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "broken-message-id",
+                "votes": [{"optionName": "A", "optionVoters": ["111@c.us"]}],
+            },
+        },
+    }
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/webhooks/greenapi/1", json=payload)
+    assert response.status_code == 500
+
+    with db_session(database_url) as conn:
+        row = conn.execute("SELECT * FROM incoming_webhooks ORDER BY id DESC LIMIT 1").fetchone()
+    assert row is not None
+    assert row["decision_status"] == "error"
+    assert row["decision_reason"] == "webhook exploded"
+    assert row["error"] == "webhook exploded"
+    assert row["greenapi_message_id"] == "broken-message-id"
+
+
+def test_webhook_inbox_list_and_detail_are_tenant_scoped_and_filterable():
+    database_url = reset_db()
+    with db_session(database_url) as conn:
+        conn.execute(
+            """
+            INSERT INTO tenants
+                (id, name, username, password, greenapi_api_url, greenapi_id_instance,
+                 greenapi_api_token_instance, gemini_api_key, gemini_model, timezone,
+                 summary_enabled, scheduler_enabled, is_active, created_at, updated_at)
+            VALUES
+                (2, 'Tenant B', 'tenant-b', 'secret', 'https://api.green-api.com', '', '',
+                 '', 'gemini-3.5-flash', 'Asia/Jerusalem', TRUE, TRUE, TRUE,
+                 '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO texts
+                (id, tenant_id, title, body, chat_id, morning_time, evening_time,
+                 summary_time_morning, summary_time_evening, enabled, created_at, updated_at)
+            VALUES
+                (2, 2, 'Tenant B text', 'Body', 'group-b@g.us', '08:30', '18:00',
+                 '08:25', '17:55', TRUE, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+            """
+        )
+        poll_a = create_poll(
+            conn,
+            tenant_id=1,
+            text_id=1,
+            question="Tenant A poll",
+            options=["A", "B"],
+            correct_option="A",
+            explanation="",
+            chat_id="group@g.us",
+            generated_from_text="Body",
+            scheduled_slot="manual",
+        )
+        poll_b = create_poll(
+            conn,
+            tenant_id=2,
+            text_id=2,
+            question="Tenant B poll",
+            options=["A", "B"],
+            correct_option="B",
+            explanation="",
+            chat_id="group-b@g.us",
+            generated_from_text="Body",
+            scheduled_slot="manual",
+        )
+        conn.execute(
+            "UPDATE polls SET greenapi_message_id = %s, status = 'sent' WHERE id = %s",
+            ("tenant-a-message-id", poll_a),
+        )
+        conn.execute(
+            "UPDATE polls SET greenapi_message_id = %s, status = 'sent' WHERE id = %s",
+            ("tenant-b-message-id", poll_b),
+        )
+
+    accepted_payload = {
+        "typeWebhook": "incomingMessageReceived",
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "tenant-a-message-id",
+                "votes": [{"optionName": "A", "optionVoters": ["111@c.us"]}],
+            },
+        },
+    }
+    ignored_payload = {"typeWebhook": "incomingMessageReceived", "messageData": {"typeMessage": "textMessage"}}
+    missing_payload = {
+        "typeWebhook": "incomingMessageReceived",
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "missing-webhook-poll",
+                "votes": [{"optionName": "B", "optionVoters": ["111@c.us"]}],
+            },
+        },
+    }
+    tenant_b_payload = {
+        "typeWebhook": "incomingMessageReceived",
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "tenant-b-message-id",
+                "votes": [{"optionName": "B", "optionVoters": ["222@c.us"]}],
+            },
+        },
+    }
+
+    with TestClient(app) as client:
+        assert client.post("/webhooks/greenapi/1", json=accepted_payload).status_code == 200
+        assert client.post("/webhooks/greenapi/1", json=ignored_payload).status_code == 200
+        assert client.post("/webhooks/greenapi/1", json=missing_payload).status_code == 200
+        assert client.post("/webhooks/greenapi/2", json=tenant_b_payload).status_code == 200
+
+        with db_session(database_url) as conn:
+            rows = conn.execute(
+                "SELECT id, decision_reason FROM incoming_webhooks WHERE tenant_id = 1 ORDER BY id ASC"
+            ).fetchall()
+            accepted_id = int(rows[0]["id"])
+            ignored_id = int(rows[1]["id"])
+            missing_id = int(rows[2]["id"])
+            conn.execute(
+                """
+                UPDATE incoming_webhooks
+                SET received_at = CASE
+                    WHEN id = %s THEN '2026-06-10T08:00:00+00:00'
+                    WHEN id = %s THEN '2026-06-11T08:00:00+00:00'
+                    WHEN id = %s THEN '2026-06-12T08:00:00+00:00'
+                    ELSE received_at
+                END,
+                processed_at = CASE
+                    WHEN tenant_id = 1 THEN '2026-06-12T09:00:00+00:00'
+                    ELSE processed_at
+                END
+                WHERE tenant_id IN (1, 2)
+                """,
+                (accepted_id, ignored_id, missing_id),
+            )
+
+        headers = auth_headers(client)
+
+        listing = client.get("/api/v1/webhooks?page_size=10", headers=headers)
+        assert listing.status_code == 200
+        assert listing.json()["total"] == 3
+        assert {item["decision_status"] for item in listing.json()["items"]} == {"accepted", "ignored"}
+
+        accepted_only = client.get("/api/v1/webhooks?status=accepted", headers=headers)
+        assert accepted_only.status_code == 200
+        assert accepted_only.json()["total"] == 1
+        assert accepted_only.json()["items"][0]["poll_id"] == poll_a
+
+        reason_filtered = client.get("/api/v1/webhooks?reason=not_poll_update", headers=headers)
+        assert reason_filtered.status_code == 200
+        assert reason_filtered.json()["items"][0]["decision_reason"] == "not_poll_update"
+
+        type_filtered = client.get("/api/v1/webhooks?type_webhook=incomingMessageReceived", headers=headers)
+        assert type_filtered.status_code == 200
+        assert type_filtered.json()["total"] == 3
+
+        message_filtered = client.get("/api/v1/webhooks?greenapi_message_id=tenant-a-message-id", headers=headers)
+        assert message_filtered.status_code == 200
+        assert message_filtered.json()["items"][0]["greenapi_message_id"] == "tenant-a-message-id"
+
+        poll_filtered = client.get(f"/api/v1/webhooks?poll_id={poll_a}", headers=headers)
+        assert poll_filtered.status_code == 200
+        assert poll_filtered.json()["items"][0]["poll_id"] == poll_a
+
+        search_filtered = client.get("/api/v1/webhooks?search=poll_not_found", headers=headers)
+        assert search_filtered.status_code == 200
+        assert search_filtered.json()["items"][0]["decision_reason"] == "poll_not_found"
+
+        dated = client.get("/api/v1/webhooks?date_from=2026-06-11&date_to=2026-06-11", headers=headers)
+        assert dated.status_code == 200
+        assert dated.json()["total"] == 1
+        assert dated.json()["items"][0]["id"] == ignored_id
+
+        detail = client.get(f"/api/v1/webhooks/{accepted_id}", headers=headers)
+        assert detail.status_code == 200
+        assert detail.json()["id"] == accepted_id
+        assert detail.json()["payload_json"] == json.dumps(accepted_payload)
+
+        missing_detail = client.get("/api/v1/webhooks/999999", headers=headers)
+        assert missing_detail.status_code == 404
 
 
 def test_poll_vote_status_route_returns_counted_and_ignored_state():

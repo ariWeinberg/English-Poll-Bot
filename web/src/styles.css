@@ -627,6 +627,18 @@ textarea {
   border-color: rgba(20, 122, 82, 0.18);
 }
 
+.pill.warning {
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-color: rgba(160, 90, 0, 0.18);
+}
+
+.pill.danger {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: rgba(180, 35, 57, 0.18);
+}
+
 .back-link {
   width: fit-content;
   padding: 0;
@@ -935,6 +947,39 @@ textarea {
 
 .insight-row p {
   margin: 6px 0 0;
+}
+
+.webhook-card {
+  display: grid;
+  gap: 12px;
+}
+
+.payload-viewer {
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+
+.payload-viewer summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.payload-viewer pre {
+  margin: 12px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pagination-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 18px;
+  flex-wrap: wrap;
 }
 
 @keyframes spin {

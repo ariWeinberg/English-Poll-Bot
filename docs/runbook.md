@@ -40,7 +40,13 @@ GreenAPI callbacks must post poll updates to:
 https://your-public-domain.example/webhooks/greenapi/{tenant_id}
 ```
 
-The webhook handler ignores non-poll updates, unmatched message IDs, and updates for another tenant. Accepted vote changes are recorded in `poll_votes` and `poll_vote_events`.
+Every request to that endpoint is stored durably in the authenticated Webhook Inbox at `/webhooks`. Stored rows keep the exact raw JSON payload, extracted GreenAPI metadata when available, and a final decision state:
+
+- `accepted` with reason `handled`
+- `ignored` with reasons such as `not_poll_update`, `poll_not_found`, and `poll_not_found_after_enrichment`
+- `error` with a short error summary when processing raises or the payload is invalid
+
+Accepted vote changes are still recorded in `poll_votes` and `poll_vote_events`; the inbox is an operator-facing audit trail, not a replacement for those tables or for structured logs.
 
 ## Release Checks
 
@@ -66,5 +72,5 @@ TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/english_bot pyte
 
 - `401` from `/api/v1/docs` or `/api/v1/openapi.json`: mint a new docs session from `/doc`; tokens are short-lived and signed.
 - Polls are not sending: confirm the `scheduler` service is running, then inspect `GET /api/v1/health`, tenant GreenAPI settings, text enabled state, scheduler enabled state, assigned rules, and the tenant timezone.
-- Webhook events are missing: confirm the GreenAPI webhook URL includes the tenant ID and that `pollMessageWebhook` is enabled.
+- Webhook events are missing: confirm the GreenAPI webhook URL includes the tenant ID and that `pollMessageWebhook` is enabled, then inspect the `/webhooks` page for ignored or error rows.
 - Summaries are missing: confirm summaries are enabled and polls have unsummarized sent status.

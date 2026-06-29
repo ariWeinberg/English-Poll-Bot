@@ -39,3 +39,7 @@ def test_runbook_documents_operations_surfaces():
     assert "LOG_FILE" in runbook
     assert "scheduler" in runbook.lower()
     assert "/webhooks/greenapi/{tenant_id}" in runbook
+    assert "/webhooks" in runbook
+    assert "accepted" in runbook
+    assert "ignored" in runbook
+    assert "error" in runbook

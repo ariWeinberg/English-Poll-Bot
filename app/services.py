@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import asdict, dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from app.database import (
     POLL_POOL_REFILL_BATCH_SIZE,
@@ -70,6 +70,18 @@ class RuntimeConfig:
     @property
     def gemini_ready(self) -> bool:
         return bool(self.gemini_api_key.strip())
+
+
+@dataclass(frozen=True)
+class WebhookDecision:
+    handled: bool
+    status: Literal["accepted", "ignored", "error"]
+    reason: str
+    type_webhook: str | None = None
+    message_type: str | None = None
+    greenapi_message_id: str | None = None
+    poll_id: int | None = None
+    error: str | None = None
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -580,6 +592,28 @@ def _extract_poll_message_data(payload: dict[str, Any]) -> dict[str, Any] | None
     return None
 
 
+def extract_greenapi_webhook_metadata(payload: dict[str, Any]) -> dict[str, str | None]:
+    type_webhook = payload.get("typeWebhook")
+    message_type: str | None = None
+    for candidate in (
+        payload.get("messageData"),
+        payload.get("editedMessageData"),
+        payload.get("quotedMessageData"),
+        payload,
+    ):
+        if isinstance(candidate, dict):
+            raw_message_type = candidate.get("typeMessage")
+            if isinstance(raw_message_type, str) and raw_message_type.strip():
+                message_type = raw_message_type.strip()
+                break
+    parsed = parse_poll_update(payload)
+    return {
+        "type_webhook": str(type_webhook).strip() if isinstance(type_webhook, str) and type_webhook.strip() else None,
+        "message_type": message_type,
+        "greenapi_message_id": parsed[0] if parsed is not None else None,
+    }
+
+
 def _extract_poll_votes(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, dict)]
@@ -668,14 +702,22 @@ async def _resolve_contact_name(
 
 async def handle_greenapi_webhook_async(
     *, database_url: str, payload: dict[str, Any], tenant_id: int | None = None
-) -> bool:
+) -> WebhookDecision:
+    metadata = extract_greenapi_webhook_metadata(payload)
     parsed = parse_poll_update(payload)
     if parsed is None:
         logger.info(
             "webhook.ignored",
             extra={"tenant_id": tenant_id, "reason": "not_poll_update", "type": payload.get("typeWebhook")},
         )
-        return False
+        return WebhookDecision(
+            handled=False,
+            status="ignored",
+            reason="not_poll_update",
+            type_webhook=metadata["type_webhook"],
+            message_type=metadata["message_type"],
+            greenapi_message_id=metadata["greenapi_message_id"],
+        )
     message_id, option_voters = parsed
     logger.info("webhook.poll_update", extra={"tenant_id": tenant_id, "greenapi_message_id": message_id})
     with db_session(database_url) as conn:
@@ -689,8 +731,16 @@ async def handle_greenapi_webhook_async(
             "webhook.ignored",
             extra={"tenant_id": tenant_id, "reason": "poll_not_found", "greenapi_message_id": message_id},
         )
-        return False
+        return WebhookDecision(
+            handled=False,
+            status="ignored",
+            reason="poll_not_found",
+            type_webhook=metadata["type_webhook"],
+            message_type=metadata["message_type"],
+            greenapi_message_id=message_id,
+        )
     tenant_key = int(poll["tenant_id"])
+    poll_id = int(poll["id"])
     enriched: dict[str, list[dict[str, str | None]]] = {}
     for option_name, voters in option_voters.items():
         enriched[option_name] = []
@@ -728,22 +778,37 @@ async def handle_greenapi_webhook_async(
                     "greenapi_message_id": message_id,
                 },
             )
-            return False
+            return WebhookDecision(
+                handled=False,
+                status="ignored",
+                reason="poll_not_found_after_enrichment",
+                type_webhook=metadata["type_webhook"],
+                message_type=metadata["message_type"],
+                greenapi_message_id=message_id,
+            )
         replace_poll_votes(conn, poll=live_poll, option_voters=enriched)
     logger.info(
         "webhook.handled",
         extra={
             "tenant_id": tenant_key,
-            "poll_id": int(poll["id"]),
+            "poll_id": poll_id,
             "greenapi_message_id": message_id,
             "option_count": len(enriched),
         },
     )
-    return True
+    return WebhookDecision(
+        handled=True,
+        status="accepted",
+        reason="handled",
+        type_webhook=metadata["type_webhook"],
+        message_type=metadata["message_type"],
+        greenapi_message_id=message_id,
+        poll_id=poll_id,
+    )
 
 
 def handle_greenapi_webhook(*, database_url: str, payload: dict[str, Any], tenant_id: int | None = None) -> bool:
-    return asyncio.run(handle_greenapi_webhook_async(database_url=database_url, payload=payload, tenant_id=tenant_id))
+    return asyncio.run(handle_greenapi_webhook_async(database_url=database_url, payload=payload, tenant_id=tenant_id)).handled
 
 
 def build_summary_text(stats: dict[str, Any]) -> str:

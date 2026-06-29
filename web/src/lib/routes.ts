@@ -14,6 +14,7 @@ export function parseRoute(pathname: string): Route {
   if (path === "/texts") return { name: "texts" };
   if (path === "/rules") return { name: "rules" };
   if (path === "/polls") return { name: "polls" };
+  if (path === "/webhooks") return { name: "webhooks" };
   if (path === "/doc") return { name: "doc" };
   if (path === "/settings") return { name: "settings" };
   const learnerMatch = path.match(/^\/learners\/(.+)$/);
@@ -47,6 +48,8 @@ export function routeHref(route: Route): string {
       return "/polls";
     case "poll-detail":
       return `/polls/${route.id}`;
+    case "webhooks":
+      return "/webhooks";
     case "doc":
       return "/doc";
     case "settings":

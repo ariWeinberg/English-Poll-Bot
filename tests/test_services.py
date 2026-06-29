@@ -128,7 +128,7 @@ def test_handle_greenapi_webhook_ignores_changes_after_change_window(monkeypatch
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
-            "TRUNCATE app_config, tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+            "TRUNCATE app_config, tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, incoming_webhooks, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
         )
     init_db(TEST_DATABASE_URL)
     seed_default_text()
@@ -216,7 +216,7 @@ def test_handle_greenapi_webhook_fetches_contact_name_from_greenapi(monkeypatch)
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
-            "TRUNCATE app_config, tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+            "TRUNCATE app_config, tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, incoming_webhooks, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
         )
     init_db(TEST_DATABASE_URL)
     seed_default_text()
@@ -278,7 +278,7 @@ def test_handle_greenapi_webhook_accumulates_votes_across_delta_updates():
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
-            "TRUNCATE app_config, tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+            "TRUNCATE app_config, tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, incoming_webhooks, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
         )
     init_db(TEST_DATABASE_URL)
     seed_default_text()
@@ -341,7 +341,7 @@ def test_handle_greenapi_webhook_records_vote_history_when_vote_changes():
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
-            "TRUNCATE app_config, tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+            "TRUNCATE app_config, tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, incoming_webhooks, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
         )
     init_db(TEST_DATABASE_URL)
     seed_default_text()
@@ -432,7 +432,7 @@ def test_delete_poll_vote_records_unvote_event():
     init_db(TEST_DATABASE_URL)
     with db_session(TEST_DATABASE_URL) as conn:
         conn.execute(
-            "TRUNCATE app_config, tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
+            "TRUNCATE app_config, tenant_group_chats, text_schedule_rule_random_plans, text_schedule_rule_assignments, schedule_rules, text_schedule_rules, chat_participants, poll_recipient_snapshots, incoming_webhooks, poll_vote_events, poll_votes, polls, texts, tenants RESTART IDENTITY CASCADE"
         )
     init_db(TEST_DATABASE_URL)
     seed_default_text()

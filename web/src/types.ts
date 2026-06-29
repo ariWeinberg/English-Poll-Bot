@@ -301,6 +301,34 @@ export type PollFilters = {
   dateTo: string;
 };
 
+export type WebhookEvent = {
+  id: number;
+  tenant_id: number;
+  provider: string;
+  endpoint_path: string;
+  type_webhook?: string | null;
+  message_type?: string | null;
+  greenapi_message_id?: string | null;
+  poll_id?: number | null;
+  decision_status?: string | null;
+  decision_reason?: string | null;
+  payload_json: string;
+  received_at: string;
+  processed_at?: string | null;
+  error?: string | null;
+};
+
+export type WebhookFilters = {
+  search: string;
+  status: "" | "accepted" | "ignored" | "error";
+  reason: string;
+  typeWebhook: string;
+  messageId: string;
+  pollId: string;
+  dateFrom: string;
+  dateTo: string;
+};
+
 export type Route =
   | { name: "login" }
   | { name: "register" }
@@ -313,6 +341,7 @@ export type Route =
   | { name: "rules" }
   | { name: "polls" }
   | { name: "poll-detail"; id: number }
+  | { name: "webhooks" }
   | { name: "doc" }
   | { name: "settings" };
 

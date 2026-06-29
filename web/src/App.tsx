@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   Download,
   FileText,
+  Inbox,
   LogOut,
   Menu,
   Pencil,
@@ -35,6 +36,7 @@ import { LearnersPage } from "./pages/LearnersPage";
 import { PollDetailPage } from "./pages/PollDetailPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TextDetailPage } from "./pages/TextDetailPage";
+import { WebhooksPage } from "./pages/WebhooksPage";
 import {
   defaultTenantForm,
   type DocsSession,
@@ -67,7 +69,6 @@ const defaultPollFilters: PollFilters = {
   dateFrom: "",
   dateTo: "",
 };
-
 const defaultLearnerFilters = (): LearnerFilters => ({
   search: "",
   textId: "",
@@ -641,6 +642,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
               onDelete={(poll) => void handleDeletePoll(poll.id)}
             />
           )}
+          {route.name === "webhooks" && <WebhooksPage tenant={tenant} onOpenPoll={(pollId) => navigateTo({ name: "poll-detail", id: pollId })} />}
           {route.name === "settings" && <SettingsPage tenant={tenant} onEdit={() => setSettingsModalOpen(true)} />}
           {route.name === "doc" && <DocPage onOpenSwagger={() => void handleOpenSwagger()} />}
         </div>
@@ -720,6 +722,7 @@ function Sidebar({ route, open, tenant, onClose }: { route: Route; open: boolean
     { icon: <FileText size={18} />, label: "Texts", route: { name: "texts" } as Route, active: route.name === "texts" || route.name === "text-detail" },
     { icon: <BellRing size={18} />, label: "Rules", route: { name: "rules" } as Route, active: route.name === "rules" },
     { icon: <Vote size={18} />, label: "Polls", route: { name: "polls" } as Route, active: route.name === "polls" || route.name === "poll-detail" },
+    { icon: <Inbox size={18} />, label: "Webhooks", route: { name: "webhooks" } as Route, active: route.name === "webhooks" },
     { icon: <BookOpen size={18} />, label: "Docs", route: { name: "doc" } as Route, active: route.name === "doc" },
     { icon: <Settings size={18} />, label: "Settings", route: { name: "settings" } as Route, active: route.name === "settings" },
   ];
@@ -819,6 +822,8 @@ function routeTitle(route: Route) {
       return "Polls";
     case "poll-detail":
       return "Poll Detail";
+    case "webhooks":
+      return "Webhook Inbox";
     case "doc":
       return "Operations Docs";
     case "settings":
