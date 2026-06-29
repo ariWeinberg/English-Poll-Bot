@@ -74,3 +74,4 @@ TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/english_bot pyte
 - Polls are not sending: confirm the `scheduler` service is running, then inspect `GET /api/v1/health`, tenant GreenAPI settings, text enabled state, scheduler enabled state, assigned rules, and the tenant timezone.
 - Webhook events are missing: confirm the GreenAPI webhook URL includes the tenant ID and that `pollMessageWebhook` is enabled, then inspect the `/webhooks` page for ignored or error rows.
 - Summaries are missing: confirm summaries are enabled and polls have unsummarized sent status.
+- Deploy fails while bringing up `ui`: the UI container now has its own `/` healthcheck and no longer blocks on API health during `docker compose up`; rely on the post-deploy smoke test to wait for both `/` and `/api/v1/health`.

@@ -54,8 +54,12 @@ services:
     build: ./web
     restart: unless-stopped
     depends_on:
-      api:
-        condition: service_healthy
+      - api
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     ports:
       - "8988:80"
 
