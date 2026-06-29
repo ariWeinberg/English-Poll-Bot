@@ -38,6 +38,9 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Change window minutes" in src_bundle
     assert "Auto-lock minutes" in src_bundle
     assert "Poll Pool" in src_bundle
+    assert "All statuses" in src_bundle
+    assert "Clear filters" in src_bundle
+    assert 'status: "sent"' in src_bundle
     assert '"/doc"' in src_bundle
     assert "Operations Docs" in src_bundle
     assert "Open Swagger" in src_bundle

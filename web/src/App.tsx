@@ -40,8 +40,10 @@ import {
   type LearnerFilters,
   type Page,
   type Poll,
+  type PollFilters,
   type PollPool,
   type PollStats,
+  type PollCoverage,
   type Route,
   type RosterMember,
   type ScheduleRule,
@@ -53,6 +55,22 @@ import {
   type VoteStatus,
   type RegisterFormState,
 } from "./types";
+
+const defaultPollFilters: PollFilters = {
+  status: "sent",
+  textId: "",
+  dateFrom: "",
+  dateTo: "",
+};
+
+function buildPollListPath(tenantId: number, filters: PollFilters) {
+  const params = new URLSearchParams({ tenant_id: String(tenantId), page_size: "100" });
+  if (filters.status) params.set("status", filters.status);
+  if (filters.textId) params.set("text_id", filters.textId);
+  if (filters.dateFrom) params.set("sent_from", filters.dateFrom);
+  if (filters.dateTo) params.set("sent_to", filters.dateTo);
+  return `/polls?${params.toString()}`;
+}
 
 export function App() {
   const [token, setTokenState] = useState(getToken());
@@ -250,9 +268,11 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
   const [texts, setTexts] = useState<Text[]>([]);
   const [scheduleRules, setScheduleRules] = useState<ScheduleRule[]>([]);
   const [polls, setPolls] = useState<Poll[]>([]);
+  const [pollList, setPollList] = useState<Poll[]>([]);
   const [pollStats, setPollStats] = useState<PollStats[]>([]);
   const [voteEvents, setVoteEvents] = useState<VoteEvent[]>([]);
   const [currentVoteStatus, setCurrentVoteStatus] = useState<VoteStatus[]>([]);
+  const [currentPoll, setCurrentPoll] = useState<Poll | null>(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<Toast>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -263,7 +283,8 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
   const [preview, setPreview] = useState<GeneratedQuestion | null>(null);
   const [currentPool, setCurrentPool] = useState<PollPool | null>(null);
   const [currentRoster, setCurrentRoster] = useState<TextRoster | null>(null);
-  const [currentCoverage, setCurrentCoverage] = useState<any>(null);
+  const [currentCoverage, setCurrentCoverage] = useState<PollCoverage | null>(null);
+  const [pollFilters, setPollFilters] = useState<PollFilters>(defaultPollFilters);
   const [learnerFilters, setLearnerFilters] = useState<LearnerFilters>({
     search: "",
     textId: "",
@@ -277,29 +298,33 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
     setLoading(true);
     try {
       const me = await api<Tenant>("/auth/me");
-      const [chatList, textPage, ruleList, pollPage, stats, votePage, pool] = await Promise.all([
+      const [chatList, textPage, ruleList, pollPage, filteredPollPage, stats, votePage, pool] = await Promise.all([
         api<GroupChat[]>("/chats"),
         api<Page<Text>>(`/texts?tenant_id=${me.id}&page_size=100`),
         api<ScheduleRule[]>("/schedule-rules"),
         api<Page<Poll>>(`/polls?tenant_id=${me.id}&page_size=100`),
+        route.name === "polls" ? api<Page<Poll>>(buildPollListPath(me.id, pollFilters)) : Promise.resolve(null),
         api<PollStats[]>(`/polls/stats?tenant_id=${me.id}&limit=100`),
         api<Page<VoteEvent>>(`/poll-vote-events?tenant_id=${me.id}&page_size=200`),
         route.name === "text-detail" ? api<PollPool>(`/texts/${route.id}/poll-pool`) : Promise.resolve(null),
       ]);
-      const [roster, coverage] = await Promise.all([
+      const [roster, coverage, selectedPoll] = await Promise.all([
         route.name === "text-detail" ? api<TextRoster>(`/texts/${route.id}/roster`) : Promise.resolve(null),
-        route.name === "poll-detail" ? api(`/polls/${route.id}/coverage?page_size=50`) : Promise.resolve(null),
+        route.name === "poll-detail" ? api<PollCoverage>(`/polls/${route.id}/coverage?page_size=50`) : Promise.resolve(null),
+        route.name === "poll-detail" ? api<Poll>(`/polls/${route.id}`) : Promise.resolve(null),
       ]);
       setTenant(me);
       setGroupChats(chatList);
       setTexts(textPage.items);
       setScheduleRules(ruleList);
       setPolls(pollPage.items);
+      setPollList(filteredPollPage?.items ?? pollPage.items);
       setPollStats(stats);
       setVoteEvents(votePage.items);
       setCurrentPool(pool);
       setCurrentRoster(roster);
       setCurrentCoverage(coverage);
+      setCurrentPoll(selectedPoll);
     } catch (err) {
       setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to load workspace" });
     } finally {
@@ -309,7 +334,22 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
 
   useEffect(() => {
     void loadData();
-  }, [route.name, route.name === "text-detail" ? route.id : null]);
+  }, [route.name, route.name === "text-detail" || route.name === "poll-detail" ? route.id : null]);
+
+  useEffect(() => {
+    if (!tenant || route.name !== "polls") return;
+    let cancelled = false;
+    api<Page<Poll>>(buildPollListPath(tenant.id, pollFilters))
+      .then((result) => {
+        if (!cancelled) setPollList(result.items);
+      })
+      .catch((err) => {
+        if (!cancelled) handleError(err instanceof Error ? err.message : "Failed to load polls");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tenant?.id, route.name, pollFilters]);
 
   useEffect(() => {
     setMobileNavOpen(false);
@@ -321,19 +361,19 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
   );
 
   const currentText = route.name === "text-detail" ? texts.find((item) => item.id === route.id) || null : null;
-  const currentPoll = route.name === "poll-detail" ? polls.find((item) => item.id === route.id) || null : null;
-  const currentPollStats = currentPoll ? pollStats.find((item) => item.poll.id === currentPoll.id) || null : null;
-  const currentPollEvents = currentPoll ? voteEvents.filter((item) => item.poll_id === currentPoll.id) : [];
+  const selectedPoll = route.name === "poll-detail" ? currentPoll : null;
+  const currentPollStats = selectedPoll ? pollStats.find((item) => item.poll.id === selectedPoll.id) || null : null;
+  const currentPollEvents = selectedPoll ? voteEvents.filter((item) => item.poll_id === selectedPoll.id) : [];
 
   useEffect(() => {
-    if (!currentPoll) {
+    if (!selectedPoll) {
       setCurrentVoteStatus([]);
       return;
     }
-    api<VoteStatus[]>(`/polls/${currentPoll.id}/vote-status`)
+    api<VoteStatus[]>(`/polls/${selectedPoll.id}/vote-status`)
       .then(setCurrentVoteStatus)
       .catch((err) => handleError(err instanceof Error ? err.message : "Failed to load vote status"));
-  }, [currentPoll?.id]);
+  }, [selectedPoll?.id]);
 
   function handleLogout() {
     setToken(null);
@@ -567,9 +607,11 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
           )}
           {route.name === "polls" && (
             <PollsPage
-              polls={polls}
+              polls={pollList}
               texts={texts}
               pollStats={pollStats}
+              filters={pollFilters}
+              onFiltersChange={setPollFilters}
               onOpen={(poll) => navigateTo({ name: "poll-detail", id: poll.id })}
               onCreate={() => setPollModal({ mode: "create" })}
               onEdit={(poll) => setPollModal({ mode: "edit", poll })}
@@ -578,7 +620,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
           )}
           {route.name === "poll-detail" && (
             <PollDetailPage
-              poll={currentPoll}
+              poll={selectedPoll}
               stats={currentPollStats}
               coverage={currentCoverage}
               voteStatus={currentVoteStatus}
@@ -1081,6 +1123,8 @@ function PollsPage({
   polls,
   texts,
   pollStats,
+  filters,
+  onFiltersChange,
   onOpen,
   onCreate,
   onEdit,
@@ -1089,6 +1133,8 @@ function PollsPage({
   polls: Poll[];
   texts: Text[];
   pollStats: PollStats[];
+  filters: PollFilters;
+  onFiltersChange: React.Dispatch<React.SetStateAction<PollFilters>>;
   onOpen: (poll: Poll) => void;
   onCreate: () => void;
   onEdit: (poll: Poll) => void;
@@ -1114,8 +1160,48 @@ function PollsPage({
           <Plus size={16} /> New poll
         </button>
       </div>
-      <div className="toolbar">
-        <TextInput label="Search" value={search} onChange={setSearch} placeholder="Question, status, or chat ID" />
+      <div className="toolbar learner-toolbar">
+        <TextInput
+          label="Search"
+          value={search}
+          onChange={setSearch}
+          placeholder="Question, status, or chat ID"
+        />
+        <label>
+          Status
+          <select value={filters.status} onChange={(event) => onFiltersChange((current) => ({ ...current, status: event.target.value as PollFilters["status"] }))}>
+            <option value="">All statuses</option>
+            <option value="sent">Sent</option>
+            <option value="queued">Queued</option>
+            <option value="draft">Draft</option>
+          </select>
+        </label>
+        <label>
+          Text
+          <select value={filters.textId} onChange={(event) => onFiltersChange((current) => ({ ...current, textId: event.target.value }))}>
+            <option value="">All texts</option>
+            {texts.map((text) => (
+              <option key={text.id} value={String(text.id)}>
+                {text.title}
+              </option>
+            ))}
+          </select>
+        </label>
+        <TextInput
+          label="From"
+          type="date"
+          value={filters.dateFrom}
+          onChange={(value) => onFiltersChange((current) => ({ ...current, dateFrom: value }))}
+        />
+        <TextInput
+          label="To"
+          type="date"
+          value={filters.dateTo}
+          onChange={(value) => onFiltersChange((current) => ({ ...current, dateTo: value }))}
+        />
+        <button className="button button-ghost" onClick={() => onFiltersChange(defaultPollFilters)}>
+          Clear filters
+        </button>
       </div>
       <div className="resource-grid">
         {filtered.map((poll) => {

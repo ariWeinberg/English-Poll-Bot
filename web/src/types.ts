@@ -275,6 +275,13 @@ export type LearnerFilters = {
   sortDir: "asc" | "desc";
 };
 
+export type PollFilters = {
+  status: "" | "draft" | "queued" | "sent";
+  textId: string;
+  dateFrom: string;
+  dateTo: string;
+};
+
 export type Route =
   | { name: "login" }
   | { name: "register" }
