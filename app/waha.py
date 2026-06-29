@@ -51,7 +51,9 @@ class WAHAClient:
         data = await self._request("GET", "/api/sessions")
         if not isinstance(data, list):
             raise WAHAError("WAHA validation failed: /api/sessions did not return a list")
-        session_row = next((item for item in data if isinstance(item, dict) and item.get("name") == self.config.session), None)
+        session_row = next(
+            (item for item in data if isinstance(item, dict) and item.get("name") == self.config.session), None
+        )
         if session_row is None:
             raise WAHAError(f"WAHA validation failed: session {self.config.session!r} was not found")
         capabilities = session_row.get("capabilities") or session_row.get("features") or {}

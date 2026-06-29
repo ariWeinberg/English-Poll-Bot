@@ -1542,7 +1542,10 @@ def upsert_active_whatsapp_connector(
     config: dict[str, Any],
 ) -> int:
     timestamp = now_iso()
-    conn.execute("UPDATE tenant_whatsapp_connectors SET is_active = FALSE, updated_at = %s WHERE tenant_id = %s", (timestamp, tenant_id))
+    conn.execute(
+        "UPDATE tenant_whatsapp_connectors SET is_active = FALSE, updated_at = %s WHERE tenant_id = %s",
+        (timestamp, tenant_id),
+    )
     existing = conn.execute(
         """
         SELECT id
@@ -1648,7 +1651,9 @@ def get_active_tenant(conn: psycopg.Connection[DbRow]) -> DbRow:
 
 
 def get_tenant(conn: psycopg.Connection[DbRow], tenant_id: int) -> DbRow | None:
-    return _attach_whatsapp_connector(conn, conn.execute("SELECT * FROM tenants WHERE id = %s", (tenant_id,)).fetchone())
+    return _attach_whatsapp_connector(
+        conn, conn.execute("SELECT * FROM tenants WHERE id = %s", (tenant_id,)).fetchone()
+    )
 
 
 def get_tenant_by_username(conn: psycopg.Connection[DbRow], username: str) -> DbRow | None:

@@ -129,7 +129,9 @@ class GreenAPIClient:
                 raw_voters = vote.get("participants")
             voters = raw_voters if isinstance(raw_voters, list) else []
             if option:
-                option_voters[option] = [record for voter in voters if (record := _parse_voter_record(voter)) is not None]
+                option_voters[option] = [
+                    record for voter in voters if (record := _parse_voter_record(voter)) is not None
+                ]
         if not option_voters:
             return None
         return NormalizedPollUpdate(
