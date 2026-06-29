@@ -95,7 +95,8 @@ def test_tenant_and_text_can_be_updated_in_db():
 def test_runtime_config_accepts_scheduler_text_rows():
     runtime = runtime_config_from_row(
         {
-            "id": 1,
+            "id": 99,
+            "tenant_id": 1,
             "tenant_name": "Tenant A",
             "greenapi_api_url": "https://api.green-api.com",
             "greenapi_id_instance": "7103000000",
@@ -109,6 +110,7 @@ def test_runtime_config_accepts_scheduler_text_rows():
     )
 
     assert runtime.tenant_name == "Tenant A"
+    assert runtime.tenant_id == 1
     assert runtime.greenapi_ready is True
     assert runtime.gemini_ready is True
 

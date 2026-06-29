@@ -100,8 +100,11 @@ def runtime_config_from_row(
     tenant_name = tenant.get("name")
     if tenant_name is None:
         tenant_name = tenant.get("tenant_name")
+    tenant_id = tenant.get("tenant_id")
+    if tenant_id is None:
+        tenant_id = tenant["id"]
     runtime = RuntimeConfig(
-        tenant_id=int(tenant["id"]),
+        tenant_id=int(tenant_id),
         tenant_name=str(tenant_name or ""),
         greenapi_api_url=str(tenant["greenapi_api_url"]).rstrip("/"),
         greenapi_id_instance=str(tenant["greenapi_id_instance"]),
