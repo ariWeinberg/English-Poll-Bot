@@ -1,8 +1,11 @@
 import os
+import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
+from app.core.logging import configure_logging
 from app.database import db_session, get_app_config_json, init_db, list_text_schedule_rules, upsert_text, upsert_tenant
 from app.scheduler import SCHEDULER_STATUS_KEY, build_scheduler, run_due_jobs
 
@@ -29,6 +32,7 @@ def test_scheduler_registers_minute_tick():
 
     assert "due_jobs" in jobs
     assert jobs["due_jobs"].kwargs["database_url"] == database_url
+    assert jobs["due_jobs"].kwargs["debug_enabled"] is False
 
 
 @pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
@@ -371,3 +375,140 @@ async def test_run_due_jobs_records_failed_attempt_and_heartbeat(monkeypatch):
     assert status["last_tick_at"] == "2026-06-29T08:30:00+00:00"
     assert "provider down" in str(status["last_error"])
     assert status["polls_sent"] == 0
+
+
+@pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
+@pytest.mark.anyio
+async def test_debug_mode_keeps_attempt_bookkeeping_unchanged(monkeypatch):
+    database_url = reset_db()
+    with db_session(database_url) as conn:
+        tenant_id = upsert_tenant(
+            conn,
+            tenant_id=1,
+            name="Tenant A",
+            username="tenant-a",
+            password="secret",
+            greenapi_api_url="https://api.green-api.com",
+            greenapi_id_instance="7103000000",
+            greenapi_api_token_instance="abc123",
+            gemini_api_key="gemini-key",
+            gemini_model="gemini-3.5-flash",
+            timezone="UTC",
+            summary_enabled=True,
+            scheduler_enabled=True,
+            is_active=True,
+        )
+        text_id = upsert_text(
+            conn,
+            text_id=None,
+            tenant_id=tenant_id,
+            title="Text A",
+            body="Body",
+            chat_id="group@g.us",
+            enabled=True,
+            new_rules=[
+                {
+                    "delivery_type": "poll",
+                    "rule_type": "daily_time",
+                    "time": "08:30",
+                    "count_mode": "fixed",
+                    "count_value": 2,
+                }
+            ],
+        )
+        poll_rule = list_text_schedule_rules(conn, text_id=text_id)[0]
+
+    sent_slots: list[str | None] = []
+
+    async def fake_send_poll(*, scheduled_slot=None, **kwargs):
+        sent_slots.append(scheduled_slot)
+        return 42
+
+    monkeypatch.setattr("app.scheduler.generate_and_send_poll", fake_send_poll)
+
+    sent = await run_due_jobs(
+        database_url=database_url,
+        now_utc=datetime(2026, 6, 29, 8, 30, tzinfo=timezone.utc),
+        debug_enabled=True,
+    )
+
+    assert sent == 2
+    assert sent_slots == [f"rule:{poll_rule['id']}:poll:08:30", f"rule:{poll_rule['id']}:poll:08:30"]
+    with db_session(database_url) as conn:
+        attempts = conn.execute(
+            "SELECT status, scheduled_slot, poll_id FROM scheduled_send_attempts ORDER BY id ASC"
+        ).fetchall()
+    assert [row["status"] for row in attempts] == ["sent", "sent"]
+    assert [row["scheduled_slot"] for row in attempts] == sent_slots
+    assert [row["poll_id"] for row in attempts] == [42, 42]
+
+
+@pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
+@pytest.mark.anyio
+async def test_debug_mode_redacts_secret_like_fields_in_logs(monkeypatch, tmp_path):
+    database_url = reset_db()
+    log_file = tmp_path / "scheduler.jsonl"
+    configure_logging(
+        SimpleNamespace(
+            log_level="INFO",
+            log_format="json",
+            log_file=str(log_file),
+            log_human_file="",
+        )
+    )
+    with db_session(database_url) as conn:
+        tenant_id = upsert_tenant(
+            conn,
+            tenant_id=1,
+            name="Tenant A",
+            username="tenant-a",
+            password="secret",
+            greenapi_api_url="https://api.green-api.com",
+            greenapi_id_instance="7103000000",
+            greenapi_api_token_instance="abc123",
+            gemini_api_key="gemini-key",
+            gemini_model="gemini-3.5-flash",
+            timezone="UTC",
+            summary_enabled=True,
+            scheduler_enabled=True,
+            is_active=True,
+        )
+        upsert_text(
+            conn,
+            text_id=None,
+            tenant_id=tenant_id,
+            title="Text A",
+            body="Body",
+            chat_id="group@g.us",
+            enabled=True,
+            new_rules=[
+                {
+                    "delivery_type": "poll",
+                    "rule_type": "daily_time",
+                    "time": "08:30",
+                    "count_mode": "fixed",
+                    "count_value": 1,
+                }
+            ],
+        )
+
+    async def fake_send_poll(**kwargs):
+        return 9
+
+    monkeypatch.setattr("app.scheduler.generate_and_send_poll", fake_send_poll)
+
+    await run_due_jobs(
+        database_url=database_url,
+        now_utc=datetime(2026, 6, 29, 8, 30, tzinfo=timezone.utc),
+        debug_enabled=True,
+    )
+
+    payloads = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    debug_payloads = [payload for payload in payloads if payload["message"].startswith("scheduler.debug.")]
+
+    assert debug_payloads
+    serialized = json.dumps(debug_payloads)
+    assert "abc123" not in serialized
+    assert "gemini-key" not in serialized
+    assert payloads[0]["message"] in {"scheduler.debug.tick_start", "scheduler.debug.heartbeat_write", "scheduler.tick"}
+    assert "[REDACTED]" in serialized

@@ -65,8 +65,9 @@ The API configures local JSON and human-readable logs through:
 - `LOG_FILE`
 - `LOG_HUMAN_FILE`
 - `LOG_REQUEST_BODY_ENABLED`
+- `SCHEDULER_DEBUG_ENABLED`
 
-Logs include request lifecycle events, request IDs, scheduler decisions, worker heartbeat updates, scheduled-slot attempt records, webhook decisions, poll sending, pool refill, summaries, provider-call failures, and exception traces. Secret-like keys are redacted before log records are written.
+Logs include request lifecycle events, request IDs, scheduler decisions, worker heartbeat updates, scheduled-slot attempt records, webhook decisions, poll sending, pool refill, summaries, provider-call failures, and exception traces. Secret-like keys are redacted before log records are written. When `SCHEDULER_DEBUG_ENABLED=true`, only the dedicated scheduler worker adds dense structured trace events for row loading, runtime normalization, rule evaluation, due-count math, send attempts, and heartbeat writes.
 
 See `docs/runbook.md` for the operator-facing checklist.
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import asdict, dataclass
+from typing import Any, Callable
 
 from app.database import (
     POLL_POOL_REFILL_BATCH_SIZE,
@@ -92,11 +92,15 @@ def load_runtime_config(database_url: str, tenant_id: int | None = None) -> Runt
     return runtime_config_from_row(tenant)
 
 
-def runtime_config_from_row(tenant: dict[str, Any]) -> RuntimeConfig:
+def runtime_config_from_row(
+    tenant: dict[str, Any],
+    *,
+    debug_logger: Callable[[str, dict[str, Any]], None] | None = None,
+) -> RuntimeConfig:
     tenant_name = tenant.get("name")
     if tenant_name is None:
         tenant_name = tenant.get("tenant_name")
-    return RuntimeConfig(
+    runtime = RuntimeConfig(
         tenant_id=int(tenant["id"]),
         tenant_name=str(tenant_name or ""),
         greenapi_api_url=str(tenant["greenapi_api_url"]).rstrip("/"),
@@ -108,6 +112,17 @@ def runtime_config_from_row(tenant: dict[str, Any]) -> RuntimeConfig:
         summary_enabled=_as_bool(tenant.get("summary_enabled"), True),
         scheduler_enabled=_as_bool(tenant.get("scheduler_enabled"), True),
     )
+    if debug_logger is not None:
+        debug_logger(
+            "runtime_config_from_row",
+            {
+                "row": dict(tenant),
+                "runtime_config": asdict(runtime),
+                "greenapi_ready": runtime.greenapi_ready,
+                "gemini_ready": runtime.gemini_ready,
+            },
+        )
+    return runtime
 
 
 def create_greenapi_client(settings: RuntimeConfig) -> GreenAPIClient:

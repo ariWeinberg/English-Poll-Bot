@@ -14,12 +14,22 @@ logger = get_logger("scheduler_worker")
 
 async def _run() -> None:
     configure_logging(settings)
-    logger.info("scheduler_worker.start")
+    logger.info(
+        "scheduler_worker.start",
+        extra={
+            "scheduler_debug_enabled": settings.scheduler_debug_enabled,
+            "log_level": settings.log_level,
+            "log_format": settings.log_format,
+        },
+    )
     init_db(settings.database_url)
 
-    scheduler = build_scheduler(settings.database_url)
+    scheduler = build_scheduler(settings.database_url, debug_enabled=settings.scheduler_debug_enabled)
     scheduler.start()
-    logger.info("scheduler_worker.scheduler_started", extra={"job_count": len(scheduler.get_jobs())})
+    logger.info(
+        "scheduler_worker.scheduler_started",
+        extra={"job_count": len(scheduler.get_jobs()), "scheduler_debug_enabled": settings.scheduler_debug_enabled},
+    )
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()

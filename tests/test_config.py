@@ -1,7 +1,9 @@
 import os
+from importlib import reload
 
 import pytest
 
+import app.config as config_module
 from app.database import db_session, get_active_tenant, init_db, list_texts, upsert_text, upsert_tenant
 from app.services import load_runtime_config, runtime_config_from_row
 
@@ -109,3 +111,17 @@ def test_runtime_config_accepts_scheduler_text_rows():
     assert runtime.tenant_name == "Tenant A"
     assert runtime.greenapi_ready is True
     assert runtime.gemini_ready is True
+
+
+def test_scheduler_debug_flag_defaults_false(monkeypatch):
+    monkeypatch.delenv("SCHEDULER_DEBUG_ENABLED", raising=False)
+    reload(config_module)
+
+    assert config_module.settings.scheduler_debug_enabled is False
+
+
+def test_scheduler_debug_flag_parses_true(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_DEBUG_ENABLED", "true")
+    reload(config_module)
+
+    assert config_module.settings.scheduler_debug_enabled is True

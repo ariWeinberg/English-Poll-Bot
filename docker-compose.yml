@@ -46,6 +46,8 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/english_bot
       SESSION_SECRET: change-this-before-production
       JWT_SECRET: change-this-before-production
+      LOG_LEVEL: DEBUG
+      SCHEDULER_DEBUG_ENABLED: "true"
     depends_on:
       db:
         condition: service_healthy

@@ -4,6 +4,13 @@ from dataclasses import dataclass
 import os
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str = os.getenv(
@@ -18,12 +25,8 @@ class Settings:
     log_format: str = os.getenv("LOG_FORMAT", "human")
     log_file: str = os.getenv("LOG_FILE", "logs/app.jsonl")
     log_human_file: str = os.getenv("LOG_HUMAN_FILE", "logs/app.log")
-    log_request_body_enabled: bool = os.getenv("LOG_REQUEST_BODY_ENABLED", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    log_request_body_enabled: bool = _env_bool("LOG_REQUEST_BODY_ENABLED", False)
+    scheduler_debug_enabled: bool = _env_bool("SCHEDULER_DEBUG_ENABLED", False)
 
 
 settings = Settings()

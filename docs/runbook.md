@@ -16,6 +16,7 @@ The API writes local logs with secret redaction by default:
 - `LOG_FILE`: JSON-lines file, default `logs/app.jsonl`.
 - `LOG_HUMAN_FILE`: readable log file, default `logs/app.log`.
 - `LOG_REQUEST_BODY_ENABLED`: log redacted JSON request bodies when set to `true`, default `false`.
+- `SCHEDULER_DEBUG_ENABLED`: worker-only ultra-verbose scheduler tracing when set to `true`, default `false`.
 
 Logged events include request start/finish with request IDs, scheduler ticks, skipped scheduler work, per-slot send attempts, pool refills, summary sends, webhook decisions, and exceptions.
 
@@ -26,6 +27,8 @@ The dedicated `scheduler` worker runs every minute in UTC and evaluates recurrin
 Each automatic slot produces a persisted attempt record. Poll sends keep their `scheduled_slot` on the poll row as `rule:<id>:poll:<HH:MM>`, and failed attempts are recorded separately so missed slots are diagnosable.
 
 `GET /api/v1/health` exposes the latest worker heartbeat payload from the database, including `last_tick_at`, `last_success_at`, `polls_sent`, `summaries_sent`, and the last worker error summary when present.
+
+For short-term troubleshooting, set `SCHEDULER_DEBUG_ENABLED=true` on the `scheduler` service. This emits high-volume structured logs for row payloads, runtime config derivation, timezone conversion, rule matching, due-count math, send calls, failures, and heartbeat writes. Turn it back off by removing or setting that one environment flag to `false`.
 
 ## Webhooks
 

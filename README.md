@@ -68,8 +68,11 @@ Local logging is enabled by default with JSON and human-readable files:
 - `LOG_FILE`, default `logs/app.jsonl`
 - `LOG_HUMAN_FILE`, default `logs/app.log`
 - `LOG_REQUEST_BODY_ENABLED`, default `false`
+- `SCHEDULER_DEBUG_ENABLED`, default `false`. When `true`, only the dedicated `scheduler` worker emits high-volume structured per-step scheduling traces. Secret redaction still applies.
 
 Logs include request IDs, request lifecycle events, scheduler decisions, webhook decisions, poll sends, pool refills, summaries, and exceptions with secret redaction.
+
+The checked-in Compose config currently enables temporary scheduler troubleshooting mode on the `scheduler` service with `SCHEDULER_DEBUG_ENABLED=true` and `LOG_LEVEL=DEBUG`. Turn it back off by changing only the worker environment.
 
 `GET /api/v1/health` returns basic worker heartbeat data, including the last scheduler tick and the last recorded worker error summary when available.
 
