@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from fastapi import HTTPException, status
-from psycopg import Connection
 
-from app.database import DbRow, get_tenant_by_username
+from app.database import get_tenant_by_username
 
 
-def ensure_unique_username(conn: Connection[DbRow], username: str, current_tenant_id: int | None = None) -> None:
+def ensure_unique_username(conn: object, username: str, current_tenant_id: int | None = None) -> None:
     existing = get_tenant_by_username(conn, username)
     if existing is None:
         return

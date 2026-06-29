@@ -3,15 +3,15 @@ from __future__ import annotations
 import csv
 import io
 import json
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from math import ceil
-from typing import Any, Iterator
+from typing import Any
 
 import psycopg
-from psycopg.rows import dict_row
 
 from app.auth import hash_password, is_password_hash
+from app.db_runtime import db_session
+from app.whatsapp import parse_connector_config_json
 
 
 DbRow = dict[str, Any]
@@ -502,23 +502,6 @@ def _rule_name_for_text(text_title: str, rule: dict[str, Any]) -> str:
     return f"{text_title.strip() or 'Text'} - {base}"
 
 
-def connect(database_url: str) -> psycopg.Connection[DbRow]:
-    return psycopg.connect(database_url, row_factory=dict_row)
-
-
-@contextmanager
-def db_session(database_url: str) -> Iterator[psycopg.Connection[DbRow]]:
-    conn = connect(database_url)
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
 def init_db(database_url: str) -> None:
     with db_session(database_url) as conn:
         conn.execute(
@@ -626,6 +609,16 @@ def init_db(database_url: str) -> None:
                 value TEXT NOT NULL DEFAULT ''
             );
 
+            CREATE TABLE IF NOT EXISTS tenant_whatsapp_connectors (
+                id SERIAL PRIMARY KEY,
+                tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                provider TEXT NOT NULL,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS scheduled_send_attempts (
                 id SERIAL PRIMARY KEY,
                 tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -650,7 +643,9 @@ def init_db(database_url: str) -> None:
                 endpoint_path TEXT NOT NULL,
                 type_webhook TEXT,
                 message_type TEXT,
+                provider_message_id TEXT,
                 greenapi_message_id TEXT,
+                provider_metadata_json TEXT NOT NULL DEFAULT '{}',
                 poll_id INTEGER,
                 decision_status TEXT,
                 decision_reason TEXT,
@@ -668,6 +663,8 @@ def init_db(database_url: str) -> None:
                 options_json TEXT NOT NULL,
                 correct_option TEXT NOT NULL,
                 explanation TEXT NOT NULL DEFAULT '',
+                provider TEXT,
+                provider_message_id TEXT,
                 greenapi_message_id TEXT,
                 chat_id TEXT NOT NULL,
                 generated_from_text TEXT NOT NULL,
@@ -765,6 +762,8 @@ def init_db(database_url: str) -> None:
             ALTER TABLE polls ADD COLUMN IF NOT EXISTS pool_rank INTEGER;
             ALTER TABLE polls ADD COLUMN IF NOT EXISTS recipient_snapshot_source TEXT;
             ALTER TABLE polls ADD COLUMN IF NOT EXISTS recipient_snapshot_synced_at TEXT;
+            ALTER TABLE polls ADD COLUMN IF NOT EXISTS provider TEXT;
+            ALTER TABLE polls ADD COLUMN IF NOT EXISTS provider_message_id TEXT;
             ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS voter_name TEXT;
             ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS phone_number TEXT;
             ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS first_accepted_at TEXT;
@@ -774,9 +773,18 @@ def init_db(database_url: str) -> None:
             ALTER TABLE poll_vote_events ADD COLUMN IF NOT EXISTS phone_number TEXT;
             ALTER TABLE poll_vote_events ADD COLUMN IF NOT EXISTS accepted BOOLEAN NOT NULL DEFAULT TRUE;
             ALTER TABLE poll_vote_events ADD COLUMN IF NOT EXISTS ignored_reason TEXT;
+            ALTER TABLE incoming_webhooks ADD COLUMN IF NOT EXISTS provider_message_id TEXT;
+            ALTER TABLE incoming_webhooks ADD COLUMN IF NOT EXISTS provider_metadata_json TEXT NOT NULL DEFAULT '{}';
 
             UPDATE poll_votes SET first_accepted_at = updated_at WHERE first_accepted_at IS NULL;
             ALTER TABLE poll_votes ALTER COLUMN first_accepted_at SET NOT NULL;
+            UPDATE polls
+            SET provider = COALESCE(NULLIF(provider, ''), 'greenapi'),
+                provider_message_id = COALESCE(NULLIF(provider_message_id, ''), greenapi_message_id)
+            WHERE greenapi_message_id IS NOT NULL;
+            UPDATE incoming_webhooks
+            SET provider_message_id = COALESCE(NULLIF(provider_message_id, ''), greenapi_message_id)
+            WHERE greenapi_message_id IS NOT NULL;
 
             CREATE INDEX IF NOT EXISTS idx_tenants_active ON tenants(is_active);
             CREATE INDEX IF NOT EXISTS idx_tenants_username ON tenants(username);
@@ -789,6 +797,9 @@ def init_db(database_url: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_text_rule_assignments_rule ON text_schedule_rule_assignments(rule_id);
             CREATE INDEX IF NOT EXISTS idx_text_schedule_rule_random_plans_rule_date
                 ON text_schedule_rule_random_plans(text_id, rule_id, local_date);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_whatsapp_connectors_active
+                ON tenant_whatsapp_connectors(tenant_id, is_active)
+                WHERE is_active = TRUE;
             CREATE INDEX IF NOT EXISTS idx_scheduled_send_attempts_slot
                 ON scheduled_send_attempts(text_id, rule_id, local_date, scheduled_slot);
             CREATE INDEX IF NOT EXISTS idx_scheduled_send_attempts_status
@@ -799,6 +810,8 @@ def init_db(database_url: str) -> None:
                 ON incoming_webhooks(decision_status);
             CREATE INDEX IF NOT EXISTS idx_incoming_webhooks_reason
                 ON incoming_webhooks(decision_reason);
+            CREATE INDEX IF NOT EXISTS idx_incoming_webhooks_provider_message_id
+                ON incoming_webhooks(provider_message_id);
             CREATE INDEX IF NOT EXISTS idx_incoming_webhooks_greenapi_message_id
                 ON incoming_webhooks(greenapi_message_id);
             CREATE INDEX IF NOT EXISTS idx_incoming_webhooks_poll_id
@@ -809,6 +822,7 @@ def init_db(database_url: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_polls_text ON polls(text_id);
             CREATE INDEX IF NOT EXISTS idx_polls_status ON polls(status);
             CREATE INDEX IF NOT EXISTS idx_polls_sent_at ON polls(sent_at);
+            CREATE INDEX IF NOT EXISTS idx_polls_provider_message_id ON polls(provider_message_id);
             CREATE INDEX IF NOT EXISTS idx_polls_greenapi_message_id ON polls(greenapi_message_id);
             CREATE INDEX IF NOT EXISTS idx_polls_text_status_rank ON polls(text_id, status, pool_rank);
             CREATE INDEX IF NOT EXISTS idx_votes_poll_id ON poll_votes(poll_id);
@@ -853,6 +867,7 @@ def init_db(database_url: str) -> None:
                 "UPDATE tenants SET password = %s, updated_at = %s WHERE id = %s",
                 (hash_password(password), now_iso(), tenant["id"]),
             )
+        _migrate_greenapi_connectors(conn)
         _migrate_legacy_text_schedule_rules(conn)
         _migrate_text_owned_rules_to_shared_rules(conn)
         conn.execute("SELECT setval(pg_get_serial_sequence('tenants', 'id'), COALESCE(MAX(id), 1)) FROM tenants")
@@ -871,6 +886,42 @@ def init_db(database_url: str) -> None:
         )
         conn.execute(
             "SELECT setval(pg_get_serial_sequence('incoming_webhooks', 'id'), COALESCE(MAX(id), 1)) FROM incoming_webhooks"
+        )
+
+
+def _migrate_greenapi_connectors(conn: psycopg.Connection[DbRow]) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, greenapi_api_url, greenapi_id_instance, greenapi_api_token_instance
+        FROM tenants
+        """
+    ).fetchall()
+    for row in rows:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM tenant_whatsapp_connectors
+            WHERE tenant_id = %s AND is_active = TRUE
+            LIMIT 1
+            """,
+            (row["id"],),
+        ).fetchone()
+        if existing is not None:
+            continue
+        config = {
+            "api_url": str(row.get("greenapi_api_url") or "").strip().rstrip("/"),
+            "id_instance": str(row.get("greenapi_id_instance") or "").strip(),
+            "api_token_instance": str(row.get("greenapi_api_token_instance") or "").strip(),
+        }
+        timestamp = now_iso()
+        conn.execute(
+            """
+            INSERT INTO tenant_whatsapp_connectors (
+                tenant_id, provider, config_json, is_active, created_at, updated_at
+            )
+            VALUES (%s, 'greenapi', %s, TRUE, %s, %s)
+            """,
+            (row["id"], json.dumps(config, ensure_ascii=False), timestamp, timestamp),
         )
 
 
@@ -989,7 +1040,11 @@ def _serialize_schedule_rule(row: DbRow) -> DbRow:
 
 
 def serialize_webhook_event(row: DbRow) -> DbRow:
-    return dict(row)
+    item = dict(row)
+    item["provider_metadata"] = parse_connector_config_json(item.get("provider_metadata_json"))
+    if not item.get("provider_message_id") and item.get("greenapi_message_id"):
+        item["provider_message_id"] = item["greenapi_message_id"]
+    return item
 
 
 def list_schedule_rules(conn: psycopg.Connection[DbRow], *, tenant_id: int, enabled_only: bool = False) -> list[DbRow]:
@@ -1462,8 +1517,98 @@ def attach_schedule_rules(conn: psycopg.Connection[DbRow], rows: list[DbRow]) ->
     return rows
 
 
+def get_active_whatsapp_connector(conn: psycopg.Connection[DbRow], *, tenant_id: int) -> DbRow | None:
+    row = conn.execute(
+        """
+        SELECT *
+        FROM tenant_whatsapp_connectors
+        WHERE tenant_id = %s AND is_active = TRUE
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (tenant_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    row["config"] = parse_connector_config_json(row.get("config_json"))
+    return row
+
+
+def upsert_active_whatsapp_connector(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    provider: str,
+    config: dict[str, Any],
+) -> int:
+    timestamp = now_iso()
+    conn.execute("UPDATE tenant_whatsapp_connectors SET is_active = FALSE, updated_at = %s WHERE tenant_id = %s", (timestamp, tenant_id))
+    existing = conn.execute(
+        """
+        SELECT id
+        FROM tenant_whatsapp_connectors
+        WHERE tenant_id = %s AND provider = %s
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (tenant_id, provider),
+    ).fetchone()
+    payload = json.dumps(config, ensure_ascii=False)
+    if existing is None:
+        row = conn.execute(
+            """
+            INSERT INTO tenant_whatsapp_connectors (
+                tenant_id, provider, config_json, is_active, created_at, updated_at
+            )
+            VALUES (%s, %s, %s, TRUE, %s, %s)
+            RETURNING id
+            """,
+            (tenant_id, provider, payload, timestamp, timestamp),
+        ).fetchone()
+        return int(row["id"])
+    conn.execute(
+        """
+        UPDATE tenant_whatsapp_connectors
+        SET config_json = %s, is_active = TRUE, updated_at = %s
+        WHERE id = %s
+        """,
+        (payload, timestamp, existing["id"]),
+    )
+    return int(existing["id"])
+
+
+def _attach_whatsapp_connector(conn: psycopg.Connection[DbRow], row: DbRow | None) -> DbRow | None:
+    if row is None:
+        return None
+    connector = get_active_whatsapp_connector(conn, tenant_id=int(row["id"]))
+    if connector is None:
+        connector = {
+            "provider": "greenapi",
+            "config": {
+                "api_url": str(row.get("greenapi_api_url") or "").strip().rstrip("/"),
+                "id_instance": str(row.get("greenapi_id_instance") or "").strip(),
+                "api_token_instance": str(row.get("greenapi_api_token_instance") or "").strip(),
+            },
+            "is_active": True,
+        }
+    config = dict(connector.get("config") or {})
+    row["whatsapp_connector"] = {
+        "provider": connector.get("provider") or "greenapi",
+        "config": config,
+        "is_active": bool(connector.get("is_active", True)),
+    }
+    row["whatsapp_provider"] = str(row["whatsapp_connector"]["provider"])
+    row["greenapi_api_url"] = str(config.get("api_url") or row.get("greenapi_api_url") or "").strip().rstrip("/")
+    row["greenapi_id_instance"] = str(config.get("id_instance") or row.get("greenapi_id_instance") or "").strip()
+    row["greenapi_api_token_instance"] = str(
+        config.get("api_token_instance") or row.get("greenapi_api_token_instance") or ""
+    ).strip()
+    return row
+
+
 def list_tenants(conn: psycopg.Connection[DbRow]) -> list[DbRow]:
-    return conn.execute("SELECT * FROM tenants ORDER BY is_active DESC, id ASC").fetchall()
+    rows = conn.execute("SELECT * FROM tenants ORDER BY is_active DESC, id ASC").fetchall()
+    return [_attach_whatsapp_connector(conn, row) for row in rows]
 
 
 def list_tenants_page(
@@ -1489,6 +1634,7 @@ def list_tenants_page(
         f"SELECT * FROM tenants {where_sql} ORDER BY is_active DESC, id ASC LIMIT %s OFFSET %s",
         [*params, page_size, offset],
     ).fetchall()
+    items = [_attach_whatsapp_connector(conn, row) for row in items]
     return paginated_response(items, int(total), page, page_size)
 
 
@@ -1498,15 +1644,18 @@ def get_active_tenant(conn: psycopg.Connection[DbRow]) -> DbRow:
         row = conn.execute("SELECT * FROM tenants ORDER BY id LIMIT 1").fetchone()
     if row is None:
         raise RuntimeError("No tenant exists. Database initialization did not seed the default tenant.")
-    return row
+    return _attach_whatsapp_connector(conn, row)
 
 
 def get_tenant(conn: psycopg.Connection[DbRow], tenant_id: int) -> DbRow | None:
-    return conn.execute("SELECT * FROM tenants WHERE id = %s", (tenant_id,)).fetchone()
+    return _attach_whatsapp_connector(conn, conn.execute("SELECT * FROM tenants WHERE id = %s", (tenant_id,)).fetchone())
 
 
 def get_tenant_by_username(conn: psycopg.Connection[DbRow], username: str) -> DbRow | None:
-    return conn.execute("SELECT * FROM tenants WHERE username = %s", (username.strip(),)).fetchone()
+    return _attach_whatsapp_connector(
+        conn,
+        conn.execute("SELECT * FROM tenants WHERE username = %s", (username.strip(),)).fetchone(),
+    )
 
 
 def list_texts(conn: psycopg.Connection[DbRow], tenant_id: int | None = None) -> list[DbRow]:
@@ -1600,6 +1749,8 @@ def upsert_tenant(
     name: str,
     username: str,
     password: str | None,
+    whatsapp_provider: str = "greenapi",
+    whatsapp_connector: dict[str, Any] | None = None,
     greenapi_api_url: str,
     greenapi_id_instance: str,
     greenapi_api_token_instance: str,
@@ -1613,6 +1764,22 @@ def upsert_tenant(
 ) -> int:
     timestamp = now_iso()
     normalized_password = (password or "").strip()
+    connector_payload = whatsapp_connector or {
+        "provider": whatsapp_provider,
+        "config": {
+            "api_url": greenapi_api_url.strip().rstrip("/"),
+            "id_instance": greenapi_id_instance.strip(),
+            "api_token_instance": greenapi_api_token_instance.strip(),
+        },
+    }
+    provider = str(connector_payload.get("provider") or whatsapp_provider or "greenapi").strip().lower() or "greenapi"
+    config = dict(connector_payload.get("config") or {})
+    if provider == "greenapi":
+        config = {
+            "api_url": str(config.get("api_url") or greenapi_api_url).strip().rstrip("/"),
+            "id_instance": str(config.get("id_instance") or greenapi_id_instance).strip(),
+            "api_token_instance": str(config.get("api_token_instance") or greenapi_api_token_instance).strip(),
+        }
     if tenant_id is None:
         row = conn.execute(
             """
@@ -1642,7 +1809,9 @@ def upsert_tenant(
                 timestamp,
             ),
         ).fetchone()
-        return int(row["id"])
+        created_id = int(row["id"])
+        upsert_active_whatsapp_connector(conn, tenant_id=created_id, provider=provider, config=config)
+        return created_id
 
     existing = get_tenant(conn, tenant_id)
     if existing is None:
@@ -1676,6 +1845,7 @@ def upsert_tenant(
             tenant_id,
         ),
     )
+    upsert_active_whatsapp_connector(conn, tenant_id=tenant_id, provider=provider, config=config)
     return tenant_id
 
 
@@ -1804,6 +1974,7 @@ def create_poll(
     chat_id: str,
     generated_from_text: str,
     scheduled_slot: str | None,
+    provider: str | None = None,
     status: str = "draft",
     pool_rank: int | None = None,
     change_window_seconds: int | None = None,
@@ -1813,11 +1984,11 @@ def create_poll(
     row = conn.execute(
         """
         INSERT INTO polls (
-            tenant_id, text_id, question, options_json, correct_option, explanation, chat_id,
+            tenant_id, text_id, question, options_json, correct_option, explanation, provider, chat_id,
             generated_from_text, status, scheduled_slot, change_window_seconds, manual_lock, auto_lock_seconds,
             pool_rank, recipient_snapshot_source, recipient_snapshot_synced_at, created_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -1827,6 +1998,7 @@ def create_poll(
             json.dumps(options, ensure_ascii=False),
             correct_option,
             explanation,
+            provider,
             chat_id,
             generated_from_text,
             status,
@@ -1846,6 +2018,7 @@ def create_poll(
 def mark_poll_sent(
     conn: psycopg.Connection[DbRow],
     poll_id: int,
+    provider: str,
     message_id: str,
     *,
     scheduled_slot: str | None = None,
@@ -1853,10 +2026,16 @@ def mark_poll_sent(
     conn.execute(
         """
         UPDATE polls
-        SET greenapi_message_id = %s, status = 'sent', sent_at = %s, scheduled_slot = %s, pool_rank = NULL
+        SET provider = %s,
+            provider_message_id = %s,
+            greenapi_message_id = CASE WHEN %s = 'greenapi' THEN %s ELSE greenapi_message_id END,
+            status = 'sent',
+            sent_at = %s,
+            scheduled_slot = %s,
+            pool_rank = NULL
         WHERE id = %s
         """,
-        (message_id, now_iso(), scheduled_slot, poll_id),
+        (provider, message_id, provider, message_id, now_iso(), scheduled_slot, poll_id),
     )
 
 
@@ -1865,7 +2044,10 @@ def mark_poll_failed(conn: psycopg.Connection[DbRow], poll_id: int, error: str) 
 
 
 def get_poll_by_message_id(conn: psycopg.Connection[DbRow], message_id: str) -> DbRow | None:
-    return conn.execute("SELECT * FROM polls WHERE greenapi_message_id = %s", (message_id,)).fetchone()
+    return conn.execute(
+        "SELECT * FROM polls WHERE provider_message_id = %s OR greenapi_message_id = %s",
+        (message_id, message_id),
+    ).fetchone()
 
 
 def get_poll_by_message_id_for_tenant(
@@ -1875,8 +2057,8 @@ def get_poll_by_message_id_for_tenant(
     tenant_id: int,
 ) -> DbRow | None:
     return conn.execute(
-        "SELECT * FROM polls WHERE greenapi_message_id = %s AND tenant_id = %s",
-        (message_id, tenant_id),
+        "SELECT * FROM polls WHERE tenant_id = %s AND (provider_message_id = %s OR greenapi_message_id = %s)",
+        (tenant_id, message_id, message_id),
     ).fetchone()
 
 
@@ -2012,6 +2194,8 @@ def update_poll(
     correct_option: str,
     explanation: str,
     greenapi_message_id: str | None,
+    provider: str | None,
+    provider_message_id: str | None,
     chat_id: str,
     generated_from_text: str,
     status: str,
@@ -2029,7 +2213,7 @@ def update_poll(
         """
         UPDATE polls
         SET tenant_id = %s, text_id = %s, question = %s, options_json = %s,
-            correct_option = %s, explanation = %s, greenapi_message_id = %s,
+            correct_option = %s, explanation = %s, provider = %s, provider_message_id = %s, greenapi_message_id = %s,
             chat_id = %s, generated_from_text = %s, status = %s, scheduled_slot = %s,
             sent_at = %s, summary_sent_at = %s, pool_rank = %s, change_window_seconds = %s,
             manual_lock = %s, auto_lock_seconds = %s,
@@ -2043,6 +2227,8 @@ def update_poll(
             json.dumps(options, ensure_ascii=False),
             correct_option,
             explanation,
+            provider,
+            provider_message_id,
             greenapi_message_id,
             chat_id,
             generated_from_text,
@@ -2258,7 +2444,9 @@ def create_incoming_webhook(
     payload_json: str,
     type_webhook: str | None = None,
     message_type: str | None = None,
+    provider_message_id: str | None = None,
     greenapi_message_id: str | None = None,
+    provider_metadata: dict[str, Any] | None = None,
     poll_id: int | None = None,
     decision_status: str | None = None,
     decision_reason: str | None = None,
@@ -2270,10 +2458,10 @@ def create_incoming_webhook(
     row = conn.execute(
         """
         INSERT INTO incoming_webhooks (
-            tenant_id, provider, endpoint_path, type_webhook, message_type, greenapi_message_id,
-            poll_id, decision_status, decision_reason, payload_json, received_at, processed_at, error
+            tenant_id, provider, endpoint_path, type_webhook, message_type, provider_message_id, greenapi_message_id,
+            provider_metadata_json, poll_id, decision_status, decision_reason, payload_json, received_at, processed_at, error
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -2282,7 +2470,9 @@ def create_incoming_webhook(
             endpoint_path,
             type_webhook.strip() if type_webhook else None,
             message_type.strip() if message_type else None,
+            provider_message_id.strip() if provider_message_id else None,
             greenapi_message_id.strip() if greenapi_message_id else None,
+            json.dumps(provider_metadata or {}, ensure_ascii=False),
             poll_id,
             decision_status.strip() if decision_status else None,
             decision_reason.strip() if decision_reason else None,
@@ -2301,7 +2491,9 @@ def update_incoming_webhook(
     webhook_id: int,
     type_webhook: str | None = None,
     message_type: str | None = None,
+    provider_message_id: str | None = None,
     greenapi_message_id: str | None = None,
+    provider_metadata: dict[str, Any] | None = None,
     poll_id: int | None = None,
     decision_status: str | None = None,
     decision_reason: str | None = None,
@@ -2313,7 +2505,9 @@ def update_incoming_webhook(
         UPDATE incoming_webhooks
         SET type_webhook = %s,
             message_type = %s,
+            provider_message_id = %s,
             greenapi_message_id = %s,
+            provider_metadata_json = %s,
             poll_id = %s,
             decision_status = %s,
             decision_reason = %s,
@@ -2324,7 +2518,9 @@ def update_incoming_webhook(
         (
             type_webhook.strip() if type_webhook else None,
             message_type.strip() if message_type else None,
+            provider_message_id.strip() if provider_message_id else None,
             greenapi_message_id.strip() if greenapi_message_id else None,
+            json.dumps(provider_metadata or {}, ensure_ascii=False),
             poll_id,
             decision_status.strip() if decision_status else None,
             decision_reason.strip() if decision_reason else None,
@@ -2353,6 +2549,7 @@ def list_incoming_webhooks_page(
     status: str | None = None,
     reason: str | None = None,
     type_webhook: str | None = None,
+    provider_message_id: str | None = None,
     greenapi_message_id: str | None = None,
     poll_id: int | None = None,
     date_from: str | None = None,
@@ -2366,6 +2563,7 @@ def list_incoming_webhooks_page(
             """
             (
                 payload_json ILIKE %s
+                OR COALESCE(provider_message_id, '') ILIKE %s
                 OR COALESCE(greenapi_message_id, '') ILIKE %s
                 OR COALESCE(type_webhook, '') ILIKE %s
                 OR COALESCE(decision_reason, '') ILIKE %s
@@ -2373,11 +2571,12 @@ def list_incoming_webhooks_page(
             )
             """
         )
-        params.extend([_like(search), _like(search), _like(search), _like(search), _like(search)])
+        params.extend([_like(search), _like(search), _like(search), _like(search), _like(search), _like(search)])
     for column, value in (
         ("decision_status", status),
         ("decision_reason", reason),
         ("type_webhook", type_webhook),
+        ("provider_message_id", provider_message_id),
         ("greenapi_message_id", greenapi_message_id),
         ("poll_id", poll_id),
     ):

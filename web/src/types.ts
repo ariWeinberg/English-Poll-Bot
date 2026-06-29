@@ -1,7 +1,15 @@
+export type WhatsAppConnector = {
+  provider: "greenapi" | "waha";
+  config: Record<string, string>;
+  is_active?: boolean;
+};
+
 export type Tenant = {
   id: number;
   name: string;
   username: string;
+  whatsapp_provider: "greenapi" | "waha";
+  whatsapp_connector: WhatsAppConnector;
   greenapi_api_url: string;
   greenapi_id_instance: string;
   greenapi_api_token_instance: string;
@@ -65,6 +73,8 @@ export type Poll = {
   options: string[];
   correct_option: string;
   explanation: string;
+  provider?: string | null;
+  provider_message_id?: string | null;
   greenapi_message_id?: string | null;
   chat_id: string;
   generated_from_text: string;
@@ -308,7 +318,9 @@ export type WebhookEvent = {
   endpoint_path: string;
   type_webhook?: string | null;
   message_type?: string | null;
+  provider_message_id?: string | null;
   greenapi_message_id?: string | null;
+  provider_metadata?: Record<string, unknown>;
   poll_id?: number | null;
   decision_status?: string | null;
   decision_reason?: string | null;
@@ -349,6 +361,16 @@ export const defaultTenantForm: TenantFormState = {
   name: "Tenant",
   username: "",
   password: "",
+  whatsapp_provider: "greenapi",
+  whatsapp_connector: {
+    provider: "greenapi",
+    config: {
+      api_url: "https://api.green-api.com",
+      id_instance: "",
+      api_token_instance: "",
+    },
+    is_active: true,
+  },
   greenapi_api_url: "https://api.green-api.com",
   greenapi_id_instance: "",
   greenapi_api_token_instance: "",

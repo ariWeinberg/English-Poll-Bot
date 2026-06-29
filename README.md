@@ -93,16 +93,19 @@ The checked-in Compose config leaves `SCHEDULER_DEBUG_ENABLED` off by default. T
 
 ## Webhooks
 
-GreenAPI must send incoming poll updates to:
+WhatsApp connectors must send incoming poll updates to their provider endpoint:
 
 ```text
 https://your-public-domain.example/webhooks/greenapi/{tenant_id}
+https://your-public-domain.example/webhooks/waha/{tenant_id}
 ```
 
-Enable these GreenAPI settings:
+For GreenAPI, enable:
 
 - `incomingWebhook`
 - `pollMessageWebhook`
+
+For WAHA, configure the session webhook to deliver poll-vote events to `/webhooks/waha/{tenant_id}` and confirm the session supports outbound poll sending before marking the connector ready.
 
 Operational guidance for scheduler behavior, webhook diagnostics, logging, and release checks lives in `docs/runbook.md` and is summarized in the authenticated `/doc` app page.
 

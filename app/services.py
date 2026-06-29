@@ -40,6 +40,7 @@ from app.database import normalize_phone_number
 from app.core.logging import get_logger
 from app.greenapi import GreenAPIClient, GreenAPIConfig
 from app.question_generator import GeminiQuestionGenerator, GeneratedQuestion
+from app.waha import WAHAClient, WAHAConfig
 
 logger = get_logger("services")
 
@@ -48,9 +49,8 @@ logger = get_logger("services")
 class RuntimeConfig:
     tenant_id: int
     tenant_name: str
-    greenapi_api_url: str
-    greenapi_id_instance: str
-    greenapi_api_token_instance: str
+    whatsapp_provider: str
+    whatsapp_connector_config: dict[str, Any]
     gemini_api_key: str
     gemini_model: str
     timezone: str
@@ -59,13 +59,28 @@ class RuntimeConfig:
 
     @property
     def greenapi_ready(self) -> bool:
+        if self.whatsapp_provider != "greenapi":
+            return False
         return all(
             (
-                bool(self.greenapi_api_url.strip()),
-                bool(self.greenapi_id_instance.strip()),
-                bool(self.greenapi_api_token_instance.strip()),
+                bool(str(self.whatsapp_connector_config.get("api_url") or "").strip()),
+                bool(str(self.whatsapp_connector_config.get("id_instance") or "").strip()),
+                bool(str(self.whatsapp_connector_config.get("api_token_instance") or "").strip()),
             )
         )
+
+    @property
+    def whatsapp_ready(self) -> bool:
+        if self.whatsapp_provider == "greenapi":
+            return self.greenapi_ready
+        if self.whatsapp_provider == "waha":
+            return all(
+                (
+                    bool(str(self.whatsapp_connector_config.get("base_url") or "").strip()),
+                    bool(str(self.whatsapp_connector_config.get("session") or "").strip()),
+                )
+            )
+        return False
 
     @property
     def gemini_ready(self) -> bool:
@@ -77,9 +92,12 @@ class WebhookDecision:
     handled: bool
     status: Literal["accepted", "ignored", "error"]
     reason: str
+    provider: str = "greenapi"
     type_webhook: str | None = None
     message_type: str | None = None
+    provider_message_id: str | None = None
     greenapi_message_id: str | None = None
+    provider_metadata: dict[str, Any] | None = None
     poll_id: int | None = None
     error: str | None = None
 
@@ -115,12 +133,21 @@ def runtime_config_from_row(
     tenant_id = tenant.get("tenant_id")
     if tenant_id is None:
         tenant_id = tenant["id"]
+    connector = tenant.get("whatsapp_connector")
+    if not isinstance(connector, dict):
+        connector = {
+            "provider": tenant.get("whatsapp_provider") or "greenapi",
+            "config": {
+                "api_url": tenant.get("greenapi_api_url") or "",
+                "id_instance": tenant.get("greenapi_id_instance") or "",
+                "api_token_instance": tenant.get("greenapi_api_token_instance") or "",
+            },
+        }
     runtime = RuntimeConfig(
         tenant_id=int(tenant_id),
         tenant_name=str(tenant_name or ""),
-        greenapi_api_url=str(tenant["greenapi_api_url"]).rstrip("/"),
-        greenapi_id_instance=str(tenant["greenapi_id_instance"]),
-        greenapi_api_token_instance=str(tenant["greenapi_api_token_instance"]),
+        whatsapp_provider=str(connector.get("provider") or "greenapi"),
+        whatsapp_connector_config=dict(connector.get("config") or {}),
         gemini_api_key=str(tenant["gemini_api_key"]),
         gemini_model=str(tenant["gemini_model"]),
         timezone=str(tenant["timezone"]),
@@ -133,6 +160,7 @@ def runtime_config_from_row(
             {
                 "row": dict(tenant),
                 "runtime_config": asdict(runtime),
+                "whatsapp_ready": runtime.whatsapp_ready,
                 "greenapi_ready": runtime.greenapi_ready,
                 "gemini_ready": runtime.gemini_ready,
             },
@@ -143,11 +171,23 @@ def runtime_config_from_row(
 def create_greenapi_client(settings: RuntimeConfig) -> GreenAPIClient:
     return GreenAPIClient(
         GreenAPIConfig(
-            api_url=settings.greenapi_api_url,
-            id_instance=settings.greenapi_id_instance,
-            api_token_instance=settings.greenapi_api_token_instance,
+            api_url=str(settings.whatsapp_connector_config.get("api_url") or ""),
+            id_instance=str(settings.whatsapp_connector_config.get("id_instance") or ""),
+            api_token_instance=str(settings.whatsapp_connector_config.get("api_token_instance") or ""),
         )
     )
+
+
+def create_whatsapp_provider(settings: RuntimeConfig):
+    if settings.whatsapp_provider == "waha":
+        return WAHAClient(
+            WAHAConfig(
+                base_url=str(settings.whatsapp_connector_config.get("base_url") or "").rstrip("/"),
+                session=str(settings.whatsapp_connector_config.get("session") or ""),
+                api_key=str(settings.whatsapp_connector_config.get("api_key") or ""),
+            )
+        )
+    return create_greenapi_client(settings)
 
 
 def create_question_generator(settings: RuntimeConfig) -> GeminiQuestionGenerator:
@@ -322,8 +362,8 @@ async def sync_text_roster(
     database_url: str,
     text_id: int,
 ) -> dict[str, Any]:
-    if not settings.greenapi_ready:
-        raise ValueError("GreenAPI configuration is incomplete.")
+    if not settings.whatsapp_ready:
+        raise ValueError("WhatsApp connector configuration is incomplete.")
     with db_session(database_url) as conn:
         text = get_text(conn, text_id)
         if text is None:
@@ -333,7 +373,7 @@ async def sync_text_roster(
     chat_id = str(text["chat_id"] or "").strip()
     if not chat_id:
         raise ValueError("Text chat ID is required for roster sync.")
-    participants = await create_greenapi_client(settings).get_group_participants(chat_id=chat_id)
+    participants = await create_whatsapp_provider(settings).get_group_participants(chat_id=chat_id)
     with db_session(database_url) as conn:
         synced_at = sync_chat_participants(
             conn,
@@ -359,9 +399,9 @@ async def refresh_tenant_group_chats(
     settings: RuntimeConfig,
     database_url: str,
 ) -> list[dict[str, Any]]:
-    if not settings.greenapi_ready:
-        raise ValueError("GreenAPI configuration is incomplete.")
-    chats = await create_greenapi_client(settings).get_group_chats()
+    if not settings.whatsapp_ready:
+        raise ValueError("WhatsApp connector configuration is incomplete.")
+    chats = await create_whatsapp_provider(settings).get_group_chats()
     with db_session(database_url) as conn:
         return sync_tenant_group_chats(conn, tenant_id=settings.tenant_id, chats=chats)
 
@@ -387,7 +427,7 @@ async def prepare_poll_recipient_snapshot(
     snapshot_source = "unavailable"
     snapshot_synced_at: str | None = None
     participants: list[dict[str, Any]] = []
-    if settings.greenapi_ready:
+    if settings.whatsapp_ready:
         try:
             roster = await sync_text_roster(settings=settings, database_url=database_url, text_id=text_id)
             snapshot_source = "live_sync"
@@ -451,11 +491,16 @@ async def generate_and_send_poll(
     text_id: int,
     scheduled_slot: str | None = None,
 ) -> int:
-    if not settings.greenapi_ready:
-        raise ValueError("GreenAPI configuration is incomplete.")
+    if not settings.whatsapp_ready:
+        raise ValueError("WhatsApp connector configuration is incomplete.")
     logger.info(
         "poll_send.start",
-        extra={"tenant_id": settings.tenant_id, "text_id": text_id, "scheduled_slot": scheduled_slot},
+        extra={
+            "tenant_id": settings.tenant_id,
+            "text_id": text_id,
+            "scheduled_slot": scheduled_slot,
+            "provider": settings.whatsapp_provider,
+        },
     )
     with db_session(database_url) as conn:
         text = get_text(conn, text_id)
@@ -482,6 +527,7 @@ async def generate_and_send_poll(
                 chat_id=text["chat_id"],
                 generated_from_text=source_text,
                 scheduled_slot=scheduled_slot,
+                provider=settings.whatsapp_provider,
             )
     else:
         poll_id = int(queued["id"])
@@ -498,8 +544,10 @@ async def generate_and_send_poll(
         text_id=text_id,
         chat_id=str(text["chat_id"]),
     )
+    provider = create_whatsapp_provider(settings)
+    await provider.validate()
     try:
-        message_id = await create_greenapi_client(settings).send_poll(
+        message_id = await provider.send_poll(
             chat_id=text["chat_id"],
             question=generated.question,
             options=generated.options,
@@ -515,7 +563,7 @@ async def generate_and_send_poll(
                 compact_queued_poll_ranks(conn, text_id=text_id)
         raise
     with db_session(database_url) as conn:
-        mark_poll_sent(conn, poll_id, message_id, scheduled_slot=scheduled_slot)
+        mark_poll_sent(conn, poll_id, settings.whatsapp_provider, message_id, scheduled_slot=scheduled_slot)
         if used_pool:
             compact_queued_poll_ranks(conn, text_id=text_id)
     if used_pool or settings.gemini_ready:
@@ -527,7 +575,8 @@ async def generate_and_send_poll(
             "text_id": text_id,
             "poll_id": poll_id,
             "used_pool": used_pool,
-            "greenapi_message_id": message_id,
+            "provider": settings.whatsapp_provider,
+            "provider_message_id": message_id,
             "recipient_snapshot_source": snapshot["recipient_snapshot_source"],
             "assigned_count": snapshot["assigned_count"],
         },
@@ -592,7 +641,16 @@ def _extract_poll_message_data(payload: dict[str, Any]) -> dict[str, Any] | None
     return None
 
 
-def extract_greenapi_webhook_metadata(payload: dict[str, Any]) -> dict[str, str | None]:
+def extract_whatsapp_webhook_metadata(payload: dict[str, Any], *, provider: str) -> dict[str, Any]:
+    parsed = parse_poll_update(payload, provider=provider)
+    if provider == "waha":
+        return {
+            "type_webhook": str(payload.get("event") or payload.get("type") or "").strip() or None,
+            "message_type": "pollVote" if parsed is not None else None,
+            "provider_message_id": parsed[0] if parsed is not None else None,
+            "greenapi_message_id": None,
+            "provider_metadata": {"event": str(payload.get("event") or payload.get("type") or "").strip() or None},
+        }
     type_webhook = payload.get("typeWebhook")
     message_type: str | None = None
     for candidate in (
@@ -606,11 +664,21 @@ def extract_greenapi_webhook_metadata(payload: dict[str, Any]) -> dict[str, str 
             if isinstance(raw_message_type, str) and raw_message_type.strip():
                 message_type = raw_message_type.strip()
                 break
-    parsed = parse_poll_update(payload)
     return {
         "type_webhook": str(type_webhook).strip() if isinstance(type_webhook, str) and type_webhook.strip() else None,
         "message_type": message_type,
+        "provider_message_id": parsed[0] if parsed is not None else None,
         "greenapi_message_id": parsed[0] if parsed is not None else None,
+        "provider_metadata": {},
+    }
+
+
+def extract_greenapi_webhook_metadata(payload: dict[str, Any]) -> dict[str, str | None]:
+    metadata = extract_whatsapp_webhook_metadata(payload, provider="greenapi")
+    return {
+        "type_webhook": metadata["type_webhook"],
+        "message_type": metadata["message_type"],
+        "greenapi_message_id": metadata["greenapi_message_id"],
     }
 
 
@@ -629,7 +697,14 @@ def _extract_poll_votes(value: Any) -> list[dict[str, Any]]:
     return []
 
 
-def parse_poll_update(payload: dict[str, Any]) -> tuple[str, dict[str, list[dict[str, str | None]]]] | None:
+def parse_poll_update(
+    payload: dict[str, Any], *, provider: str = "greenapi"
+) -> tuple[str, dict[str, list[dict[str, str | None]]]] | None:
+    if provider == "waha":
+        parsed = WAHAClient(WAHAConfig(base_url="", session="")).parse_webhook(payload)
+        if parsed is None:
+            return None
+        return parsed.provider_message_id, parsed.option_voters
     poll_data = _extract_poll_message_data(payload)
     if poll_data is None:
         return None
@@ -684,9 +759,9 @@ async def _resolve_contact_name(
         return None
     settings = runtime_config_from_row(tenant)
     resolved_name: str | None = None
-    if settings.greenapi_ready:
+    if settings.whatsapp_ready:
         try:
-            resolved_name = await create_greenapi_client(settings).get_contact_name(chat_id=voter_wid)
+            resolved_name = await create_whatsapp_provider(settings).get_contact_name(chat_id=voter_wid)
         except Exception:
             resolved_name = None
     with db_session(database_url) as conn:
@@ -700,26 +775,36 @@ async def _resolve_contact_name(
     return resolved_name
 
 
-async def handle_greenapi_webhook_async(
-    *, database_url: str, payload: dict[str, Any], tenant_id: int | None = None
+async def handle_whatsapp_webhook_async(
+    *,
+    database_url: str,
+    payload: dict[str, Any],
+    provider: str,
+    tenant_id: int | None = None,
 ) -> WebhookDecision:
-    metadata = extract_greenapi_webhook_metadata(payload)
-    parsed = parse_poll_update(payload)
+    metadata = extract_whatsapp_webhook_metadata(payload, provider=provider)
+    parsed = parse_poll_update(payload, provider=provider)
     if parsed is None:
         logger.info(
             "webhook.ignored",
-            extra={"tenant_id": tenant_id, "reason": "not_poll_update", "type": payload.get("typeWebhook")},
+            extra={"tenant_id": tenant_id, "reason": "not_poll_update", "provider": provider},
         )
         return WebhookDecision(
             handled=False,
             status="ignored",
             reason="not_poll_update",
+            provider=provider,
             type_webhook=metadata["type_webhook"],
             message_type=metadata["message_type"],
+            provider_message_id=metadata["provider_message_id"],
             greenapi_message_id=metadata["greenapi_message_id"],
+            provider_metadata=metadata["provider_metadata"],
         )
     message_id, option_voters = parsed
-    logger.info("webhook.poll_update", extra={"tenant_id": tenant_id, "greenapi_message_id": message_id})
+    logger.info(
+        "webhook.poll_update",
+        extra={"tenant_id": tenant_id, "provider": provider, "provider_message_id": message_id},
+    )
     with db_session(database_url) as conn:
         poll = (
             get_poll_by_message_id_for_tenant(conn, message_id=message_id, tenant_id=tenant_id)
@@ -735,9 +820,12 @@ async def handle_greenapi_webhook_async(
             handled=False,
             status="ignored",
             reason="poll_not_found",
+            provider=provider,
             type_webhook=metadata["type_webhook"],
             message_type=metadata["message_type"],
+            provider_message_id=message_id,
             greenapi_message_id=message_id,
+            provider_metadata=metadata["provider_metadata"],
         )
     tenant_key = int(poll["tenant_id"])
     poll_id = int(poll["id"])
@@ -782,9 +870,12 @@ async def handle_greenapi_webhook_async(
                 handled=False,
                 status="ignored",
                 reason="poll_not_found_after_enrichment",
+                provider=provider,
                 type_webhook=metadata["type_webhook"],
                 message_type=metadata["message_type"],
+                provider_message_id=message_id,
                 greenapi_message_id=message_id,
+                provider_metadata=metadata["provider_metadata"],
             )
         replace_poll_votes(conn, poll=live_poll, option_voters=enriched)
     logger.info(
@@ -800,9 +891,12 @@ async def handle_greenapi_webhook_async(
         handled=True,
         status="accepted",
         reason="handled",
+        provider=provider,
         type_webhook=metadata["type_webhook"],
         message_type=metadata["message_type"],
+        provider_message_id=message_id,
         greenapi_message_id=message_id,
+        provider_metadata=metadata["provider_metadata"],
         poll_id=poll_id,
     )
 
@@ -811,6 +905,28 @@ def handle_greenapi_webhook(*, database_url: str, payload: dict[str, Any], tenan
     return asyncio.run(
         handle_greenapi_webhook_async(database_url=database_url, payload=payload, tenant_id=tenant_id)
     ).handled
+
+
+async def handle_greenapi_webhook_async(
+    *, database_url: str, payload: dict[str, Any], tenant_id: int | None = None
+) -> WebhookDecision:
+    return await handle_whatsapp_webhook_async(
+        database_url=database_url,
+        payload=payload,
+        provider="greenapi",
+        tenant_id=tenant_id,
+    )
+
+
+async def handle_waha_webhook_async(
+    *, database_url: str, payload: dict[str, Any], tenant_id: int | None = None
+) -> WebhookDecision:
+    return await handle_whatsapp_webhook_async(
+        database_url=database_url,
+        payload=payload,
+        provider="waha",
+        tenant_id=tenant_id,
+    )
 
 
 def build_summary_text(stats: dict[str, Any]) -> str:
@@ -834,20 +950,21 @@ def build_summary_text(stats: dict[str, Any]) -> str:
 
 
 async def send_pending_summaries(*, settings: RuntimeConfig, database_url: str, text_id: int | None = None) -> int:
-    if not settings.summary_enabled or not settings.greenapi_ready:
+    if not settings.summary_enabled or not settings.whatsapp_ready:
         logger.info(
             "summary.skip",
             extra={
                 "tenant_id": settings.tenant_id,
                 "text_id": text_id,
                 "summary_enabled": settings.summary_enabled,
-                "greenapi_ready": settings.greenapi_ready,
+                "whatsapp_ready": settings.whatsapp_ready,
             },
         )
         return 0
     logger.info("summary.start", extra={"tenant_id": settings.tenant_id, "text_id": text_id})
     sent = 0
-    client = create_greenapi_client(settings)
+    client = create_whatsapp_provider(settings)
+    await client.validate()
     with db_session(database_url) as conn:
         polls = list_unsummarized_polls(conn, tenant_id=settings.tenant_id)
         if text_id is not None:

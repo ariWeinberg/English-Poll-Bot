@@ -34,13 +34,14 @@ Startup initialization seeds only the default admin tenant on a blank database. 
 
 ## Webhooks
 
-GreenAPI callbacks must post poll updates to:
+Connector callbacks must post poll updates to the provider-specific public endpoint:
 
 ```text
 https://your-public-domain.example/webhooks/greenapi/{tenant_id}
+https://your-public-domain.example/webhooks/waha/{tenant_id}
 ```
 
-Every request to that endpoint is stored durably in the authenticated Webhook Inbox at `/webhooks`. Stored rows keep the exact raw JSON payload, extracted GreenAPI metadata when available, and a final decision state:
+Every request to those endpoints is stored durably in the authenticated Webhook Inbox at `/webhooks`. Stored rows keep the exact raw JSON payload, provider-neutral message identity when available, optional provider metadata, and a final decision state:
 
 - `accepted` with reason `handled`
 - `ignored` with reasons such as `not_poll_update`, `poll_not_found`, and `poll_not_found_after_enrichment`

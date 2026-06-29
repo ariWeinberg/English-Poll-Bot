@@ -13,7 +13,7 @@ function buildWebhookListPath(filters: WebhookFilters, page: number) {
   if (filters.status) params.set("status", filters.status);
   if (filters.reason.trim()) params.set("reason", filters.reason.trim());
   if (filters.typeWebhook.trim()) params.set("type_webhook", filters.typeWebhook.trim());
-  if (filters.messageId.trim()) params.set("greenapi_message_id", filters.messageId.trim());
+  if (filters.messageId.trim()) params.set("provider_message_id", filters.messageId.trim());
   if (filters.pollId.trim()) params.set("poll_id", filters.pollId.trim());
   if (filters.dateFrom) params.set("date_from", filters.dateFrom);
   if (filters.dateTo) params.set("date_to", filters.dateTo);
@@ -100,7 +100,7 @@ export function WebhooksPage({
       <div className="section-header">
         <div>
           <p className="section-kicker">Webhook Inbox</p>
-          <h2>Review incoming GreenAPI events</h2>
+          <h2>Review incoming WhatsApp webhook events</h2>
         </div>
         <span className="pill">{result.total} stored</span>
       </div>
@@ -118,7 +118,7 @@ export function WebhooksPage({
         </label>
         <TextInput label="Reason" value={filters.reason} onChange={(value) => setFilters((current) => ({ ...current, reason: value }))} placeholder="handled or ignored reason" />
         <TextInput label="typeWebhook" value={filters.typeWebhook} onChange={(value) => setFilters((current) => ({ ...current, typeWebhook: value }))} placeholder="incomingMessageReceived" />
-        <TextInput label="Message ID" value={filters.messageId} onChange={(value) => setFilters((current) => ({ ...current, messageId: value }))} placeholder="GreenAPI message ID" />
+        <TextInput label="Message ID" value={filters.messageId} onChange={(value) => setFilters((current) => ({ ...current, messageId: value }))} placeholder="Provider message ID" />
         <TextInput label="Poll ID" value={filters.pollId} onChange={(value) => setFilters((current) => ({ ...current, pollId: value }))} placeholder="123" />
         <TextInput label="From" type="date" value={filters.dateFrom} onChange={(value) => setFilters((current) => ({ ...current, dateFrom: value }))} />
         <TextInput label="To" type="date" value={filters.dateTo} onChange={(value) => setFilters((current) => ({ ...current, dateTo: value }))} />
@@ -146,7 +146,7 @@ export function WebhooksPage({
       {loading ? (
         <EmptyState title="Loading webhook inbox" body="Fetching tenant-scoped webhook events." />
       ) : result.items.length === 0 ? (
-        <EmptyState title="No matching webhooks" body="Adjust the filters or wait for GreenAPI callbacks to arrive." />
+        <EmptyState title="No matching webhooks" body="Adjust the filters or wait for connector callbacks to arrive." />
       ) : (
         <>
           <div className="resource-grid">
@@ -156,6 +156,10 @@ export function WebhooksPage({
                   <span className="resource-id">Webhook #{event.id}</span>
                   <span className={statusClassName(event.decision_status)}>{statusLabel(event.decision_status)}</span>
                 </div>
+                <div className="meta-row">
+                  <span>{event.provider.toUpperCase()}</span>
+                  <span>{event.endpoint_path}</span>
+                </div>
                 <h3>{event.type_webhook || "Unknown typeWebhook"}</h3>
                 <div className="meta-row">
                   <span>Received {formatWhen(event.received_at)}</span>
@@ -163,7 +167,7 @@ export function WebhooksPage({
                 </div>
                 <div className="meta-row">
                   <span>{event.decision_reason || "No decision reason"}</span>
-                  <span>{event.greenapi_message_id || "No message ID"}</span>
+                  <span>{event.provider_message_id || event.greenapi_message_id || "No message ID"}</span>
                 </div>
                 <div className="card-actions">
                   {event.poll_id ? (

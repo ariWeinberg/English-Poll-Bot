@@ -502,7 +502,37 @@ export function SettingsModal({
   async function submit(event: FormEvent) {
     event.preventDefault();
     try {
-      await api<Tenant>(`/tenants/${tenant.id}`, { method: "PATCH", body: JSON.stringify(form) });
+      const connector =
+        form.whatsapp_provider === "waha"
+          ? {
+              provider: "waha",
+              config: {
+                base_url: form.whatsapp_connector.config.base_url || "",
+                session: form.whatsapp_connector.config.session || "",
+                api_key: form.whatsapp_connector.config.api_key || "",
+              },
+            }
+          : {
+              provider: "greenapi",
+              config: {
+                api_url: form.whatsapp_connector.config.api_url || form.greenapi_api_url || "",
+                id_instance: form.whatsapp_connector.config.id_instance || form.greenapi_id_instance || "",
+                api_token_instance:
+                  form.whatsapp_connector.config.api_token_instance || form.greenapi_api_token_instance || "",
+              },
+            };
+      await api<Tenant>(`/tenants/${tenant.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...form,
+          whatsapp_provider: connector.provider,
+          whatsapp_connector: connector,
+          greenapi_api_url: connector.provider === "greenapi" ? connector.config.api_url : form.greenapi_api_url,
+          greenapi_id_instance: connector.provider === "greenapi" ? connector.config.id_instance : form.greenapi_id_instance,
+          greenapi_api_token_instance:
+            connector.provider === "greenapi" ? connector.config.api_token_instance : form.greenapi_api_token_instance,
+        }),
+      });
       onSaved("Workspace updated");
     } catch (err) {
       onError(err instanceof Error ? err.message : "Failed to save workspace");
@@ -516,9 +546,42 @@ export function SettingsModal({
         <TextInput label="Username" value={form.username} onChange={(value) => setForm({ ...form, username: value })} />
         <TextInput label="Password" type="password" value={form.password} placeholder="Leave blank to keep current password" onChange={(value) => setForm({ ...form, password: value })} />
         <TextInput label="Pool threshold percent used" type="number" value={String(form.poll_pool_threshold_percent)} onChange={(value) => setForm({ ...form, poll_pool_threshold_percent: Math.max(0, Math.min(100, Number(value || 0))) })} />
-        <TextInput label="GreenAPI URL" value={form.greenapi_api_url} onChange={(value) => setForm({ ...form, greenapi_api_url: value })} />
-        <TextInput label="GreenAPI instance ID" value={form.greenapi_id_instance} onChange={(value) => setForm({ ...form, greenapi_id_instance: value })} />
-        <TextInput label="GreenAPI token" type="password" value={form.greenapi_api_token_instance} onChange={(value) => setForm({ ...form, greenapi_api_token_instance: value })} />
+        <label>
+          WhatsApp connector
+          <select
+            value={form.whatsapp_provider}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                whatsapp_provider: event.target.value as "greenapi" | "waha",
+                whatsapp_connector: {
+                  ...form.whatsapp_connector,
+                  provider: event.target.value as "greenapi" | "waha",
+                  config:
+                    event.target.value === "waha"
+                      ? { base_url: "", session: "", api_key: "" }
+                      : { api_url: form.greenapi_api_url || "https://api.green-api.com", id_instance: "", api_token_instance: "" },
+                },
+              })
+            }
+          >
+            <option value="greenapi">GreenAPI</option>
+            <option value="waha">WAHA</option>
+          </select>
+        </label>
+        {form.whatsapp_provider === "waha" ? (
+          <>
+            <TextInput label="WAHA base URL" value={form.whatsapp_connector.config.base_url || ""} onChange={(value) => setForm({ ...form, whatsapp_connector: { ...form.whatsapp_connector, config: { ...form.whatsapp_connector.config, base_url: value } } })} />
+            <TextInput label="WAHA session" value={form.whatsapp_connector.config.session || ""} onChange={(value) => setForm({ ...form, whatsapp_connector: { ...form.whatsapp_connector, config: { ...form.whatsapp_connector.config, session: value } } })} />
+            <TextInput label="WAHA API key" type="password" value={form.whatsapp_connector.config.api_key || ""} onChange={(value) => setForm({ ...form, whatsapp_connector: { ...form.whatsapp_connector, config: { ...form.whatsapp_connector.config, api_key: value } } })} />
+          </>
+        ) : (
+          <>
+            <TextInput label="GreenAPI URL" value={form.whatsapp_connector.config.api_url || form.greenapi_api_url} onChange={(value) => setForm({ ...form, greenapi_api_url: value, whatsapp_connector: { ...form.whatsapp_connector, config: { ...form.whatsapp_connector.config, api_url: value } } })} />
+            <TextInput label="GreenAPI instance ID" value={form.whatsapp_connector.config.id_instance || form.greenapi_id_instance} onChange={(value) => setForm({ ...form, greenapi_id_instance: value, whatsapp_connector: { ...form.whatsapp_connector, config: { ...form.whatsapp_connector.config, id_instance: value } } })} />
+            <TextInput label="GreenAPI token" type="password" value={form.whatsapp_connector.config.api_token_instance || form.greenapi_api_token_instance} onChange={(value) => setForm({ ...form, greenapi_api_token_instance: value, whatsapp_connector: { ...form.whatsapp_connector, config: { ...form.whatsapp_connector.config, api_token_instance: value } } })} />
+          </>
+        )}
         <TextInput label="Gemini API key" type="password" value={form.gemini_api_key} onChange={(value) => setForm({ ...form, gemini_api_key: value })} />
         <TextInput label="Gemini model" value={form.gemini_model} onChange={(value) => setForm({ ...form, gemini_model: value })} />
         <TextInput label="Timezone" value={form.timezone} onChange={(value) => setForm({ ...form, timezone: value })} />

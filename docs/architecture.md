@@ -14,11 +14,11 @@ English WhatsApp Poll Bot is a split FastAPI and React application. Keep changes
 - `app/main.py` owns the FastAPI app factory, HTTP routes, request and response models, auth dependencies, and route-level validation. It does not own scheduler lifecycle.
 - `app/core/docs.py` owns short-lived signed tokens for protected Swagger and OpenAPI access.
 - `app/core/logging.py` owns JSON/human logging setup, request IDs, request lifecycle logging, and secret redaction.
-- `app/services.py` owns workflow orchestration for question generation, poll sending, pool refill, webhook processing, and summaries.
-- `app/database.py` owns SQL, row serialization, text schedule-rule persistence, learner analytics aggregation, roster snapshots, random-rule daily plans, scheduler heartbeat state, scheduled send-attempt persistence, incoming webhook inbox persistence, and database initialization.
+- `app/services.py` owns workflow orchestration for question generation, poll sending, pool refill, connector-aware webhook processing, and summaries.
+- `app/database.py` owns SQLAlchemy-backed runtime access, row serialization, text schedule-rule persistence, learner analytics aggregation, roster snapshots, random-rule daily plans, scheduler heartbeat state, scheduled send-attempt persistence, incoming webhook inbox persistence, connector records, and database initialization.
 - `app/scheduler.py` owns APScheduler job registration, tenant-local schedule-rule evaluation, worker heartbeat writes, and scheduled send-attempt bookkeeping.
 - `app/scheduler_worker.py` owns the dedicated scheduler process lifecycle used by the deployed `scheduler` service.
-- `app/greenapi.py` and `app/question_generator.py` own external service clients and provider-specific payload handling.
+- `app/greenapi.py`, `app/waha.py`, `app/whatsapp.py`, and `app/question_generator.py` own external service clients, provider adapters, and normalized WhatsApp event handling.
 
 Route handlers should stay thin. New business rules belong in service functions. New SQL belongs behind database helper functions rather than directly in routes or frontend code.
 
@@ -28,7 +28,7 @@ Route handlers should stay thin. New business rules belong in service functions.
 - The authenticated `/dashboard` route renders the executive BI overview, including time-scoped poll stats, delivery-health summaries, and drill-through links into learners and poll/text detail views.
 - The authenticated `/learners` route renders the learner intervention dashboard and uses tenant-scoped learner summary, ranked risk slices, segment filters, and missed-response endpoints.
 - The authenticated text and poll detail routes render roster sync controls, schedule-rule summaries, and poll coverage summaries on top of the existing delivery views.
-- The authenticated `/webhooks` route renders the persisted webhook inbox with tenant-scoped filters and inline raw-payload inspection.
+- The authenticated `/webhooks` route renders the persisted webhook inbox with tenant-scoped filters, provider-neutral message IDs, and inline raw-payload inspection.
 - The authenticated `/doc` route renders operational guidance and opens Swagger through `POST /api/v1/docs/session`.
 - `web/src/main.tsx` only mounts React.
 - `web/src/styles.css` owns global styling and page-specific class rules.

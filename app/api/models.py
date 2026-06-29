@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -29,10 +31,17 @@ class RegisterRequest(BaseModel):
     timezone: str = "Asia/Jerusalem"
 
 
+class WhatsAppConnectorPayload(BaseModel):
+    provider: str = "greenapi"
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
 class TenantPayload(BaseModel):
     name: str = "Tenant"
     username: str = ""
     password: str | None = None
+    whatsapp_provider: str = "greenapi"
+    whatsapp_connector: WhatsAppConnectorPayload | None = None
     greenapi_api_url: str = "https://api.green-api.com"
     greenapi_id_instance: str = ""
     greenapi_api_token_instance: str = ""
@@ -131,6 +140,8 @@ class PollPayload(BaseModel):
     options: list[str] = Field(min_length=2)
     correct_option: str
     explanation: str = ""
+    provider: str | None = None
+    provider_message_id: str | None = None
     greenapi_message_id: str | None = None
     chat_id: str
     generated_from_text: str = ""
@@ -172,7 +183,9 @@ class WebhookEvent(BaseModel):
     endpoint_path: str
     type_webhook: str | None = None
     message_type: str | None = None
+    provider_message_id: str | None = None
     greenapi_message_id: str | None = None
+    provider_metadata: dict[str, Any] = Field(default_factory=dict)
     poll_id: int | None = None
     decision_status: str | None = None
     decision_reason: str | None = None

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.whatsapp import NormalizedPollUpdate
+
 
 class GreenAPIError(RuntimeError):
     pass
@@ -16,6 +18,8 @@ class GreenAPIConfig:
 
 
 class GreenAPIClient:
+    provider_name = "greenapi"
+
     def __init__(self, config: GreenAPIConfig) -> None:
         self.config = config
 
@@ -41,6 +45,9 @@ class GreenAPIClient:
         if not isinstance(data, dict):
             raise GreenAPIError(f"{method} returned an unexpected payload: {data}")
         return data
+
+    async def validate(self) -> None:
+        await self._post("getStateInstance", {})
 
     async def send_poll(
         self,
@@ -103,6 +110,36 @@ class GreenAPIClient:
             if parsed is not None:
                 chats.append(parsed)
         return chats
+
+    def parse_webhook(self, payload: dict[str, Any]) -> NormalizedPollUpdate | None:
+        poll_data = _extract_poll_message_data(payload)
+        if poll_data is None:
+            return None
+        stanza_id = poll_data.get("stanzaId") or poll_data.get("idMessage") or poll_data.get("messageId")
+        votes = _extract_poll_votes(poll_data.get("votes"))
+        if not stanza_id or not votes:
+            return None
+        option_voters: dict[str, list[dict[str, str | None]]] = {}
+        for vote in votes:
+            option = str(vote.get("optionName", "")).strip()
+            raw_voters = vote.get("optionVoters")
+            if raw_voters is None:
+                raw_voters = vote.get("voters")
+            if raw_voters is None:
+                raw_voters = vote.get("participants")
+            voters = raw_voters if isinstance(raw_voters, list) else []
+            if option:
+                option_voters[option] = [record for voter in voters if (record := _parse_voter_record(voter)) is not None]
+        if not option_voters:
+            return None
+        return NormalizedPollUpdate(
+            provider=self.provider_name,
+            provider_message_id=str(stanza_id),
+            event_type=str(payload.get("typeWebhook") or "").strip() or None,
+            message_type=_extract_message_type(payload),
+            option_voters=option_voters,
+            raw_metadata={},
+        )
 
 
 def build_poll_payload(
@@ -182,3 +219,87 @@ def normalize_phone(value: str) -> str:
     base = stripped.split("@", 1)[0]
     digits = "".join(ch for ch in base if ch.isdigit())
     return digits or base
+
+
+def _parse_voter_record(value: Any) -> dict[str, str | None] | None:
+    if isinstance(value, str):
+        voter_wid = value.strip()
+        if not voter_wid:
+            return None
+        return {
+            "voter_wid": voter_wid,
+            "voter_name": None,
+            "phone_number": normalize_phone(voter_wid),
+        }
+    if not isinstance(value, dict):
+        return None
+    voter_wid = str(
+        value.get("voterWid")
+        or value.get("wid")
+        or value.get("voterId")
+        or value.get("chatId")
+        or value.get("id")
+        or ""
+    ).strip()
+    if not voter_wid:
+        return None
+    voter_name = (
+        str(
+            value.get("contactName") or value.get("senderName") or value.get("name") or value.get("pushName") or ""
+        ).strip()
+        or None
+    )
+    phone_number = str(value.get("phoneNumber") or value.get("phone") or "").strip() or normalize_phone(voter_wid)
+    return {
+        "voter_wid": voter_wid,
+        "voter_name": voter_name,
+        "phone_number": phone_number,
+    }
+
+
+def _extract_poll_message_data(payload: dict[str, Any]) -> dict[str, Any] | None:
+    top_level_poll = payload.get("pollMessageData")
+    if isinstance(top_level_poll, dict):
+        return top_level_poll
+    candidates: list[Any] = [
+        payload.get("messageData"),
+        payload.get("editedMessageData"),
+        payload.get("quotedMessageData"),
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if isinstance(candidate.get("pollMessageData"), dict):
+            return candidate["pollMessageData"]
+        if candidate.get("typeMessage") == "pollUpdateMessage":
+            return candidate
+    return None
+
+
+def _extract_poll_votes(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        nested = value.get("votes") or value.get("items") or value.get("results")
+        if isinstance(nested, list):
+            return [item for item in nested if isinstance(item, dict)]
+        rows: list[dict[str, Any]] = []
+        for option_name, voters in value.items():
+            if isinstance(option_name, str):
+                rows.append({"optionName": option_name, "optionVoters": voters})
+        return rows
+    return []
+
+
+def _extract_message_type(payload: dict[str, Any]) -> str | None:
+    for candidate in (
+        payload.get("messageData"),
+        payload.get("editedMessageData"),
+        payload.get("quotedMessageData"),
+        payload,
+    ):
+        if isinstance(candidate, dict):
+            raw_message_type = candidate.get("typeMessage")
+            if isinstance(raw_message_type, str) and raw_message_type.strip():
+                return raw_message_type.strip()
+    return None

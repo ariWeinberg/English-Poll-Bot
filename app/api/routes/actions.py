@@ -18,9 +18,10 @@ from app.database import (
 )
 from app.scheduler import SCHEDULER_STATUS_KEY
 from app.services import (
-    extract_greenapi_webhook_metadata,
+    extract_whatsapp_webhook_metadata,
     generate_and_send_poll,
     handle_greenapi_webhook_async,
+    handle_waha_webhook_async,
     load_runtime_config,
     preview_next_pooled_poll,
     send_pending_summaries,
@@ -68,8 +69,17 @@ async def summary_now(payload: SendSummaryRequest, user: dict[str, Any] = Depend
 
 @router.post("/webhooks/greenapi/{tenant_id}")
 async def greenapi_webhook(tenant_id: int, request: Request):
+    return await _provider_webhook(tenant_id=tenant_id, provider="greenapi", request=request)
+
+
+@router.post("/webhooks/waha/{tenant_id}")
+async def waha_webhook(tenant_id: int, request: Request):
+    return await _provider_webhook(tenant_id=tenant_id, provider="waha", request=request)
+
+
+async def _provider_webhook(*, tenant_id: int, provider: str, request: Request):
     raw_body = (await request.body()).decode("utf-8")
-    endpoint_path = f"/webhooks/greenapi/{tenant_id}"
+    endpoint_path = f"/webhooks/{provider}/{tenant_id}"
     try:
         parsed_payload = json.loads(raw_body)
     except json.JSONDecodeError as exc:
@@ -77,7 +87,7 @@ async def greenapi_webhook(tenant_id: int, request: Request):
             webhook_id = create_incoming_webhook(
                 conn,
                 tenant_id=tenant_id,
-                provider="greenapi",
+                provider=provider,
                 endpoint_path=endpoint_path,
                 payload_json=raw_body,
             )
@@ -95,7 +105,7 @@ async def greenapi_webhook(tenant_id: int, request: Request):
             webhook_id = create_incoming_webhook(
                 conn,
                 tenant_id=tenant_id,
-                provider="greenapi",
+                provider=provider,
                 endpoint_path=endpoint_path,
                 payload_json=raw_body,
             )
@@ -109,24 +119,33 @@ async def greenapi_webhook(tenant_id: int, request: Request):
             )
         raise HTTPException(status_code=400, detail="Webhook payload must be a JSON object")
 
-    metadata = extract_greenapi_webhook_metadata(parsed_payload)
+    metadata = extract_whatsapp_webhook_metadata(parsed_payload, provider=provider)
     with db_session(settings.database_url) as conn:
         webhook_id = create_incoming_webhook(
             conn,
             tenant_id=tenant_id,
-            provider="greenapi",
+            provider=provider,
             endpoint_path=endpoint_path,
             payload_json=raw_body,
             type_webhook=metadata["type_webhook"],
             message_type=metadata["message_type"],
+            provider_message_id=metadata["provider_message_id"],
             greenapi_message_id=metadata["greenapi_message_id"],
+            provider_metadata=metadata["provider_metadata"],
         )
     try:
-        decision = await handle_greenapi_webhook_async(
-            database_url=settings.database_url,
-            payload=parsed_payload,
-            tenant_id=tenant_id,
-        )
+        if provider == "waha":
+            decision = await handle_waha_webhook_async(
+                database_url=settings.database_url,
+                payload=parsed_payload,
+                tenant_id=tenant_id,
+            )
+        else:
+            decision = await handle_greenapi_webhook_async(
+                database_url=settings.database_url,
+                payload=parsed_payload,
+                tenant_id=tenant_id,
+            )
     except Exception as exc:
         error_summary = str(exc).strip() or exc.__class__.__name__
         with db_session(settings.database_url) as conn:
@@ -135,7 +154,9 @@ async def greenapi_webhook(tenant_id: int, request: Request):
                 webhook_id=webhook_id,
                 type_webhook=metadata["type_webhook"],
                 message_type=metadata["message_type"],
+                provider_message_id=metadata["provider_message_id"],
                 greenapi_message_id=metadata["greenapi_message_id"],
+                provider_metadata=metadata["provider_metadata"],
                 decision_status="error",
                 decision_reason=error_summary,
                 processed_at=now_iso(),
@@ -149,7 +170,9 @@ async def greenapi_webhook(tenant_id: int, request: Request):
             webhook_id=webhook_id,
             type_webhook=decision.type_webhook,
             message_type=decision.message_type,
+            provider_message_id=decision.provider_message_id,
             greenapi_message_id=decision.greenapi_message_id,
+            provider_metadata=decision.provider_metadata,
             poll_id=decision.poll_id,
             decision_status=decision.status,
             decision_reason=decision.reason,

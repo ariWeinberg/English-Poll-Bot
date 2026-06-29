@@ -4,10 +4,13 @@ import { DetailRow } from "../components/common";
 import type { Tenant } from "../types";
 
 export function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () => void }) {
+  const connector = tenant.whatsapp_connector;
+  const connectorConfig = connector?.config || {};
   const readiness = [
-    { label: "GreenAPI URL", ready: Boolean(tenant.greenapi_api_url) },
-    { label: "GreenAPI instance", ready: Boolean(tenant.greenapi_id_instance) },
-    { label: "GreenAPI token", ready: Boolean(tenant.greenapi_api_token_instance) },
+    { label: "Connector provider", ready: Boolean(connector?.provider) },
+    { label: connector?.provider === "waha" ? "WAHA base URL" : "GreenAPI URL", ready: Boolean(connectorConfig.api_url || connectorConfig.base_url) },
+    { label: connector?.provider === "waha" ? "WAHA session" : "GreenAPI instance", ready: Boolean(connectorConfig.session || connectorConfig.id_instance) },
+    { label: connector?.provider === "waha" ? "WAHA API key" : "GreenAPI token", ready: connector?.provider === "waha" ? true : Boolean(connectorConfig.api_token_instance) },
     { label: "Gemini API key", ready: Boolean(tenant.gemini_api_key) },
   ];
 
@@ -40,7 +43,8 @@ export function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () =>
           <DetailRow label="Summaries" value={tenant.summary_enabled ? "Enabled" : "Disabled"} />
           <DetailRow label="Pool threshold" value={`${tenant.poll_pool_threshold_percent}% used`} />
           <DetailRow label="Gemini model" value={tenant.gemini_model} />
-          <DetailRow label="GreenAPI URL" value={tenant.greenapi_api_url} />
+          <DetailRow label="WhatsApp connector" value={connector?.provider?.toUpperCase() || "Not configured"} />
+          <DetailRow label={connector?.provider === "waha" ? "WAHA base URL" : "GreenAPI URL"} value={String(connectorConfig.base_url || connectorConfig.api_url || "")} />
         </section>
 
         <aside className="surface side-surface">

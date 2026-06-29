@@ -21,6 +21,8 @@ export function blankPoll(tenantId: number, text?: Text): PollFormState {
     options: ["A", "B", "C", "D"],
     correct_option: "A",
     explanation: "",
+    provider: null,
+    provider_message_id: "",
     greenapi_message_id: "",
     chat_id: text?.chat_id || "",
     generated_from_text: text?.body || "",
@@ -38,6 +40,8 @@ export function tenantToForm(tenant: Tenant): TenantFormState {
   const { id: _id, ...rest } = tenant;
   return {
     ...rest,
+    whatsapp_provider: tenant.whatsapp_provider,
+    whatsapp_connector: tenant.whatsapp_connector,
     password: "",
   };
 }
@@ -81,6 +85,8 @@ export function pollToForm(poll: Poll): PollFormState {
     options: poll.options,
     correct_option: poll.correct_option,
     explanation: poll.explanation,
+    provider: poll.provider || null,
+    provider_message_id: poll.provider_message_id || "",
     greenapi_message_id: poll.greenapi_message_id || "",
     chat_id: poll.chat_id,
     generated_from_text: poll.generated_from_text,

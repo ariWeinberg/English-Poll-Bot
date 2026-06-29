@@ -364,7 +364,15 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
   }, [route]);
 
   const configured = useMemo(
-    () => Boolean(tenant?.greenapi_api_url && tenant.greenapi_id_instance && tenant.greenapi_api_token_instance && tenant.gemini_api_key),
+    () => {
+      if (!tenant) return false;
+      const connector = tenant.whatsapp_connector;
+      const connectorReady =
+        connector.provider === "waha"
+          ? Boolean(connector.config.base_url && connector.config.session)
+          : Boolean(connector.config.api_url && connector.config.id_instance && connector.config.api_token_instance);
+      return Boolean(connectorReady && tenant.gemini_api_key);
+    },
     [tenant],
   );
 

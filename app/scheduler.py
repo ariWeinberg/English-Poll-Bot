@@ -136,19 +136,19 @@ async def run_due_jobs(*, database_url: str, now_utc: datetime | None = None, de
                     extra={"tenant_id": tenant_id, "text_id": text_id, "reason": "scheduler_disabled"},
                 )
                 continue
-            if not runtime.greenapi_ready:
+            if not runtime.whatsapp_ready:
                 _debug_log(
                     debug_enabled,
                     "skip_reason",
                     tenant_id=tenant_id,
                     text_id=text_id,
-                    reason="greenapi_not_ready",
+                    reason="whatsapp_not_ready",
                     row=dict(text),
                     runtime_config=asdict(runtime),
                 )
                 logger.info(
                     "scheduler.skipped",
-                    extra={"tenant_id": tenant_id, "text_id": text_id, "reason": "greenapi_not_ready"},
+                    extra={"tenant_id": tenant_id, "text_id": text_id, "reason": "whatsapp_not_ready"},
                 )
                 continue
 
