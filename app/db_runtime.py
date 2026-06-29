@@ -74,12 +74,22 @@ class EngineRegistry:
 _REGISTRY = EngineRegistry(engines={}, lock=Lock())
 
 
+def normalize_database_url(database_url: str) -> str:
+    stripped = database_url.strip()
+    if stripped.startswith("postgresql://"):
+        return "postgresql+psycopg://" + stripped[len("postgresql://") :]
+    if stripped.startswith("postgres://"):
+        return "postgresql+psycopg://" + stripped[len("postgres://") :]
+    return stripped
+
+
 def get_engine(database_url: str) -> Engine:
+    normalized_url = normalize_database_url(database_url)
     with _REGISTRY.lock:
-        engine = _REGISTRY.engines.get(database_url)
+        engine = _REGISTRY.engines.get(normalized_url)
         if engine is None:
-            engine = create_engine(database_url, future=True, pool_pre_ping=True)
-            _REGISTRY.engines[database_url] = engine
+            engine = create_engine(normalized_url, future=True, pool_pre_ping=True)
+            _REGISTRY.engines[normalized_url] = engine
         return engine
 
 
