@@ -565,7 +565,11 @@ def _extract_poll_message_data(payload: dict[str, Any]) -> dict[str, Any] | None
     top_level_poll = payload.get("pollMessageData")
     if isinstance(top_level_poll, dict):
         return top_level_poll
-    candidates: list[Any] = [payload.get("messageData"), payload.get("editedMessageData"), payload.get("quotedMessageData")]
+    candidates: list[Any] = [
+        payload.get("messageData"),
+        payload.get("editedMessageData"),
+        payload.get("quotedMessageData"),
+    ]
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
