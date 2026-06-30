@@ -17,6 +17,7 @@ from app.api.models import (
 from app.config import settings
 from app.core.auth import current_user
 from app.database import (
+    set_text_enabled,
     db_session,
     delete_text,
     get_text,
@@ -139,6 +140,24 @@ async def update_text_route(payload: TextPayload, text_id: int, _: dict[str, Any
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         return get_text(conn, text_id)
+
+
+@router.post("/{text_id}/enable")
+async def enable_text_route(text_id: int, user: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        text = get_text(conn, text_id)
+        if text is None or int(text["tenant_id"]) != int(user["id"]):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Text not found")
+        return set_text_enabled(conn, text_id=text_id, enabled=True)
+
+
+@router.post("/{text_id}/disable")
+async def disable_text_route(text_id: int, user: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        text = get_text(conn, text_id)
+        if text is None or int(text["tenant_id"]) != int(user["id"]):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Text not found")
+        return set_text_enabled(conn, text_id=text_id, enabled=False)
 
 
 @router.get("/{text_id}/schedule-rules")

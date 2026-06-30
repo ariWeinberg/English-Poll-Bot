@@ -19,6 +19,8 @@ async def login(payload: LoginRequest):
         tenant = get_tenant_by_username(conn, payload.username)
     if tenant is None or not verify_password(payload.password.strip(), str(tenant["password"] or "")):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+    if not bool(tenant.get("is_active")):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant is inactive")
     token, expires_at = create_token(dict(tenant), secret=settings.jwt_secret, ttl_minutes=settings.jwt_ttl_minutes)
     return TokenResponse(access_token=token, expires_at=expires_at)
 

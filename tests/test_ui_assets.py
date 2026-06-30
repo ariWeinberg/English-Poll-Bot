@@ -32,6 +32,7 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Delivery Health" in src_bundle
     assert "Learners needing attention" in src_bundle
     assert "Group Roster" in src_bundle
+    assert "Sync contacts" in src_bundle
     assert "Participation Coverage" in src_bundle
     assert "Coverage membership" in src_bundle
     assert "Assigned vs responded" in src_bundle
@@ -61,8 +62,12 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "/docs/session" in src_bundle
     assert "LOG_REQUEST_BODY_ENABLED" in src_bundle
     assert "Refill pool" in src_bundle
-    assert "Pool threshold percent used" in src_bundle
+    assert "Pool target size" in src_bundle
+    assert "Pool refill batch size" in src_bundle
+    assert "Pool refill threshold percent used" in src_bundle
     assert "Preview next poll" in src_bundle
+    assert "Disable text" in src_bundle
+    assert "Enable text" in src_bundle
     assert "Lock poll manually" in src_bundle
     assert "Edit Text" in src_bundle
     assert "Schedule rules" in src_bundle

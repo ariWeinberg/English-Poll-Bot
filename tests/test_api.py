@@ -254,6 +254,29 @@ def test_default_admin_login_works_after_password_hash_migration():
     assert response.status_code == 200
 
 
+def test_inactive_tenant_login_is_rejected():
+    database_url = reset_db()
+    with db_session(database_url) as conn:
+        conn.execute(
+            """
+            INSERT INTO tenants
+                (id, name, username, password, greenapi_api_url, greenapi_id_instance,
+                 greenapi_api_token_instance, gemini_api_key, gemini_model, timezone,
+                 summary_enabled, scheduler_enabled, is_active, created_at, updated_at)
+            VALUES
+                (2, 'Inactive Tenant', 'inactive', 'secret', 'https://api.green-api.com', '', '',
+                 '', 'gemini-3.5-flash', 'Asia/Jerusalem', TRUE, TRUE, FALSE,
+                 '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+            """
+        )
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/auth/login", json={"username": "inactive", "password": "secret"})
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Tenant is inactive"
+
+
 def test_authenticated_docs_session_opens_swagger_and_openapi():
     reset_db()
     with TestClient(app) as client:
@@ -627,7 +650,33 @@ def test_tenant_routes_hide_password_and_blank_update_keeps_existing_login():
         assert "password" not in updated.json()
 
         login = client.post("/api/v1/auth/login", json={"username": "workspace", "password": "initial-secret"})
-        assert login.status_code == 200
+        assert login.status_code == 403
+
+
+def test_register_keeps_existing_active_tenants_active():
+    database_url = reset_db()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/auth/register",
+            json={
+                "name": "Acme Learning",
+                "username": "acme",
+                "password": "secret123",
+                "timezone": "Asia/Jerusalem",
+            },
+        )
+        assert response.status_code == 201
+
+        admin_login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert admin_login.status_code == 200
+
+    with db_session(database_url) as conn:
+        tenants = conn.execute("SELECT username, is_active FROM tenants ORDER BY id ASC").fetchall()
+
+    assert tenants == [
+        {"username": "admin", "is_active": True},
+        {"username": "acme", "is_active": True},
+    ]
 
 
 def test_greenapi_webhook_is_tenant_scoped():
@@ -1430,3 +1479,96 @@ def test_bi_analytics_date_filters_fall_back_to_created_at_when_sent_at_is_missi
     assert [item["poll"]["id"] for item in stats.json()] == [poll_id]
     assert learners.status_code == 200
     assert [item["voter_wid"] for item in learners.json()["items"]] == ["111@c.us"]
+
+
+def test_text_enable_disable_routes_flip_only_enabled_and_keep_text_visible():
+    reset_db()
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        before = client.get("/api/v1/texts/1", headers=headers)
+        disabled = client.post("/api/v1/texts/1/disable", headers=headers)
+        filtered_enabled = client.get("/api/v1/texts?tenant_id=1&enabled=true", headers=headers)
+        filtered_disabled = client.get("/api/v1/texts?tenant_id=1&enabled=false", headers=headers)
+        enabled = client.post("/api/v1/texts/1/enable", headers=headers)
+
+    assert before.status_code == 200
+    assert disabled.status_code == 200
+    assert enabled.status_code == 200
+    assert before.json()["title"] == disabled.json()["title"] == enabled.json()["title"]
+    assert disabled.json()["enabled"] is False
+    assert enabled.json()["enabled"] is True
+    assert [item["id"] for item in filtered_enabled.json()["items"]] == []
+    assert [item["id"] for item in filtered_disabled.json()["items"]] == [1]
+
+
+def test_tenant_pool_policy_fields_round_trip():
+    reset_db()
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        tenant = client.get("/api/v1/auth/me", headers=headers).json()
+        response = client.patch(
+            "/api/v1/tenants/1",
+            headers=headers,
+            json={
+                **tenant,
+                "password": "",
+                "poll_pool_target_size": 14,
+                "poll_pool_refill_batch_size": 6,
+                "poll_pool_refill_threshold_percent": 35,
+            },
+        )
+        refreshed = client.get("/api/v1/tenants/1", headers=headers)
+
+    assert response.status_code == 200
+    assert refreshed.status_code == 200
+    assert response.json()["poll_pool_target_size"] == 14
+    assert response.json()["poll_pool_refill_batch_size"] == 6
+    assert response.json()["poll_pool_refill_threshold_percent"] == 35
+    assert refreshed.json()["poll_pool_target_size"] == 14
+    assert refreshed.json()["poll_pool_refill_batch_size"] == 6
+    assert refreshed.json()["poll_pool_refill_threshold_percent"] == 35
+
+
+def test_text_roster_sync_returns_updated_contact_data(monkeypatch):
+    reset_db()
+
+    async def fake_sync_text_roster(*, settings, database_url: str, text_id: int, provider=None):
+        del settings, database_url, provider
+        return {
+            "text_id": text_id,
+            "chat_id": "group@g.us",
+            "last_synced_at": "2026-06-30T10:00:00+00:00",
+            "active_count": 2,
+            "excluded_count": 1,
+            "items": [
+                {
+                    "voter_wid": "111@c.us",
+                    "display_name": "Dana",
+                    "phone_number": "111",
+                    "is_active_in_chat": True,
+                    "excluded_from_coverage": False,
+                    "last_synced_at": "2026-06-30T10:00:00+00:00",
+                },
+                {
+                    "voter_wid": "222@c.us",
+                    "display_name": "Ilan",
+                    "phone_number": "222",
+                    "is_active_in_chat": True,
+                    "excluded_from_coverage": True,
+                    "last_synced_at": "2026-06-30T10:00:00+00:00",
+                },
+            ],
+        }
+
+    monkeypatch.setattr("app.api.routes.texts.sync_text_roster", fake_sync_text_roster)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.post("/api/v1/texts/1/roster/sync", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["active_count"] == 2
+    assert response.json()["excluded_count"] == 1
+    assert response.json()["items"][0]["display_name"] == "Dana"

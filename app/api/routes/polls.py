@@ -4,23 +4,20 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
-from app.api.models import PollPayload, PoolRankPayload
+from app.api.models import PollPayload, PollRankPayload
 from app.api.serializers import serialize_poll
 from app.config import settings
 from app.core.auth import current_user
 from app.database import (
-    POLL_POOL_REFILL_BATCH_SIZE,
-    POLL_POOL_TARGET_SIZE,
     all_poll_stats,
     count_queued_polls,
     create_poll,
     db_session,
     delete_poll,
     export_stats_csv,
+    get_effective_poll_pool_policy,
     get_poll_coverage_page,
-    get_effective_poll_pool_threshold_percent,
     get_poll,
-    get_poll_pool_refill_threshold_count,
     get_text,
     list_poll_vote_status,
     list_polls_page,
@@ -168,16 +165,15 @@ async def get_text_poll_pool(text_id: int, _: dict[str, Any] = Depends(current_u
         if text_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Text not found")
         items = [serialize_poll(item) for item in list_queued_polls(conn, text_id=text_id)]
-        effective_threshold_percent = get_effective_poll_pool_threshold_percent(conn, text_id=text_id)
-        refill_when_below = get_poll_pool_refill_threshold_count(conn, text_id=text_id)
+        policy = get_effective_poll_pool_policy(conn, text_id=text_id)
         queued_count = count_queued_polls(conn, text_id=text_id)
     return {
         "text_id": text_id,
         "queued_count": queued_count,
-        "effective_threshold_percent": effective_threshold_percent,
-        "refill_when_below": refill_when_below,
-        "target_size": POLL_POOL_TARGET_SIZE,
-        "refill_batch_size": POLL_POOL_REFILL_BATCH_SIZE,
+        "effective_threshold_percent": policy["threshold_percent"],
+        "refill_when_below": policy["refill_when_below"],
+        "target_size": policy["target_size"],
+        "refill_batch_size": policy["refill_batch_size"],
         "next_poll": items[0] if items else None,
         "items": items,
     }
@@ -189,24 +185,23 @@ async def refill_text_poll_pool(text_id: int, user: dict[str, Any] = Depends(cur
     created = await fill_poll_pool(settings=runtime, database_url=settings.database_url, text_id=text_id)
     with db_session(settings.database_url) as conn:
         items = [serialize_poll(item) for item in list_queued_polls(conn, text_id=text_id)]
-        effective_threshold_percent = get_effective_poll_pool_threshold_percent(conn, text_id=text_id)
-        refill_when_below = get_poll_pool_refill_threshold_count(conn, text_id=text_id)
+        policy = get_effective_poll_pool_policy(conn, text_id=text_id)
         queued_count = count_queued_polls(conn, text_id=text_id)
     return {
         "created": len(created),
         "text_id": text_id,
         "queued_count": queued_count,
-        "effective_threshold_percent": effective_threshold_percent,
-        "refill_when_below": refill_when_below,
-        "target_size": POLL_POOL_TARGET_SIZE,
-        "refill_batch_size": POLL_POOL_REFILL_BATCH_SIZE,
+        "effective_threshold_percent": policy["threshold_percent"],
+        "refill_when_below": policy["refill_when_below"],
+        "target_size": policy["target_size"],
+        "refill_batch_size": policy["refill_batch_size"],
         "next_poll": items[0] if items else None,
         "items": items,
     }
 
 
 @router.patch("/api/v1/polls/{poll_id}/pool-rank")
-async def update_poll_pool_rank(poll_id: int, payload: PoolRankPayload, _: dict[str, Any] = Depends(current_user)):
+async def update_poll_pool_rank(poll_id: int, payload: PollRankPayload, _: dict[str, Any] = Depends(current_user)):
     with db_session(settings.database_url) as conn:
         poll = get_poll(conn, poll_id)
         if poll is None:

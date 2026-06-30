@@ -16,6 +16,9 @@ export type Tenant = {
   gemini_api_key: string;
   gemini_model: string;
   timezone: string;
+  poll_pool_target_size: number;
+  poll_pool_refill_batch_size: number;
+  poll_pool_refill_threshold_percent: number;
   poll_pool_threshold_percent: number;
   summary_enabled: boolean;
   scheduler_enabled: boolean;
@@ -51,6 +54,9 @@ export type Text = {
   chat_id: string;
   poll_pool_threshold_percent?: number | null;
   tenant_poll_pool_threshold_percent?: number;
+  tenant_poll_pool_target_size?: number;
+  tenant_poll_pool_refill_batch_size?: number;
+  tenant_poll_pool_refill_threshold_percent?: number;
   enabled: boolean;
   attachment_name?: string | null;
   schedule_rules: ScheduleRule[];
@@ -377,6 +383,9 @@ export const defaultTenantForm: TenantFormState = {
   gemini_api_key: "",
   gemini_model: "gemini-3.5-flash",
   timezone: "Asia/Jerusalem",
+  poll_pool_target_size: 10,
+  poll_pool_refill_batch_size: 5,
+  poll_pool_refill_threshold_percent: 80,
   poll_pool_threshold_percent: 80,
   summary_enabled: true,
   scheduler_enabled: true,

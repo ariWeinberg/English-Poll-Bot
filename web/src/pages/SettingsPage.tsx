@@ -42,7 +42,9 @@ export function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () =>
           <DetailRow label="Timezone" value={tenant.timezone} />
           <DetailRow label="Scheduler" value={tenant.scheduler_enabled ? "Enabled" : "Disabled"} />
           <DetailRow label="Summaries" value={tenant.summary_enabled ? "Enabled" : "Disabled"} />
-          <DetailRow label="Pool threshold" value={`${tenant.poll_pool_threshold_percent}% used`} />
+          <DetailRow label="Pool target size" value={String(tenant.poll_pool_target_size)} />
+          <DetailRow label="Refill batch size" value={String(tenant.poll_pool_refill_batch_size)} />
+          <DetailRow label="Refill threshold" value={`${tenant.poll_pool_refill_threshold_percent}% used`} />
           <DetailRow label="Gemini model" value={tenant.gemini_model} />
           <DetailRow label="WhatsApp connector" value={connector?.provider?.toUpperCase() || "Not configured"} />
           <DetailRow label={isWaha ? "WAHA base URL" : "GreenAPI URL"} value={String(isWaha ? connectorConfig.base_url || "" : connectorConfig.api_url || "")} />

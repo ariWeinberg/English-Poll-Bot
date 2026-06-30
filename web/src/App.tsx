@@ -427,6 +427,15 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
     }
   }
 
+  async function handleToggleTextEnabled(text: Text) {
+    try {
+      await api<Text>(`/texts/${text.id}/${text.enabled ? "disable" : "enable"}`, { method: "POST" });
+      handleSuccess(text.enabled ? "Text disabled" : "Text enabled");
+    } catch (err) {
+      handleError(err instanceof Error ? err.message : "Failed to update text status");
+    }
+  }
+
   async function handleRefillPool(textId: number) {
     try {
       const result = await api<PollPool>(`/texts/${textId}/poll-pool/refill`, { method: "POST" });
@@ -589,6 +598,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
               onEdit={(text) => setTextModal({ mode: "edit", text })}
               onPreview={handlePreview}
               onSendPoll={handleSendPoll}
+              onToggleEnabled={handleToggleTextEnabled}
               onDelete={(text) => void handleDeleteText(text.id)}
             />
           )}
@@ -617,6 +627,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
               onEdit={(text) => setTextModal({ mode: "edit", text })}
               onPreview={handlePreview}
               onSendPoll={handleSendPoll}
+              onToggleEnabled={handleToggleTextEnabled}
               onSyncRoster={handleSyncRoster}
               onToggleRosterExclusion={handleToggleRosterExclusion}
               onRefillPool={handleRefillPool}
@@ -1174,6 +1185,7 @@ function TextsPage({
   onEdit,
   onPreview,
   onSendPoll,
+  onToggleEnabled,
   onDelete,
 }: {
   texts: Text[];
@@ -1182,6 +1194,7 @@ function TextsPage({
   onEdit: (text: Text) => void;
   onPreview: (textId: number) => void;
   onSendPoll: (textId: number) => void;
+  onToggleEnabled: (text: Text) => void;
   onDelete: (text: Text) => void;
 }) {
   const [search, setSearch] = useState("");
@@ -1229,6 +1242,9 @@ function TextsPage({
               </button>
               <button className="button button-secondary" onClick={() => onSendPoll(text.id)}>
                 <Send size={16} /> Send poll
+              </button>
+              <button className={text.enabled ? "button button-ghost" : "button button-secondary"} onClick={() => onToggleEnabled(text)}>
+                {text.enabled ? "Disable" : "Enable"}
               </button>
               <button className="icon-button button-danger" onClick={() => onDelete(text)} title="Delete text">
                 <Trash2 size={18} />

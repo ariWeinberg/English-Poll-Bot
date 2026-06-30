@@ -24,6 +24,8 @@ Logged events include request start/finish with request IDs, scheduler ticks, sk
 
 The dedicated `scheduler` worker runs every minute in UTC and evaluates recurring rules in each tenant's local timezone. Rule times stay stored as tenant-local wall-clock values such as `19:00`, so DST changes keep the intended local send time. A text is skipped when the tenant is inactive, the text is disabled, the scheduler is disabled, no rules are assigned, or GreenAPI settings are incomplete.
 
+In local development, `uvicorn app.main:app --reload --port 8000` is not enough by itself. Start `python -m app.scheduler_worker` in a second terminal against the same `DATABASE_URL`, otherwise recurring sends will never fire even though manual send still works.
+
 Each automatic slot produces a persisted attempt record. Poll sends keep their `scheduled_slot` on the poll row as `rule:<id>:poll:<HH:MM>`, and failed attempts are recorded separately so missed slots are diagnosable.
 
 `GET /api/v1/health` exposes the latest worker heartbeat payload from the database, including `last_tick_at`, `last_success_at`, `polls_sent`, `summaries_sent`, and the last worker error summary when present.

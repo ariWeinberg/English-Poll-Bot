@@ -9,6 +9,7 @@ from app.database import (
     count_queued_polls,
     create_poll,
     db_session,
+    get_effective_poll_pool_policy,
     get_effective_poll_pool_threshold_percent,
     get_poll_pool_refill_threshold_count,
     get_poll,
@@ -64,9 +65,11 @@ def build_question(index: int) -> GeneratedQuestion:
 def test_fill_poll_pool_creates_ranked_queued_polls(monkeypatch):
     database_url = reset_db()
     runtime = load_runtime_config(database_url, 1)
+    seen_briefs: list[str] = []
 
-    async def fake_generate_batch(_settings, _source_text, *, prior_poll_history, count):
+    async def fake_generate_batch(_settings, _source_text, *, prior_poll_history, count, coverage_brief=""):
         assert prior_poll_history == []
+        seen_briefs.append(coverage_brief)
         return [build_question(index) for index in range(1, count + 1)]
 
     monkeypatch.setattr("app.services.generate_poll_batch", fake_generate_batch)
@@ -78,6 +81,9 @@ def test_fill_poll_pool_creates_ranked_queued_polls(monkeypatch):
         queued = list_queued_polls(conn, text_id=1)
     assert [poll["pool_rank"] for poll in queued] == [1, 2, 3, 4, 5]
     assert all(poll["status"] == "queued" for poll in queued)
+    assert seen_briefs
+    assert "Coverage priority for this refill" in seen_briefs[0]
+    assert "section 1/" in seen_briefs[0]
 
 
 def test_send_uses_next_queued_poll_and_refills_below_threshold(monkeypatch):
@@ -222,12 +228,150 @@ def test_send_validates_once_before_roster_sync_and_reuses_provider(monkeypatch)
 def test_pool_threshold_inherits_tenant_default_and_allows_text_override():
     database_url = reset_db()
     with db_session(database_url) as conn:
-        conn.execute("UPDATE tenants SET poll_pool_threshold_percent = 70 WHERE id = 1")
+        conn.execute("UPDATE tenants SET poll_pool_refill_threshold_percent = 70 WHERE id = 1")
         assert get_effective_poll_pool_threshold_percent(conn, text_id=1) == 70
         assert get_poll_pool_refill_threshold_count(conn, text_id=1) == 3
         conn.execute("UPDATE texts SET poll_pool_threshold_percent = 40 WHERE id = 1")
         assert get_effective_poll_pool_threshold_percent(conn, text_id=1) == 40
         assert get_poll_pool_refill_threshold_count(conn, text_id=1) == 6
+
+
+def test_pool_policy_comes_from_tenant_settings_and_refill_caps_to_target(monkeypatch):
+    database_url = reset_db()
+    runtime = load_runtime_config(database_url, 1)
+    with db_session(database_url) as conn:
+        conn.execute(
+            """
+            UPDATE tenants
+            SET poll_pool_target_size = 4, poll_pool_refill_batch_size = 2, poll_pool_refill_threshold_percent = 50
+            WHERE id = 1
+            """
+        )
+        create_poll(
+            conn,
+            tenant_id=1,
+            text_id=1,
+            question="Existing queued?",
+            options=["A", "B", "C", "D"],
+            correct_option="A",
+            explanation="",
+            chat_id="group@g.us",
+            generated_from_text="Body",
+            scheduled_slot=None,
+            status="queued",
+            pool_rank=1,
+        )
+        assert get_effective_poll_pool_policy(conn, text_id=1) == {
+            "target_size": 4,
+            "refill_batch_size": 2,
+            "threshold_percent": 50,
+            "refill_when_below": 2,
+        }
+
+    async def fake_generate_batch(_settings, _source_text, *, prior_poll_history, count, coverage_brief=""):
+        del _settings, _source_text, prior_poll_history, coverage_brief
+        return [build_question(index) for index in range(1, count + 1)]
+
+    monkeypatch.setattr("app.services.generate_poll_batch", fake_generate_batch)
+
+    created_ids = asyncio.run(fill_poll_pool(settings=runtime, database_url=database_url, text_id=1))
+
+    assert len(created_ids) == 2
+    with db_session(database_url) as conn:
+        assert count_queued_polls(conn, text_id=1) == 3
+
+
+def test_pool_policy_threshold_setting_changes_refill_boundary():
+    database_url = reset_db()
+    with db_session(database_url) as conn:
+        conn.execute(
+            """
+            UPDATE tenants
+            SET poll_pool_target_size = 12, poll_pool_refill_batch_size = 4, poll_pool_refill_threshold_percent = 25
+            WHERE id = 1
+            """
+        )
+        assert get_effective_poll_pool_policy(conn, text_id=1) == {
+            "target_size": 12,
+            "refill_batch_size": 4,
+            "threshold_percent": 25,
+            "refill_when_below": 9,
+        }
+        conn.execute("UPDATE texts SET poll_pool_threshold_percent = NULL WHERE id = 1")
+        assert get_poll_pool_refill_threshold_count(conn, text_id=1) == 9
+
+
+def test_coverage_aware_refill_rotates_across_text_sections(monkeypatch):
+    database_url = reset_db()
+    runtime = load_runtime_config(database_url, 1)
+    with db_session(database_url) as conn:
+        conn.execute(
+            """
+            UPDATE tenants
+            SET poll_pool_target_size = 2, poll_pool_refill_batch_size = 2, poll_pool_refill_threshold_percent = 100
+            WHERE id = 1
+            """
+        )
+        conn.execute(
+            """
+            UPDATE texts
+            SET body = %s
+            WHERE id = 1
+            """,
+            ("Alpha paragraph.\n\nBeta paragraph.\n\nGamma paragraph.",),
+        )
+
+    seen_briefs: list[str] = []
+
+    async def fake_generate_batch(_settings, _source_text, *, prior_poll_history, count, coverage_brief=""):
+        del _settings, _source_text, prior_poll_history
+        seen_briefs.append(coverage_brief)
+        return [build_question(index) for index in range(1, count + 1)]
+
+    monkeypatch.setattr("app.services.generate_poll_batch", fake_generate_batch)
+
+    asyncio.run(fill_poll_pool(settings=runtime, database_url=database_url, text_id=1))
+    with db_session(database_url) as conn:
+        conn.execute("UPDATE polls SET status = 'sent', pool_rank = NULL WHERE text_id = 1")
+    asyncio.run(fill_poll_pool(settings=runtime, database_url=database_url, text_id=1))
+
+    assert "Focus on section 1/3" in seen_briefs[0]
+    assert "Focus on section 2/3" in seen_briefs[0]
+    assert "Focus on section 3/3" in seen_briefs[1]
+    assert "Focus on section 1/3" in seen_briefs[1]
+
+
+def test_duplicate_avoidance_history_is_still_passed_with_coverage_guidance(monkeypatch):
+    database_url = reset_db()
+    runtime = load_runtime_config(database_url, 1)
+    with db_session(database_url) as conn:
+        conn.execute("UPDATE texts SET body = %s WHERE id = 1", ("One.\n\nTwo.\n\nThree.",))
+        create_poll(
+            conn,
+            tenant_id=1,
+            text_id=1,
+            question="Existing question?",
+            options=["A", "B", "C", "D"],
+            correct_option="A",
+            explanation="",
+            chat_id="group@g.us",
+            generated_from_text="Body",
+            scheduled_slot="manual",
+            status="sent",
+        )
+
+    async def fake_generate_batch(_settings, _source_text, *, prior_poll_history, count, coverage_brief=""):
+        del _settings, _source_text, count
+        assert prior_poll_history
+        assert prior_poll_history[0]["question"] == "Existing question?"
+        assert "Coverage priority for this refill" in coverage_brief
+        return [build_question(index) for index in range(1, 6)]
+
+    monkeypatch.setattr("app.services.generate_poll_batch", fake_generate_batch)
+
+    created_ids = asyncio.run(fill_poll_pool(settings=runtime, database_url=database_url, text_id=1))
+
+    assert len(created_ids) == 5
 
 
 def test_empty_pool_falls_back_to_immediate_generation(monkeypatch):

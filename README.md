@@ -37,12 +37,14 @@ pip install -e ".[dev]"
 cp .env.example .env
 export DATABASE_URL=postgresql://postgres:postgres@localhost:5433/english_bot
 uvicorn app.main:app --reload --port 8000
+python -m app.scheduler_worker
 cd web
 npm install
 npm run dev
 ```
 
 For local development, run your own PostgreSQL database or use the Compose database service. Vite proxies `/api` and `/webhooks` to `http://localhost:8000`.
+Run the API and scheduler worker in separate terminals. The API process no longer executes recurring schedules itself.
 
 ## REST API
 

@@ -136,8 +136,10 @@ Study text:
         count: int,
         duplicate_context: str = "",
         existing_signatures: set[str] | None = None,
+        coverage_brief: str = "",
     ) -> list[GeneratedQuestion]:
         duplicate_block = f"\nExisting questions to avoid:\n{duplicate_context}\n" if duplicate_context else "\n"
+        coverage_block = f"\nCoverage guidance:\n{coverage_brief}\n" if coverage_brief else "\n"
         prompt = f"""
 Create {count} distinct English multiple-choice comprehension questions from the study text.
 Return only JSON with this exact shape:
@@ -160,7 +162,7 @@ Rules:
 - avoid trick questions
 - avoid duplicate or near-duplicate questions within the batch
 - do not repeat an existing question or test the exact same fact from a different angle
-{duplicate_block}
+{duplicate_block}{coverage_block}
 
 Study text:
 {source_text}

@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowLeft, Pencil, Play, RefreshCw, Send, Trash2 } from "lucide-react";
+import { ArrowLeft, Pencil, Play, Power, RefreshCw, Send, Trash2 } from "lucide-react";
 import { DetailRow, EmptyState, StatBlock } from "../components/common";
 import { describeRule, formatWhen, scheduleSummary } from "../lib/format";
 import type { Poll, PollPool, Text, TextRoster } from "../types";
@@ -12,6 +12,7 @@ export function TextDetailPage({
   onEdit,
   onPreview,
   onSendPoll,
+  onToggleEnabled,
   onSyncRoster,
   onToggleRosterExclusion,
   onRefillPool,
@@ -26,6 +27,7 @@ export function TextDetailPage({
   onEdit: (text: Text) => void;
   onPreview: (textId: number) => void;
   onSendPoll: (textId: number) => void;
+  onToggleEnabled: (text: Text) => void;
   onSyncRoster: (textId: number) => void;
   onToggleRosterExclusion: (textId: number, voterWid: string, excluded: boolean) => void;
   onRefillPool: (textId: number) => void;
@@ -54,6 +56,9 @@ export function TextDetailPage({
           </button>
           <button className="button button-secondary" onClick={() => onSendPoll(text.id)}>
             <Send size={16} /> Send poll
+          </button>
+          <button className={text.enabled ? "button button-ghost" : "button button-secondary"} onClick={() => onToggleEnabled(text)}>
+            <Power size={16} /> {text.enabled ? "Disable text" : "Enable text"}
           </button>
           <button className="button button-primary" onClick={() => onEdit(text)}>
             <Pencil size={16} /> Edit text
@@ -87,6 +92,9 @@ export function TextDetailPage({
             label="Pool threshold"
             value={text.poll_pool_threshold_percent == null ? `Inherited ${text.tenant_poll_pool_threshold_percent ?? 80}% used` : `${text.poll_pool_threshold_percent}% used`}
           />
+          <DetailRow label="Pool target size" value={String(text.tenant_poll_pool_target_size ?? 10)} />
+          <DetailRow label="Refill batch size" value={String(text.tenant_poll_pool_refill_batch_size ?? 5)} />
+          <DetailRow label="Refill threshold" value={`${text.tenant_poll_pool_refill_threshold_percent ?? 80}% used`} />
           <DetailRow label="Attachment" value={text.attachment_name || "None"} />
           <DetailRow label="Status" value={text.enabled ? "Enabled" : "Disabled"} />
           <button className="button button-danger full-width" onClick={() => onDelete(text)}>
@@ -102,7 +110,7 @@ export function TextDetailPage({
             <h3>Coverage membership</h3>
           </div>
           <button className="button button-secondary" onClick={() => onSyncRoster(text.id)}>
-            <RefreshCw size={16} /> Sync roster
+            <RefreshCw size={16} /> Sync contacts
           </button>
         </div>
         <div className="detail-summary">

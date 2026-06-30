@@ -1,25 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Literal
 
 from app.database import (
-    POLL_POOL_REFILL_BATCH_SIZE,
     compact_queued_poll_ranks,
     count_queued_polls,
     create_poll,
     db_session,
     get_next_queued_poll,
+    get_effective_poll_pool_policy,
     get_contact_profile,
     get_poll_by_message_id,
     get_poll_by_message_id_for_tenant,
     get_source_text,
     get_tenant,
     get_text,
+    get_text_poll_coverage_state,
     get_text_poll_history,
-    get_poll_pool_refill_threshold_count,
     get_text_pool_tail_rank,
     list_coverage_participants,
     list_chat_participants,
@@ -34,6 +36,7 @@ from app.database import (
     snapshot_poll_recipients,
     sync_tenant_group_chats,
     sync_chat_participants,
+    upsert_text_poll_coverage_state,
     upsert_contact_profile,
 )
 from app.database import normalize_phone_number
@@ -265,6 +268,63 @@ def _serialize_generated_history(rows: list[dict[str, Any]]) -> list[dict[str, A
     return history
 
 
+def _split_text_coverage_sections(source_text: str) -> list[str]:
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", source_text) if part.strip()]
+    if len(paragraphs) > 1:
+        return paragraphs
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", source_text.strip()) if part.strip()]
+    if not sentences:
+        return []
+    section_size = max(1, min(3, len(sentences)))
+    return [" ".join(sentences[index : index + section_size]) for index in range(0, len(sentences), section_size)]
+
+
+def _build_text_coverage_plan(
+    *,
+    source_text: str,
+    count: int,
+    state: dict[str, Any] | None,
+) -> tuple[str, list[dict[str, Any]], int, int]:
+    sections = _split_text_coverage_sections(source_text)
+    if not sections or count <= 0:
+        return "", [], 0, 0
+    source_hash = hashlib.sha1(source_text.encode("utf-8")).hexdigest()
+    section_count = len(sections)
+    next_index = 0
+    cycle = 0
+    if state and state.get("source_hash") == source_hash and int(state.get("section_count") or 0) == section_count:
+        next_index = max(0, int(state.get("next_section_index") or 0)) % section_count
+        cycle = max(0, int(state.get("cycle") or 0))
+    plan: list[dict[str, Any]] = []
+    current_index = next_index
+    current_cycle = cycle
+    for _ in range(count):
+        excerpt = sections[current_index]
+        plan.append(
+            {
+                "section_number": current_index + 1,
+                "section_count": section_count,
+                "cycle": current_cycle,
+                "excerpt": excerpt[:500],
+            }
+        )
+        current_index += 1
+        if current_index >= section_count:
+            current_index = 0
+            current_cycle += 1
+    lines = [
+        "Coverage priority for this refill:",
+        "- Spread questions across the full text before revisiting the same section heavily.",
+        "- Prioritize the cited section for each numbered question slot.",
+        "- Keep normal variation and duplicate avoidance once every section has recent coverage.",
+    ]
+    for index, item in enumerate(plan, start=1):
+        lines.append(
+            f"{index}. Focus on section {item['section_number']}/{item['section_count']} (cycle {item['cycle'] + 1}): {item['excerpt']}"
+        )
+    return "\n".join(lines), plan, current_index, current_cycle
+
+
 async def generate_question(
     settings: RuntimeConfig,
     source_text: str,
@@ -290,6 +350,7 @@ async def generate_poll_batch(
     *,
     prior_poll_history: list[dict[str, Any]],
     count: int,
+    coverage_brief: str = "",
 ) -> list[GeneratedQuestion]:
     if not source_text.strip():
         raise ValueError("Add source text before generating a question.")
@@ -303,6 +364,7 @@ async def generate_poll_batch(
         count=count,
         duplicate_context=_build_duplicate_context(history),
         existing_signatures={_history_signature(row) for row in history},
+        coverage_brief=coverage_brief,
     )
 
 
@@ -311,25 +373,48 @@ async def fill_poll_pool(
     settings: RuntimeConfig,
     database_url: str,
     text_id: int,
-    count: int = POLL_POOL_REFILL_BATCH_SIZE,
+    count: int | None = None,
 ) -> list[int]:
-    logger.info(
-        "poll_pool.refill_start",
-        extra={"tenant_id": settings.tenant_id, "text_id": text_id, "requested_count": count},
-    )
     with db_session(database_url) as conn:
         text = get_text(conn, text_id)
         if text is None:
             raise ValueError("Text not found.")
+        if not bool(text.get("enabled")):
+            logger.info(
+                "poll_pool.refill_skip",
+                extra={"tenant_id": settings.tenant_id, "text_id": text_id, "reason": "text_disabled"},
+            )
+            return []
+        policy = get_effective_poll_pool_policy(conn, text_id=text_id)
+        queued_count = count_queued_polls(conn, text_id=text_id)
         history = get_text_poll_history(conn, text_id=text_id)
         source_text = get_source_text(conn, text_id)
         tail_rank = get_text_pool_tail_rank(conn, text_id=text_id)
+        coverage_state = get_text_poll_coverage_state(conn, text_id=text_id)
+    target_gap = max(0, policy["target_size"] - queued_count)
+    requested_count = max(0, count if count is not None else min(policy["refill_batch_size"], target_gap))
+    if requested_count <= 0:
+        logger.info(
+            "poll_pool.refill_skip",
+            extra={"tenant_id": settings.tenant_id, "text_id": text_id, "reason": "target_already_met"},
+        )
+        return []
+    logger.info(
+        "poll_pool.refill_start",
+        extra={"tenant_id": settings.tenant_id, "text_id": text_id, "requested_count": requested_count},
+    )
+    coverage_brief, _, next_section_index, cycle = _build_text_coverage_plan(
+        source_text=source_text,
+        count=requested_count,
+        state=coverage_state,
+    )
 
     generated_batch = await generate_poll_batch(
         settings,
         source_text,
         prior_poll_history=history,
-        count=count,
+        count=requested_count,
+        coverage_brief=coverage_brief,
     )
 
     created_ids: list[int] = []
@@ -353,6 +438,15 @@ async def fill_poll_pool(
                     pool_rank=next_rank,
                 )
             )
+        if coverage_brief:
+            upsert_text_poll_coverage_state(
+                conn,
+                text_id=text_id,
+                source_hash=hashlib.sha1(source_text.encode("utf-8")).hexdigest(),
+                section_count=len(_split_text_coverage_sections(source_text)),
+                next_section_index=next_section_index,
+                cycle=cycle,
+            )
     logger.info(
         "poll_pool.refill_complete",
         extra={"tenant_id": settings.tenant_id, "text_id": text_id, "created_count": len(created_ids)},
@@ -369,8 +463,8 @@ async def _refill_pool_if_needed(*, settings: RuntimeConfig, database_url: str, 
         return
     with db_session(database_url) as conn:
         queued_count = count_queued_polls(conn, text_id=text_id)
-        threshold_count = get_poll_pool_refill_threshold_count(conn, text_id=text_id)
-    if queued_count < threshold_count:
+        policy = get_effective_poll_pool_policy(conn, text_id=text_id)
+    if queued_count < policy["refill_when_below"]:
         await fill_poll_pool(settings=settings, database_url=database_url, text_id=text_id)
 
 

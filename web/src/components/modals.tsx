@@ -545,7 +545,14 @@ export function SettingsModal({
         <TextInput label="Workspace name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} />
         <TextInput label="Username" value={form.username} onChange={(value) => setForm({ ...form, username: value })} />
         <TextInput label="Password" type="password" value={form.password} placeholder="Leave blank to keep current password" onChange={(value) => setForm({ ...form, password: value })} />
-        <TextInput label="Pool threshold percent used" type="number" value={String(form.poll_pool_threshold_percent)} onChange={(value) => setForm({ ...form, poll_pool_threshold_percent: Math.max(0, Math.min(100, Number(value || 0))) })} />
+        <TextInput label="Pool target size" type="number" value={String(form.poll_pool_target_size)} onChange={(value) => setForm({ ...form, poll_pool_target_size: Math.max(1, Number(value || 1)) })} />
+        <TextInput label="Pool refill batch size" type="number" value={String(form.poll_pool_refill_batch_size)} onChange={(value) => setForm({ ...form, poll_pool_refill_batch_size: Math.max(1, Number(value || 1)) })} />
+        <TextInput
+          label="Pool refill threshold percent used"
+          type="number"
+          value={String(form.poll_pool_refill_threshold_percent)}
+          onChange={(value) => setForm({ ...form, poll_pool_refill_threshold_percent: Math.max(0, Math.min(100, Number(value || 0))) })}
+        />
         <label>
           WhatsApp connector
           <select

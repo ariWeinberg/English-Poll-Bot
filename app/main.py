@@ -17,6 +17,13 @@ logger = get_logger("api")
 async def lifespan(app: FastAPI):
     configure_logging(settings)
     logger.info("application.start")
+    logger.info(
+        "application.scheduler_worker_required",
+        extra={
+            "scheduler_execution_owner": "app.scheduler_worker",
+            "database_url": settings.database_url,
+        },
+    )
     init_db(settings.database_url)
     try:
         yield
