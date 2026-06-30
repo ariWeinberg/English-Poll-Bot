@@ -145,10 +145,16 @@ class WAHAClient:
         for item in data:
             if not isinstance(item, dict):
                 continue
-            chat_id = str(item.get("id") or "").strip()
+            metadata = item.get("groupMetadata") if isinstance(item.get("groupMetadata"), dict) else item
+            raw_id = metadata.get("id") if isinstance(metadata, dict) else None
+            if isinstance(raw_id, dict):
+                chat_id = str(raw_id.get("_serialized") or raw_id.get("id") or "").strip()
+            else:
+                chat_id = str(raw_id or "").strip()
             if not chat_id.endswith("@g.us"):
                 continue
-            chats.append({"chat_id": chat_id, "name": str(item.get("subject") or chat_id).strip()})
+            name = str(metadata.get("subject") or metadata.get("name") or chat_id).strip()
+            chats.append({"chat_id": chat_id, "name": name or chat_id})
         return chats
 
     def parse_webhook(self, payload: dict[str, Any]) -> NormalizedPollUpdate | None:

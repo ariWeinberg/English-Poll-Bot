@@ -60,6 +60,30 @@ def test_waha_group_catalog_uses_groups_endpoint_and_maps_subject(monkeypatch):
     assert chats == [{"chat_id": "120363000@g.us", "name": "Morning Group"}]
 
 
+def test_waha_group_catalog_accepts_nested_group_metadata_shape(monkeypatch):
+    client = build_client()
+
+    async def fake_request(method: str, path: str, *, json_body=None):
+        assert method == "GET"
+        assert path == "/api/session-a/groups"
+        assert json_body is None
+        return [
+            {
+                "groupMetadata": {
+                    "id": {"_serialized": "13477702828-1538885447@g.us"},
+                    "subject": "Sales Group",
+                    "participants": [{"id": {"_serialized": "111@c.us"}}],
+                }
+            }
+        ]
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    chats = __import__("asyncio").run(client.get_group_chats())
+
+    assert chats == [{"chat_id": "13477702828-1538885447@g.us", "name": "Sales Group"}]
+
+
 def test_waha_group_participants_uses_v2_endpoint_and_maps_pn(monkeypatch):
     client = build_client()
 
