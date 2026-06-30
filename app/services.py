@@ -1019,7 +1019,7 @@ def texts_due_now(database_url: str, minute_key: str) -> list[tuple[RuntimeConfi
         texts = list_pending_texts(conn)
         for text in texts:
             runtime = runtime_config_from_row(text)
-            if not runtime.scheduler_enabled or not runtime.greenapi_ready or not runtime.gemini_ready:
+            if not runtime.scheduler_enabled or not runtime.whatsapp_ready or not runtime.gemini_ready:
                 continue
             rules = list_text_schedule_rules(conn, text_id=int(text["id"]), enabled_only=True)
             if any(

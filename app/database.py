@@ -1580,10 +1580,12 @@ def upsert_active_whatsapp_connector(
     return int(existing["id"])
 
 
-def _attach_whatsapp_connector(conn: psycopg.Connection[DbRow], row: DbRow | None) -> DbRow | None:
+def _attach_whatsapp_connector_for_tenant(
+    conn: psycopg.Connection[DbRow], row: DbRow | None, *, tenant_id: int
+) -> DbRow | None:
     if row is None:
         return None
-    connector = get_active_whatsapp_connector(conn, tenant_id=int(row["id"]))
+    connector = get_active_whatsapp_connector(conn, tenant_id=tenant_id)
     if connector is None:
         connector = {
             "provider": "greenapi",
@@ -1607,6 +1609,12 @@ def _attach_whatsapp_connector(conn: psycopg.Connection[DbRow], row: DbRow | Non
         config.get("api_token_instance") or row.get("greenapi_api_token_instance") or ""
     ).strip()
     return row
+
+
+def _attach_whatsapp_connector(conn: psycopg.Connection[DbRow], row: DbRow | None) -> DbRow | None:
+    if row is None:
+        return None
+    return _attach_whatsapp_connector_for_tenant(conn, row, tenant_id=int(row["id"]))
 
 
 def list_tenants(conn: psycopg.Connection[DbRow]) -> list[DbRow]:
@@ -2341,7 +2349,8 @@ def list_scheduler_texts(conn: psycopg.Connection[DbRow], tenant_id: int | None 
         sql += " WHERE texts.tenant_id = %s"
         params = (tenant_id,)
     sql += " ORDER BY texts.id ASC"
-    return conn.execute(sql, params).fetchall()
+    rows = conn.execute(sql, params).fetchall()
+    return [_attach_whatsapp_connector_for_tenant(conn, row, tenant_id=int(row["tenant_id"])) for row in rows]
 
 
 def set_app_config(conn: psycopg.Connection[DbRow], *, key: str, value: str) -> None:
