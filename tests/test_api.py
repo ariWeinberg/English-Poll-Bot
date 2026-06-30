@@ -6,7 +6,10 @@ from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.database import create_poll, db_session, init_db, upsert_contact_profile
+from app.greenapi import GreenAPIError
 from app.main import app
+from app.services import TextNotFoundError
+from app.waha import WAHAError
 
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -498,6 +501,74 @@ def test_chat_catalog_routes_and_blocked_chat_rejection(monkeypatch):
             data={"tenant_id": "1", "title": "Blocked", "body": "Body", "chat_id": "group-a@g.us", "enabled": "true"},
         )
         assert blocked_text.status_code == 422
+
+
+def test_send_now_returns_structured_provider_errors(monkeypatch):
+    reset_db()
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+
+        async def raise_waha(*, settings, database_url, text_id, scheduled_slot):
+            del settings, database_url, text_id, scheduled_slot
+            raise WAHAError("WAHA upstream unavailable")
+
+        monkeypatch.setattr("app.api.routes.actions.generate_and_send_poll", raise_waha)
+
+        response = client.post(
+            "/api/v1/polls/send-now",
+            headers=headers,
+            json={"text_id": 1, "scheduled_slot": "manual"},
+        )
+        assert response.status_code == 502
+        assert response.json()["detail"] == "WAHA upstream unavailable"
+
+        async def raise_greenapi(*, settings, database_url, text_id, scheduled_slot):
+            del settings, database_url, text_id, scheduled_slot
+            raise GreenAPIError("GreenAPI rejected sendPoll")
+
+        monkeypatch.setattr("app.api.routes.actions.generate_and_send_poll", raise_greenapi)
+
+        response = client.post(
+            "/api/v1/polls/send-now",
+            headers=headers,
+            json={"text_id": 1, "scheduled_slot": "manual"},
+        )
+        assert response.status_code == 502
+        assert response.json()["detail"] == "GreenAPI rejected sendPoll"
+
+
+def test_send_now_keeps_400_for_config_and_404_for_missing_text(monkeypatch):
+    reset_db()
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+
+        async def raise_missing(*, settings, database_url, text_id, scheduled_slot):
+            del settings, database_url, text_id, scheduled_slot
+            raise TextNotFoundError("Text not found.")
+
+        monkeypatch.setattr("app.api.routes.actions.generate_and_send_poll", raise_missing)
+
+        response = client.post(
+            "/api/v1/polls/send-now",
+            headers=headers,
+            json={"text_id": 999, "scheduled_slot": "manual"},
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Text not found."
+
+        async def raise_config(*, settings, database_url, text_id, scheduled_slot):
+            del settings, database_url, text_id, scheduled_slot
+            raise ValueError("WhatsApp connector configuration is incomplete.")
+
+        monkeypatch.setattr("app.api.routes.actions.generate_and_send_poll", raise_config)
+
+        response = client.post(
+            "/api/v1/polls/send-now",
+            headers=headers,
+            json={"text_id": 1, "scheduled_slot": "manual"},
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "WhatsApp connector configuration is incomplete."
 
 
 def test_tenant_routes_hide_password_and_blank_update_keeps_existing_login():

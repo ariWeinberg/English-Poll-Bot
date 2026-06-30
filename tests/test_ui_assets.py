@@ -18,8 +18,8 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Authorization" in api
     assert '"/register"' in src_bundle
     assert "Workspace Settings" in src_bundle
-    assert "Chat Allowlist / Blocklist" in src_bundle
-    assert "Refresh chats" in src_bundle
+    assert "Group Allowlist / Blocklist" in src_bundle
+    assert "Refresh groups" in src_bundle
     assert "Select a group chat" in src_bundle
     assert "Learner Intervention Dashboard" in src_bundle
     assert "Recent Answer History" in src_bundle

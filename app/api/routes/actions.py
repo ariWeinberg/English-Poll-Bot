@@ -16,16 +16,20 @@ from app.database import (
     update_incoming_webhook,
     get_text,
 )
+from app.greenapi import GreenAPIError
 from app.scheduler import SCHEDULER_STATUS_KEY
 from app.services import (
     extract_whatsapp_webhook_metadata,
     generate_and_send_poll,
     handle_greenapi_webhook_async,
     handle_waha_webhook_async,
+    is_provider_error,
     load_runtime_config,
     preview_next_pooled_poll,
     send_pending_summaries,
+    TextNotFoundError,
 )
+from app.waha import WAHAError
 
 
 router = APIRouter(tags=["actions"])
@@ -51,12 +55,23 @@ async def preview_question(payload: PreviewRequest, user: dict[str, Any] = Depen
 @router.post("/api/v1/polls/send-now")
 async def send_now(payload: SendPollRequest, user: dict[str, Any] = Depends(current_user)):
     runtime = load_runtime_config(settings.database_url, int(user["id"]))
-    poll_id = await generate_and_send_poll(
-        settings=runtime,
-        database_url=settings.database_url,
-        text_id=payload.text_id,
-        scheduled_slot=payload.scheduled_slot,
-    )
+    try:
+        poll_id = await generate_and_send_poll(
+            settings=runtime,
+            database_url=settings.database_url,
+            text_id=payload.text_id,
+            scheduled_slot=payload.scheduled_slot,
+        )
+    except TextNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (WAHAError, GreenAPIError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        if is_provider_error(exc):
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise
     return {"poll_id": poll_id}
 
 

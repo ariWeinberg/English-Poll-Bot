@@ -56,16 +56,11 @@ class WAHAClient:
         )
         if session_row is None:
             raise WAHAError(f"WAHA validation failed: session {self.config.session!r} was not found")
-        capabilities = session_row.get("capabilities") or session_row.get("features") or {}
-        if isinstance(capabilities, dict):
-            poll_capable = bool(
-                capabilities.get("polls")
-                or capabilities.get("sendPoll")
-                or capabilities.get("messages.poll")
-                or capabilities.get("poll")
+        status = str(session_row.get("status") or "").strip().upper()
+        if status != "WORKING":
+            raise WAHAError(
+                f"WAHA validation failed: session {self.config.session!r} is in {status or 'UNKNOWN'} status"
             )
-            if not poll_capable:
-                raise WAHAError("WAHA validation failed: this session does not expose poll sending support")
 
     async def send_poll(
         self,
@@ -77,13 +72,15 @@ class WAHAClient:
     ) -> str:
         data = await self._request(
             "POST",
-            "/api/messages/poll",
+            "/api/sendPoll",
             json_body={
                 "session": self.config.session,
                 "chatId": chat_id,
-                "question": question,
-                "options": options,
-                "multipleAnswers": multiple_answers,
+                "poll": {
+                    "name": question,
+                    "options": options,
+                    "multipleAnswers": multiple_answers,
+                },
             },
         )
         if not isinstance(data, dict):
@@ -106,7 +103,7 @@ class WAHAClient:
     async def get_contact_name(self, *, chat_id: str) -> str | None:
         data = await self._request(
             "GET",
-            f"/api/contacts/{self.config.session}?chatId={chat_id}",
+            f"/api/{self.config.session}/contacts/{chat_id}",
         )
         if not isinstance(data, dict):
             return None
@@ -119,41 +116,39 @@ class WAHAClient:
     async def get_group_participants(self, *, chat_id: str) -> list[dict[str, str | None]]:
         data = await self._request(
             "GET",
-            f"/api/groups/{self.config.session}/{chat_id}",
+            f"/api/{self.config.session}/groups/{chat_id}/participants/v2",
         )
-        if not isinstance(data, dict):
+        if not isinstance(data, list):
             raise WAHAError(f"WAHA group lookup returned an unexpected payload: {data}")
-        participants = data.get("participants") or []
         rows: list[dict[str, str | None]] = []
-        if not isinstance(participants, list):
-            return rows
-        for item in participants:
+        for item in data:
             if not isinstance(item, dict):
                 continue
-            voter_wid = str(item.get("id") or item.get("wid") or item.get("chatId") or "").strip()
+            voter_wid = str(item.get("pn") or item.get("id") or "").strip()
             if not voter_wid:
                 continue
             rows.append(
                 {
                     "voter_wid": voter_wid,
-                    "display_name": str(item.get("name") or item.get("pushName") or "").strip() or None,
-                    "phone_number": str(item.get("phoneNumber") or "").strip() or normalize_phone(voter_wid),
+                    "display_name": str(item.get("name") or item.get("pushName") or item.get("role") or "").strip()
+                    or None,
+                    "phone_number": normalize_phone(str(item.get("pn") or item.get("id") or voter_wid)),
                 }
             )
         return rows
 
     async def get_group_chats(self) -> list[dict[str, str]]:
-        data = await self._request("GET", f"/api/chats/{self.config.session}")
+        data = await self._request("GET", f"/api/{self.config.session}/groups")
         if not isinstance(data, list):
-            raise WAHAError(f"WAHA chat list returned an unexpected payload: {data}")
+            raise WAHAError(f"WAHA group list returned an unexpected payload: {data}")
         chats: list[dict[str, str]] = []
         for item in data:
             if not isinstance(item, dict):
                 continue
-            chat_id = str(item.get("id") or item.get("chatId") or "").strip()
+            chat_id = str(item.get("id") or "").strip()
             if not chat_id.endswith("@g.us"):
                 continue
-            chats.append({"chat_id": chat_id, "name": str(item.get("name") or item.get("subject") or chat_id).strip()})
+            chats.append({"chat_id": chat_id, "name": str(item.get("subject") or chat_id).strip()})
         return chats
 
     def parse_webhook(self, payload: dict[str, Any]) -> NormalizedPollUpdate | None:

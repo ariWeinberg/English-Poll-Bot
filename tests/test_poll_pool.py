@@ -174,6 +174,51 @@ def test_send_uses_next_queued_poll_and_refills_below_threshold(monkeypatch):
     assert [row["voter_wid"] for row in snapshots] == ["111@c.us", "222@c.us"]
 
 
+def test_send_validates_once_before_roster_sync_and_reuses_provider(monkeypatch):
+    database_url = reset_db()
+    runtime = load_runtime_config(database_url, 1)
+    events: list[str] = []
+
+    async def fake_refill(*, settings, database_url: str, text_id: int):
+        del settings, database_url, text_id
+        return None
+
+    class FakeProvider:
+        async def validate(self):
+            events.append("validate")
+
+        async def get_group_participants(self, *, chat_id: str):
+            assert chat_id == "group@g.us"
+            events.append("participants")
+            return [{"voter_wid": "111@c.us", "display_name": "Dana", "phone_number": "111"}]
+
+        async def send_poll(self, *, chat_id: str, question: str, options: list[str]):
+            assert chat_id == "group@g.us"
+            assert question
+            assert options
+            events.append("send")
+            return "green-msg-once"
+
+    created_providers: list[FakeProvider] = []
+
+    def fake_create_provider(settings):
+        del settings
+        provider = FakeProvider()
+        created_providers.append(provider)
+        return provider
+
+    monkeypatch.setattr("app.services.create_whatsapp_provider", fake_create_provider)
+    monkeypatch.setattr("app.services._refill_pool_if_needed", fake_refill)
+
+    poll_id = asyncio.run(
+        generate_and_send_poll(settings=runtime, database_url=database_url, text_id=1, scheduled_slot="manual")
+    )
+
+    assert poll_id > 0
+    assert len(created_providers) == 1
+    assert events == ["validate", "participants", "send"]
+
+
 def test_pool_threshold_inherits_tenant_default_and_allows_text_override():
     database_url = reset_db()
     with db_session(database_url) as conn:

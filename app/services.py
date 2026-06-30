@@ -38,11 +38,15 @@ from app.database import (
 )
 from app.database import normalize_phone_number
 from app.core.logging import get_logger
-from app.greenapi import GreenAPIClient, GreenAPIConfig
+from app.greenapi import GreenAPIClient, GreenAPIConfig, GreenAPIError
 from app.question_generator import GeminiQuestionGenerator, GeneratedQuestion
-from app.waha import WAHAClient, WAHAConfig
+from app.waha import WAHAClient, WAHAConfig, WAHAError
 
 logger = get_logger("services")
+
+
+class TextNotFoundError(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -188,6 +192,20 @@ def create_whatsapp_provider(settings: RuntimeConfig):
             )
         )
     return create_greenapi_client(settings)
+
+
+def is_provider_error(exc: Exception) -> bool:
+    return isinstance(exc, (GreenAPIError, WAHAError))
+
+
+def provider_log_target(settings: RuntimeConfig) -> str:
+    if settings.whatsapp_provider == "waha":
+        base_url = str(settings.whatsapp_connector_config.get("base_url") or "").strip()
+        session = str(settings.whatsapp_connector_config.get("session") or "").strip()
+        return f"{base_url} session={session}".strip()
+    api_url = str(settings.whatsapp_connector_config.get("api_url") or "").strip()
+    instance = str(settings.whatsapp_connector_config.get("id_instance") or "").strip()
+    return f"{api_url} instance={instance}".strip()
 
 
 def create_question_generator(settings: RuntimeConfig) -> GeminiQuestionGenerator:
@@ -361,19 +379,21 @@ async def sync_text_roster(
     settings: RuntimeConfig,
     database_url: str,
     text_id: int,
+    provider: Any | None = None,
 ) -> dict[str, Any]:
     if not settings.whatsapp_ready:
         raise ValueError("WhatsApp connector configuration is incomplete.")
     with db_session(database_url) as conn:
         text = get_text(conn, text_id)
         if text is None:
-            raise ValueError("Text not found.")
+            raise TextNotFoundError("Text not found.")
         if int(text["tenant_id"]) != settings.tenant_id:
-            raise ValueError("Text not found.")
+            raise TextNotFoundError("Text not found.")
     chat_id = str(text["chat_id"] or "").strip()
     if not chat_id:
         raise ValueError("Text chat ID is required for roster sync.")
-    participants = await create_whatsapp_provider(settings).get_group_participants(chat_id=chat_id)
+    active_provider = provider or create_whatsapp_provider(settings)
+    participants = await active_provider.get_group_participants(chat_id=chat_id)
     with db_session(database_url) as conn:
         synced_at = sync_chat_participants(
             conn,
@@ -398,10 +418,12 @@ async def refresh_tenant_group_chats(
     *,
     settings: RuntimeConfig,
     database_url: str,
+    provider: Any | None = None,
 ) -> list[dict[str, Any]]:
     if not settings.whatsapp_ready:
         raise ValueError("WhatsApp connector configuration is incomplete.")
-    chats = await create_whatsapp_provider(settings).get_group_chats()
+    active_provider = provider or create_whatsapp_provider(settings)
+    chats = await active_provider.get_group_chats()
     with db_session(database_url) as conn:
         return sync_tenant_group_chats(conn, tenant_id=settings.tenant_id, chats=chats)
 
@@ -423,13 +445,19 @@ async def prepare_poll_recipient_snapshot(
     poll_id: int,
     text_id: int,
     chat_id: str,
+    provider: Any | None = None,
 ) -> dict[str, Any]:
     snapshot_source = "unavailable"
     snapshot_synced_at: str | None = None
     participants: list[dict[str, Any]] = []
     if settings.whatsapp_ready:
         try:
-            roster = await sync_text_roster(settings=settings, database_url=database_url, text_id=text_id)
+            roster = await sync_text_roster(
+                settings=settings,
+                database_url=database_url,
+                text_id=text_id,
+                provider=provider,
+            )
             snapshot_source = "live_sync"
             snapshot_synced_at = roster["last_synced_at"]
             participants = [
@@ -500,14 +528,15 @@ async def generate_and_send_poll(
             "text_id": text_id,
             "scheduled_slot": scheduled_slot,
             "provider": settings.whatsapp_provider,
+            "provider_target": provider_log_target(settings),
         },
     )
     with db_session(database_url) as conn:
         text = get_text(conn, text_id)
         if text is None:
-            raise ValueError("Text not found.")
+            raise TextNotFoundError("Text not found.")
         if int(text["tenant_id"]) != settings.tenant_id:
-            raise ValueError("Text not found.")
+            raise TextNotFoundError("Text not found.")
         queued = get_next_queued_poll(conn, text_id=text_id)
         source_text = get_source_text(conn, text_id)
         history = get_text_poll_history(conn, text_id=text_id)
@@ -537,15 +566,16 @@ async def generate_and_send_poll(
             correct_option=str(queued["correct_option"]),
             explanation=str(queued.get("explanation") or ""),
         )
+    provider = create_whatsapp_provider(settings)
+    await provider.validate()
     snapshot = await prepare_poll_recipient_snapshot(
         settings=settings,
         database_url=database_url,
         poll_id=poll_id,
         text_id=text_id,
         chat_id=str(text["chat_id"]),
+        provider=provider,
     )
-    provider = create_whatsapp_provider(settings)
-    await provider.validate()
     try:
         message_id = await provider.send_poll(
             chat_id=text["chat_id"],

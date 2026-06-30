@@ -145,7 +145,7 @@ export function TextModal({
             ))}
           </select>
         </label>
-        {selectableChats.length === 0 && <div className="alert warning">Refresh chats from the Chats page after configuring GreenAPI, then create texts from the dropdown instead of typing chat IDs manually.</div>}
+        {selectableChats.length === 0 && <div className="alert warning">Refresh groups from the Groups page after configuring your WhatsApp connector, then create texts from the dropdown instead of typing chat IDs manually.</div>}
         <div className="surface">
           <div className="section-header">
             <div>
@@ -557,10 +557,6 @@ export function SettingsModal({
                 whatsapp_connector: {
                   ...form.whatsapp_connector,
                   provider: event.target.value as "greenapi" | "waha",
-                  config:
-                    event.target.value === "waha"
-                      ? { base_url: "", session: "", api_key: "" }
-                      : { api_url: form.greenapi_api_url || "https://api.green-api.com", id_instance: "", api_token_instance: "" },
                 },
               })
             }

@@ -38,10 +38,21 @@ export function blankPoll(tenantId: number, text?: Text): PollFormState {
 
 export function tenantToForm(tenant: Tenant): TenantFormState {
   const { id: _id, ...rest } = tenant;
+  const connectorConfig = tenant.whatsapp_connector?.config || {};
   return {
     ...rest,
     whatsapp_provider: tenant.whatsapp_provider,
-    whatsapp_connector: tenant.whatsapp_connector,
+    whatsapp_connector: {
+      ...tenant.whatsapp_connector,
+      config: {
+        api_url: connectorConfig.api_url || tenant.greenapi_api_url || "",
+        id_instance: connectorConfig.id_instance || tenant.greenapi_id_instance || "",
+        api_token_instance: connectorConfig.api_token_instance || tenant.greenapi_api_token_instance || "",
+        base_url: connectorConfig.base_url || "",
+        session: connectorConfig.session || "",
+        api_key: connectorConfig.api_key || "",
+      },
+    },
     password: "",
   };
 }

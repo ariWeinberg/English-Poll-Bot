@@ -504,9 +504,9 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
     try {
       const chats = await api<GroupChat[]>("/chats/refresh", { method: "POST" });
       setGroupChats(chats);
-      handleSuccess("Chats refreshed");
+      handleSuccess("Groups refreshed");
     } catch (err) {
-      handleError(err instanceof Error ? err.message : "Chat refresh failed");
+      handleError(err instanceof Error ? err.message : "Group refresh failed");
     }
   }
 
@@ -549,7 +549,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
           onLogout={handleLogout}
         />
         {toast && <div className={`alert ${toast.kind}`}>{toast.message}</div>}
-        {!configured && <div className="alert warning">Workspace setup is incomplete. Finish GreenAPI and Gemini settings to enable delivery.</div>}
+        {!configured && <div className="alert warning">Workspace setup is incomplete. Finish your WhatsApp connector and Gemini settings to enable delivery.</div>}
         <div className="page-shell">
           {route.name === "dashboard" && (
             <DashboardPage
@@ -1262,11 +1262,11 @@ function ChatsPage({
     <section className="resource-page">
       <div className="section-header">
         <div>
-          <p className="section-kicker">Chats</p>
-          <h2>Chat Allowlist / Blocklist</h2>
+          <p className="section-kicker">Groups</p>
+          <h2>Group Allowlist / Blocklist</h2>
         </div>
         <button className="button button-primary" onClick={onRefresh}>
-          <RefreshCw size={16} /> Refresh chats
+          <RefreshCw size={16} /> Refresh groups
         </button>
       </div>
       <div className="toolbar">
@@ -1290,7 +1290,7 @@ function ChatsPage({
             </div>
           </article>
         ))}
-        {filtered.length === 0 && <EmptyState title="No chats loaded" body="Refresh group chats from GreenAPI, then manage the allowlist and blocklist here." />}
+        {filtered.length === 0 && <EmptyState title="No groups loaded" body="Refresh WhatsApp groups from your active connector, then manage the allowlist and blocklist here." />}
       </div>
     </section>
   );
