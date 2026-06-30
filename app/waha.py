@@ -199,7 +199,9 @@ class WAHAClient:
         message = payload.get("message") if isinstance(payload.get("message"), dict) else payload
         poll = message.get("poll") if isinstance(message, dict) and isinstance(message.get("poll"), dict) else message
         provider_message_id = normalize_waha_message_id(
-            poll.get("messageId") if isinstance(poll, dict) else None
+            poll.get("messageId")
+            if isinstance(poll, dict)
+            else None
             or (poll.get("id") if isinstance(poll, dict) else None)
             or payload.get("messageId")
             or payload.get("id")
