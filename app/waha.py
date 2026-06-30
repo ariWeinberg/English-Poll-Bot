@@ -85,10 +85,12 @@ class WAHAClient:
         )
         if not isinstance(data, dict):
             raise WAHAError(f"WAHA send poll returned an unexpected payload: {data}")
-        message_id = data.get("id") or data.get("messageId") or data.get("message", {}).get("id")
+        message_id = normalize_waha_message_id(
+            data.get("id") or data.get("messageId") or data.get("message", {}).get("id")
+        )
         if not message_id:
             raise WAHAError(f"WAHA send poll response missing message ID: {data}")
-        return str(message_id)
+        return message_id
 
     async def send_message(self, *, chat_id: str, message: str) -> str:
         data = await self._request(
@@ -159,11 +161,49 @@ class WAHAClient:
 
     def parse_webhook(self, payload: dict[str, Any]) -> NormalizedPollUpdate | None:
         event = str(payload.get("event") or payload.get("type") or "").strip() or None
+        payload_body = payload.get("payload") if isinstance(payload.get("payload"), dict) else None
+        if payload_body is not None:
+            vote = payload_body.get("vote") if isinstance(payload_body.get("vote"), dict) else None
+            poll = payload_body.get("poll") if isinstance(payload_body.get("poll"), dict) else None
+            provider_message_id = normalize_waha_message_id(
+                poll.get("id") if isinstance(poll, dict) else payload.get("messageId") or payload.get("id")
+            )
+            selected_options = vote.get("selectedOptions") if isinstance(vote, dict) else None
+            voter_wid = str(
+                (vote.get("participant") if isinstance(vote, dict) else None)
+                or (vote.get("from") if isinstance(vote, dict) else None)
+                or ""
+            ).strip()
+            if provider_message_id and isinstance(selected_options, list) and voter_wid:
+                option_voters = {
+                    str(option).strip(): [
+                        {
+                            "voter_wid": voter_wid,
+                            "voter_name": None,
+                            "phone_number": normalize_phone(voter_wid),
+                        }
+                    ]
+                    for option in selected_options
+                    if str(option).strip()
+                }
+                if option_voters:
+                    return NormalizedPollUpdate(
+                        provider=self.provider_name,
+                        provider_message_id=provider_message_id,
+                        event_type=event,
+                        message_type="pollVote",
+                        option_voters=option_voters,
+                        raw_metadata={"event": event},
+                    )
+
         message = payload.get("message") if isinstance(payload.get("message"), dict) else payload
         poll = message.get("poll") if isinstance(message, dict) and isinstance(message.get("poll"), dict) else message
-        provider_message_id = str(
-            poll.get("messageId") or poll.get("id") or payload.get("messageId") or payload.get("id") or ""
-        ).strip()
+        provider_message_id = normalize_waha_message_id(
+            poll.get("messageId") if isinstance(poll, dict) else None
+            or (poll.get("id") if isinstance(poll, dict) else None)
+            or payload.get("messageId")
+            or payload.get("id")
+        )
         votes = poll.get("votes") if isinstance(poll, dict) else None
         if not provider_message_id or not isinstance(votes, list):
             return None
@@ -195,3 +235,28 @@ class WAHAClient:
             option_voters=option_voters,
             raw_metadata={"event": event},
         )
+
+
+def normalize_waha_message_id(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, dict):
+        return ""
+    serialized = str(value.get("_serialized") or "").strip()
+    if serialized:
+        return serialized
+    from_me = value.get("fromMe")
+    remote = str(value.get("remote") or value.get("to") or "").strip()
+    message_id = str(value.get("id") or "").strip()
+    participant = value.get("participant")
+    participant_id = ""
+    if isinstance(participant, dict):
+        participant_id = str(participant.get("_serialized") or participant.get("id") or "").strip()
+    elif isinstance(participant, str):
+        participant_id = participant.strip()
+    if from_me is not None and remote and message_id:
+        parts = [str(bool(from_me)).lower(), remote, message_id]
+        if participant_id:
+            parts.append(participant_id)
+        return "_".join(parts)
+    return message_id or remote

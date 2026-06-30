@@ -41,6 +41,31 @@ def test_waha_send_poll_uses_documented_endpoint_and_payload(monkeypatch):
     ]
 
 
+def test_waha_send_poll_normalizes_nested_message_id(monkeypatch):
+    client = build_client()
+
+    async def fake_request(method: str, path: str, *, json_body=None):
+        assert method == "POST"
+        assert path == "/api/sendPoll"
+        assert json_body is not None
+        return {
+            "id": {
+                "fromMe": True,
+                "remote": "120363000@g.us",
+                "id": "3EB0ABCDEF",
+                "participant": {"_serialized": "252342767239268@lid"},
+            }
+        }
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    message_id = __import__("asyncio").run(
+        client.send_poll(chat_id="120363000@g.us", question="Choose one", options=["One", "Two"])
+    )
+
+    assert message_id == "true_120363000@g.us_3EB0ABCDEF_252342767239268@lid"
+
+
 def test_waha_group_catalog_uses_groups_endpoint_and_maps_subject(monkeypatch):
     client = build_client()
 
@@ -176,3 +201,35 @@ def test_waha_validate_rejects_missing_or_unusable_session(monkeypatch):
         assert "STOPPED" in str(exc)
     else:
         raise AssertionError("Expected WAHAError for unusable session")
+
+
+def test_waha_parse_webhook_accepts_documented_poll_vote_payload():
+    client = build_client()
+
+    parsed = client.parse_webhook(
+        {
+            "event": "poll.vote",
+            "payload": {
+                "vote": {
+                    "id": "false_120363410357828123@g.us_3EB0B0698FEF4B43922FC5",
+                    "selectedOptions": ["The single word 'test'"],
+                    "from": "120363410357828123@g.us",
+                    "participant": "972501234567@c.us",
+                    "fromMe": False,
+                },
+                "poll": {"id": "true_120363410357828123@g.us_3EB0B0698FEF4B43922FC5_252342767239268@lid"},
+            },
+        }
+    )
+
+    assert parsed is not None
+    assert parsed.provider_message_id == "true_120363410357828123@g.us_3EB0B0698FEF4B43922FC5_252342767239268@lid"
+    assert parsed.option_voters == {
+        "The single word 'test'": [
+            {
+                "voter_wid": "972501234567@c.us",
+                "voter_name": None,
+                "phone_number": "972501234567",
+            }
+        ]
+    }

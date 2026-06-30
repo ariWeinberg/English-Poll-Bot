@@ -17,6 +17,10 @@ class DriverResult:
     def __init__(self, result: Result[Any]) -> None:
         self._result = result
 
+    @property
+    def rowcount(self) -> int:
+        return int(self._result.rowcount)
+
     def fetchone(self) -> dict[str, Any] | None:
         row = self._result.mappings().first()
         return dict(row) if row is not None else None
