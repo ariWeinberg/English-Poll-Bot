@@ -21,6 +21,17 @@ export function DocPage({ onOpenSwagger }: { onOpenSwagger: () => void }) {
     "docker compose config --quiet",
   ];
   const loggingVars = ["LOG_LEVEL", "LOG_FORMAT", "LOG_FILE", "LOG_HUMAN_FILE", "LOG_REQUEST_BODY_ENABLED"];
+  const roadmapTracks = [
+    "Security and production hardening",
+    "Provider reliability lab",
+    "Webhook and scheduler operations",
+    "Question quality system",
+    "Learning intelligence",
+    "Curriculum and content model",
+    "Teacher workflow productization",
+    "Scale architecture",
+    "Pilot readiness and expansion",
+  ];
 
   return (
     <section className="detail-page">
@@ -81,6 +92,20 @@ export function DocPage({ onOpenSwagger }: { onOpenSwagger: () => void }) {
         <div className="command-list">
           {qualityGates.map((command) => (
             <code key={command}>{command}</code>
+          ))}
+        </div>
+      </section>
+
+      <section className="surface">
+        <div className="section-header">
+          <div>
+            <p className="section-kicker">Roadmap</p>
+            <h3>Delivery tracks</h3>
+          </div>
+        </div>
+        <div className="doc-list">
+          {roadmapTracks.map((track) => (
+            <DocItem key={track} title={track} body="See docs/roadmap.md for the implementation order, acceptance checks, and commit slicing." />
           ))}
         </div>
       </section>

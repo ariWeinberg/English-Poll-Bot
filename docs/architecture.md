@@ -76,3 +76,5 @@ See `docs/runbook.md` for the operator-facing checklist.
 ## Documentation Rule
 
 Any change that alters setup, deployment, public API behavior, scheduler behavior, GreenAPI/Gemini integration, or user-visible workflows must update `README.md`, this architecture note, or the relevant tests in the same pull request.
+
+For the one-year R&D program and its delivery order, use [`docs/roadmap.md`](./roadmap.md) as the canonical planning document. Keep that file current when roadmap scope, sequencing, acceptance criteria, or quarter ordering changes.

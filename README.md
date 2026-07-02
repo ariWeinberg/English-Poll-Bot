@@ -110,6 +110,7 @@ For GreenAPI, enable:
 For WAHA, configure the session webhook to deliver poll-vote events to `/webhooks/waha/{tenant_id}` and confirm the session supports outbound poll sending before marking the connector ready.
 
 Operational guidance for scheduler behavior, webhook diagnostics, logging, and release checks lives in `docs/runbook.md` and is summarized in the authenticated `/doc` app page.
+The year-long delivery plan and its micro-commit sequencing live in `docs/roadmap.md`.
 
 ## Test
 
