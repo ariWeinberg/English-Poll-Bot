@@ -2310,10 +2310,11 @@ def list_polls(
     limit: int = 25,
     tenant_id: int | None = None,
     text_id: int | None = None,
+    status: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> list[DbRow]:
-    where: list[str] = ["status = 'sent'"]
+    where: list[str] = []
     params: list[Any] = []
     scoped_timestamp = "COALESCE(sent_at, created_at)"
     if tenant_id is not None:
@@ -2322,6 +2323,11 @@ def list_polls(
     if text_id is not None:
         where.append("text_id = %s")
         params.append(text_id)
+    if status is not None:
+        where.append("status = %s")
+        params.append(status)
+    else:
+        where.append("status = 'sent'")
     if date_from:
         operator, value = _coerce_filter_datetime(date_from, end=False)
         where.append(f"{scoped_timestamp} {operator} %s")
@@ -2345,6 +2351,7 @@ def list_polls_page(
     tenant_id: int | None = None,
     text_id: int | None = None,
     status: str | None = None,
+    review_status: str | None = None,
     scheduled_slot: str | None = None,
     sent_from: str | None = None,
     sent_to: str | None = None,
@@ -2356,6 +2363,7 @@ def list_polls_page(
         ("tenant_id", tenant_id),
         ("text_id", text_id),
         ("status", status),
+        ("review_status", review_status),
         ("scheduled_slot", scheduled_slot),
     ):
         if value is not None:
@@ -4012,6 +4020,7 @@ def all_poll_stats(
     limit: int = 25,
     tenant_id: int | None = None,
     text_id: int | None = None,
+    status: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -4022,10 +4031,60 @@ def all_poll_stats(
             limit=limit,
             tenant_id=tenant_id,
             text_id=text_id,
+            status=status,
             date_from=date_from,
             date_to=date_to,
         )
     ]
+
+
+def poll_quality_summary(
+    conn: psycopg.Connection[DbRow],
+    *,
+    tenant_id: int,
+    text_id: int | None = None,
+    status: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, Any]:
+    items = all_poll_stats(
+        conn,
+        limit=10000,
+        tenant_id=tenant_id,
+        text_id=text_id,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    review_counts = {"draft": 0, "approved": 0, "needs_edit": 0, "disabled": 0, "archived": 0}
+    for item in items:
+        review_status = str(item["poll"].get("review_status") or "draft")
+        if review_status in review_counts:
+            review_counts[review_status] += 1
+        else:
+            review_counts["draft"] += 1
+
+    weakest_polls = sorted(
+        items,
+        key=lambda item: (
+            0 if float(item["correct_rate"]) < 60 else 1,
+            float(item["correct_rate"]),
+            -int(item["total"]),
+            int(item["poll"]["id"]),
+        ),
+    )[:5]
+    return {
+        "total_polls": len(items),
+        "draft_count": review_counts["draft"],
+        "approved_count": review_counts["approved"],
+        "needs_edit_count": review_counts["needs_edit"],
+        "disabled_count": review_counts["disabled"],
+        "archived_count": review_counts["archived"],
+        "review_required_count": review_counts["draft"] + review_counts["needs_edit"],
+        "unanswered_count": sum(1 for item in items if int(item["total"]) == 0),
+        "low_accuracy_count": sum(1 for item in items if int(item["total"]) > 0 and float(item["correct_rate"]) < 60),
+        "weakest_polls": weakest_polls,
+    }
 
 
 def export_stats_csv(conn: psycopg.Connection[DbRow], tenant_id: int | None = None) -> str:

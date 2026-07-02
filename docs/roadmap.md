@@ -169,6 +169,7 @@ Create a measurable quality loop for generated and reused questions so learners 
 
 - Question preview and generation flows already exist.
 - Polls and question history already persist provider identity and correctness data.
+- The polls page now surfaces review-state filters and a quality summary for weak, unanswered, or review-required questions.
 
 ### Gaps to Close
 

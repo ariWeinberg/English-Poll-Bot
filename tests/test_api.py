@@ -651,6 +651,44 @@ def test_poll_update_persists_question_review_state():
         assert detail.json()["review_notes"] == "The distractors are too easy."
 
 
+def test_poll_quality_summary_and_review_filter_returns_quality_queue():
+    database_url = reset_db()
+    poll_ids = seed_learner_analytics_fixture(database_url)
+    with db_session(database_url) as conn:
+        conn.execute(
+            """
+            UPDATE polls
+            SET review_status = CASE
+                WHEN id = %s THEN 'approved'
+                WHEN id = %s THEN 'needs_edit'
+                WHEN id = %s THEN 'draft'
+            END
+            WHERE id IN (%s, %s, %s)
+            """,
+            (poll_ids["poll_1"], poll_ids["poll_2"], poll_ids["poll_3"], poll_ids["poll_1"], poll_ids["poll_2"], poll_ids["poll_3"]),
+        )
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        summary = client.get("/api/v1/polls/quality-summary", headers=headers)
+        filtered = client.get("/api/v1/polls?status=sent&review_status=needs_edit", headers=headers)
+
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body["total_polls"] == 3
+    assert body["draft_count"] == 1
+    assert body["approved_count"] == 1
+    assert body["needs_edit_count"] == 1
+    assert body["review_required_count"] == 2
+    assert body["low_accuracy_count"] == 1
+    assert [item["poll"]["id"] for item in body["weakest_polls"]] == [poll_ids["poll_1"], poll_ids["poll_2"], poll_ids["poll_3"]]
+
+    assert filtered.status_code == 200
+    filtered_body = filtered.json()
+    assert [item["id"] for item in filtered_body["items"]] == [poll_ids["poll_2"]]
+    assert filtered_body["items"][0]["review_status"] == "needs_edit"
+
+
 def test_tenant_routes_hide_password_and_blank_update_keeps_existing_login():
     reset_db()
     with TestClient(app) as client:

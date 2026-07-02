@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status as http_status
 
 from app.api.models import PollPayload, PollRankPayload
 from app.api.serializers import serialize_poll
@@ -22,6 +22,7 @@ from app.database import (
     list_poll_vote_status,
     list_polls_page,
     list_queued_polls,
+    poll_quality_summary,
     reorder_queued_poll,
     update_poll,
 )
@@ -38,6 +39,7 @@ async def polls(
     tenant_id: int | None = None,
     text_id: int | None = None,
     status: str | None = None,
+    review_status: str | None = None,
     scheduled_slot: str | None = None,
     sent_from: str | None = None,
     sent_to: str | None = None,
@@ -51,6 +53,7 @@ async def polls(
             tenant_id=tenant_id,
             text_id=text_id,
             status=status,
+            review_status=review_status,
             scheduled_slot=scheduled_slot,
             sent_from=sent_from,
             sent_to=sent_to,
@@ -59,7 +62,30 @@ async def polls(
     return result
 
 
-@router.post("/api/v1/polls", status_code=status.HTTP_201_CREATED)
+@router.get("/api/v1/polls/quality-summary")
+async def poll_quality_summary_route(
+    tenant_id: int | None = None,
+    text_id: int | None = None,
+    status: str | None = None,
+    sent_from: str | None = None,
+    sent_to: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+):
+    scoped_tenant = tenant_id if tenant_id is not None else int(user["id"])
+    if tenant_id is not None and tenant_id != int(user["id"]):
+        raise HTTPException(status_code=http_status.HTTP_403_FORBIDDEN, detail="Tenant access denied")
+    with db_session(settings.database_url) as conn:
+        return poll_quality_summary(
+            conn,
+            tenant_id=scoped_tenant,
+            text_id=text_id,
+            status=status,
+            date_from=sent_from,
+            date_to=sent_to,
+        )
+
+
+@router.post("/api/v1/polls", status_code=http_status.HTTP_201_CREATED)
 async def create_poll_route(payload: PollPayload, _: dict[str, Any] = Depends(current_user)):
     with db_session(settings.database_url) as conn:
         poll_id = create_poll(
@@ -96,7 +122,7 @@ async def poll_stats_route(
 ):
     scoped_tenant = int(user["id"])
     if tenant_id is not None and tenant_id != scoped_tenant:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant access denied")
+        raise HTTPException(status_code=http_status.HTTP_403_FORBIDDEN, detail="Tenant access denied")
     with db_session(settings.database_url) as conn:
         return all_poll_stats(
             conn,
@@ -125,7 +151,7 @@ async def poll(poll_id: int, _: dict[str, Any] = Depends(current_user)):
     with db_session(settings.database_url) as conn:
         row = get_poll(conn, poll_id)
     if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found")
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Poll not found")
     return serialize_poll(row)
 
 
@@ -133,7 +159,7 @@ async def poll(poll_id: int, _: dict[str, Any] = Depends(current_user)):
 async def poll_vote_status(poll_id: int, _: dict[str, Any] = Depends(current_user)):
     with db_session(settings.database_url) as conn:
         if get_poll(conn, poll_id) is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found")
+            raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Poll not found")
         return list_poll_vote_status(conn, poll_id=poll_id)
 
 
@@ -147,7 +173,7 @@ async def poll_coverage(
     with db_session(settings.database_url) as conn:
         poll = get_poll(conn, poll_id)
         if poll is None or int(poll["tenant_id"]) != int(user["id"]):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found")
+            raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Poll not found")
         return get_poll_coverage_page(conn, poll_id=poll_id, page=page, page_size=page_size)
 
 
@@ -155,7 +181,7 @@ async def poll_coverage(
 async def update_poll_route(poll_id: int, payload: PollPayload, _: dict[str, Any] = Depends(current_user)):
     with db_session(settings.database_url) as conn:
         if get_poll(conn, poll_id) is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found")
+            raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Poll not found")
         update_poll(conn, poll_id=poll_id, **payload.model_dump())
         return serialize_poll(get_poll(conn, poll_id))
 
@@ -165,7 +191,7 @@ async def get_text_poll_pool(text_id: int, _: dict[str, Any] = Depends(current_u
     with db_session(settings.database_url) as conn:
         text_row = get_text(conn, text_id)
         if text_row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Text not found")
+            raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Text not found")
         items = [serialize_poll(item) for item in list_queued_polls(conn, text_id=text_id)]
         policy = get_effective_poll_pool_policy(conn, text_id=text_id)
         queued_count = count_queued_polls(conn, text_id=text_id)
@@ -207,15 +233,15 @@ async def update_poll_pool_rank(poll_id: int, payload: PollRankPayload, _: dict[
     with db_session(settings.database_url) as conn:
         poll = get_poll(conn, poll_id)
         if poll is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found")
+            raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Poll not found")
         if str(poll["status"]) != "queued":
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only queued polls can be reordered")
+            raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="Only queued polls can be reordered")
         reordered = reorder_queued_poll(conn, poll_id=poll_id, pool_rank=payload.pool_rank)
     return serialize_poll(reordered)
 
 
-@router.delete("/api/v1/polls/{poll_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/api/v1/polls/{poll_id}", status_code=http_status.HTTP_204_NO_CONTENT)
 async def delete_poll_route(poll_id: int, _: dict[str, Any] = Depends(current_user)):
     with db_session(settings.database_url) as conn:
         delete_poll(conn, poll_id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return Response(status_code=http_status.HTTP_204_NO_CONTENT)
