@@ -685,6 +685,8 @@ def init_db(database_url: str) -> None:
                 chat_id TEXT NOT NULL,
                 generated_from_text TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'draft',
+                review_status TEXT NOT NULL DEFAULT 'draft',
+                review_notes TEXT NOT NULL DEFAULT '',
                 scheduled_slot TEXT,
                 sent_at TEXT,
                 summary_sent_at TEXT,
@@ -792,6 +794,8 @@ def init_db(database_url: str) -> None:
             ALTER TABLE polls ADD COLUMN IF NOT EXISTS recipient_snapshot_synced_at TEXT;
             ALTER TABLE polls ADD COLUMN IF NOT EXISTS provider TEXT;
             ALTER TABLE polls ADD COLUMN IF NOT EXISTS provider_message_id TEXT;
+            ALTER TABLE polls ADD COLUMN IF NOT EXISTS review_status TEXT NOT NULL DEFAULT 'draft';
+            ALTER TABLE polls ADD COLUMN IF NOT EXISTS review_notes TEXT NOT NULL DEFAULT '';
             ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS voter_name TEXT;
             ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS phone_number TEXT;
             ALTER TABLE poll_votes ADD COLUMN IF NOT EXISTS first_accepted_at TEXT;
@@ -822,6 +826,10 @@ def init_db(database_url: str) -> None:
             SET provider = COALESCE(NULLIF(provider, ''), 'greenapi'),
                 provider_message_id = COALESCE(NULLIF(provider_message_id, ''), greenapi_message_id)
             WHERE greenapi_message_id IS NOT NULL;
+            UPDATE polls
+            SET review_status = COALESCE(NULLIF(review_status, ''), 'draft'),
+                review_notes = COALESCE(review_notes, '')
+            WHERE review_status IS NULL OR review_notes IS NULL;
             UPDATE incoming_webhooks
             SET provider_message_id = COALESCE(NULLIF(provider_message_id, ''), greenapi_message_id)
             WHERE greenapi_message_id IS NOT NULL;
@@ -2116,6 +2124,8 @@ def create_poll(
     scheduled_slot: str | None,
     provider: str | None = None,
     status: str = "draft",
+    review_status: str = "draft",
+    review_notes: str = "",
     pool_rank: int | None = None,
     change_window_seconds: int | None = None,
     manual_lock: bool = False,
@@ -2125,10 +2135,10 @@ def create_poll(
         """
         INSERT INTO polls (
             tenant_id, text_id, question, options_json, correct_option, explanation, provider, chat_id,
-            generated_from_text, status, scheduled_slot, change_window_seconds, manual_lock, auto_lock_seconds,
+            generated_from_text, status, review_status, review_notes, scheduled_slot, change_window_seconds, manual_lock, auto_lock_seconds,
             pool_rank, recipient_snapshot_source, recipient_snapshot_synced_at, created_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -2142,6 +2152,8 @@ def create_poll(
             chat_id,
             generated_from_text,
             status,
+            review_status,
+            review_notes,
             scheduled_slot,
             change_window_seconds,
             manual_lock,
@@ -2339,6 +2351,8 @@ def update_poll(
     chat_id: str,
     generated_from_text: str,
     status: str,
+    review_status: str,
+    review_notes: str,
     scheduled_slot: str | None,
     sent_at: str | None,
     summary_sent_at: str | None,
@@ -2354,7 +2368,7 @@ def update_poll(
         UPDATE polls
         SET tenant_id = %s, text_id = %s, question = %s, options_json = %s,
             correct_option = %s, explanation = %s, provider = %s, provider_message_id = %s, greenapi_message_id = %s,
-            chat_id = %s, generated_from_text = %s, status = %s, scheduled_slot = %s,
+            chat_id = %s, generated_from_text = %s, status = %s, review_status = %s, review_notes = %s, scheduled_slot = %s,
             sent_at = %s, summary_sent_at = %s, pool_rank = %s, change_window_seconds = %s,
             manual_lock = %s, auto_lock_seconds = %s,
             recipient_snapshot_source = %s, recipient_snapshot_synced_at = %s
@@ -2373,6 +2387,8 @@ def update_poll(
             chat_id,
             generated_from_text,
             status,
+            review_status,
+            review_notes,
             scheduled_slot,
             sent_at,
             summary_sent_at,

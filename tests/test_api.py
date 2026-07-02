@@ -594,6 +594,63 @@ def test_send_now_keeps_400_for_config_and_404_for_missing_text(monkeypatch):
         assert response.json()["detail"] == "WhatsApp connector configuration is incomplete."
 
 
+def test_poll_update_persists_question_review_state():
+    database_url = reset_db()
+    with db_session(database_url) as conn:
+        poll_id = create_poll(
+            conn,
+            tenant_id=1,
+            text_id=1,
+            question="Review me?",
+            options=["A", "B", "C", "D"],
+            correct_option="A",
+            explanation="",
+            chat_id="group@g.us",
+            generated_from_text="Body",
+            scheduled_slot="manual",
+            status="draft",
+        )
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.patch(
+            f"/api/v1/polls/{poll_id}",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "text_id": 1,
+                "question": "Review me?",
+                "options": ["A", "B", "C", "D"],
+                "correct_option": "A",
+                "explanation": "",
+                "provider": None,
+                "provider_message_id": None,
+                "greenapi_message_id": None,
+                "chat_id": "group@g.us",
+                "generated_from_text": "Body",
+                "status": "draft",
+                "review_status": "needs_edit",
+                "review_notes": "The distractors are too easy.",
+                "scheduled_slot": "manual",
+                "sent_at": None,
+                "summary_sent_at": None,
+                "pool_rank": None,
+                "change_window_seconds": None,
+                "manual_lock": False,
+                "auto_lock_seconds": None,
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["review_status"] == "needs_edit"
+        assert body["review_notes"] == "The distractors are too easy."
+
+        detail = client.get(f"/api/v1/polls/{poll_id}", headers=headers)
+        assert detail.status_code == 200
+        assert detail.json()["review_status"] == "needs_edit"
+        assert detail.json()["review_notes"] == "The distractors are too easy."
+
+
 def test_tenant_routes_hide_password_and_blank_update_keeps_existing_login():
     reset_db()
     with TestClient(app) as client:

@@ -16,6 +16,8 @@ class PollPayload(BaseModel):
     chat_id: str
     generated_from_text: str = ""
     status: str = "draft"
+    review_status: str = "draft"
+    review_notes: str = ""
     scheduled_slot: str | None = None
     sent_at: str | None = None
     summary_sent_at: str | None = None

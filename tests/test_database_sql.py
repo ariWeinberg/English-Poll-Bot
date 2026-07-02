@@ -1,4 +1,4 @@
-from app.database import _learner_aggregate_cte, get_whatsapp_connector_diagnostics
+from app.database import _learner_aggregate_cte, create_poll, get_whatsapp_connector_diagnostics, update_poll
 from app.db_runtime import normalize_database_url
 from app.services import runtime_config_from_row
 
@@ -97,3 +97,78 @@ def test_connector_diagnostics_include_recent_webhook_activity():
     assert diagnostics["accepted_last_24h"] == 1
     assert diagnostics["ignored_last_24h"] == 1
     assert diagnostics["errored_last_24h"] == 1
+
+
+class _PollCaptureResult:
+    def __init__(self, row):
+        self._row = row
+
+    def fetchone(self):
+        return self._row
+
+
+class _PollCaptureConnection:
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, sql, params):
+        self.calls.append((sql, params))
+        if "RETURNING id" in sql:
+            return _PollCaptureResult({"id": 9})
+        return _PollCaptureResult(None)
+
+
+def test_poll_sql_includes_review_state_fields():
+    conn = _PollCaptureConnection()
+
+    poll_id = create_poll(
+        conn,
+        tenant_id=1,
+        text_id=2,
+        question="Review me?",
+        options=["A", "B", "C", "D"],
+        correct_option="A",
+        explanation="",
+        chat_id="group@g.us",
+        generated_from_text="Body",
+        scheduled_slot="manual",
+        review_status="needs_edit",
+        review_notes="Needs better distractors.",
+    )
+    update_poll(
+        conn,
+        poll_id=poll_id,
+        tenant_id=1,
+        text_id=2,
+        question="Review me?",
+        options=["A", "B", "C", "D"],
+        correct_option="A",
+        explanation="",
+        greenapi_message_id=None,
+        provider=None,
+        provider_message_id=None,
+        chat_id="group@g.us",
+        generated_from_text="Body",
+        status="draft",
+        review_status="approved",
+        review_notes="Approved after edit.",
+        scheduled_slot="manual",
+        sent_at=None,
+        summary_sent_at=None,
+        pool_rank=None,
+        change_window_seconds=None,
+        manual_lock=False,
+        auto_lock_seconds=None,
+    )
+
+    insert_sql, insert_params = conn.calls[0]
+    update_sql, update_params = conn.calls[1]
+
+    assert "review_status" in insert_sql
+    assert "review_notes" in insert_sql
+    assert insert_params[10] == "needs_edit"
+    assert insert_params[11] == "Needs better distractors."
+    assert "review_status = %s" in update_sql
+    assert "review_notes = %s" in update_sql
+    assert update_params[12] == "approved"
+    assert update_params[13] == "Approved after edit."
