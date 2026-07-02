@@ -54,6 +54,10 @@ Every request to those endpoints is stored durably in the authenticated Webhook 
 Accepted vote changes are still recorded in `poll_votes` and `poll_vote_events`; the inbox is an operator-facing audit trail, not a replacement for those tables or for structured logs.
 Errored and ignored rows can be retried from the Webhook Inbox. Retry attempts update the stored row with the latest processing outcome plus retry counters and the last retry error when one occurs.
 
+## Question Review
+
+Generated polls now carry a review state on the poll record itself. Use `draft`, `approved`, `needs_edit`, `disabled`, or `archived` to record the teacher review outcome, and add review notes when a question needs work or should be pulled from circulation.
+
 ## Release Checks
 
 Run these before release:

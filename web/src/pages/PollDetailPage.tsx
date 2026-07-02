@@ -71,11 +71,13 @@ export function PollDetailPage({
             <StatBlock label="Total votes" value={stats?.total || 0} />
             <StatBlock label="Correct rate" value={`${stats?.correct_rate.toFixed(1) || "0.0"}%`} />
             <StatBlock label="Status" value={poll.status} />
+            <StatBlock label="Review state" value={poll.review_status} />
             <StatBlock label="Vote changes" value={minutesLabel(poll.change_window_seconds)} />
             <StatBlock label="Poll lock" value={poll.manual_lock ? "Locked" : "Open"} />
             <StatBlock label="Auto-lock" value={minutesLabel(poll.auto_lock_seconds)} />
           </div>
           <div className="prose-block subtle">{poll.explanation || "No explanation provided."}</div>
+          <div className="prose-block subtle">{poll.review_notes || "No review notes recorded."}</div>
           <div className="section-header">
             <div>
               <p className="section-kicker">Participation Coverage</p>

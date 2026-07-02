@@ -15,7 +15,7 @@ English WhatsApp Poll Bot is a split FastAPI and React application. Keep changes
 - `app/core/docs.py` owns short-lived signed tokens for protected Swagger and OpenAPI access.
 - `app/core/logging.py` owns JSON/human logging setup, request IDs, request lifecycle logging, and secret redaction.
 - `app/services.py` owns workflow orchestration for question generation, poll sending, pool refill, connector-aware webhook processing, and summaries.
-- `app/database.py` owns SQLAlchemy-backed runtime access, row serialization, text schedule-rule persistence, learner analytics aggregation, roster snapshots, random-rule daily plans, scheduler heartbeat state, scheduled send-attempt persistence, incoming webhook inbox persistence, connector records, and database initialization.
+- `app/database.py` owns SQLAlchemy-backed runtime access, row serialization, text schedule-rule persistence, learner analytics aggregation, roster snapshots, random-rule daily plans, scheduler heartbeat state, scheduled send-attempt persistence, incoming webhook inbox persistence, connector records, poll review metadata, and database initialization.
 - `app/scheduler.py` owns APScheduler job registration, tenant-local schedule-rule evaluation, worker heartbeat writes, and scheduled send-attempt bookkeeping.
 - `app/scheduler_worker.py` owns the dedicated scheduler process lifecycle used by the deployed `scheduler` service.
 - `app/greenapi.py`, `app/waha.py`, `app/whatsapp.py`, and `app/question_generator.py` own external service clients, provider adapters, and normalized WhatsApp event handling.
@@ -29,6 +29,7 @@ Route handlers should stay thin. New business rules belong in service functions.
 - The authenticated `/learners` route renders the learner intervention dashboard and uses tenant-scoped learner summary, ranked risk slices, segment filters, and missed-response endpoints.
 - The authenticated `/settings` route renders workspace configuration plus connector diagnostics, including recent webhook activity and provider status.
 - The authenticated text and poll detail routes render roster sync controls, schedule-rule summaries, and poll coverage summaries on top of the existing delivery views.
+- The authenticated poll detail and edit flows render review state and review notes so teachers can approve, disable, archive, or request edits on generated questions.
 - The authenticated `/webhooks` route renders the persisted webhook inbox with tenant-scoped filters, provider-neutral message IDs, and inline raw-payload inspection.
 - The webhook inbox also exposes retry actions for errored or ignored rows, with retry counters stored on the webhook record itself.
 - The authenticated `/doc` route renders operational guidance and opens Swagger through `POST /api/v1/docs/session`.

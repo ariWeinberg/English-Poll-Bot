@@ -48,6 +48,7 @@ def test_runbook_documents_operations_surfaces():
     assert "error" in runbook
     assert "retried" in runbook.lower()
     assert "provider diagnostics" in runbook.lower()
+    assert "question review" in runbook.lower()
 
 
 def test_roadmap_document_captures_the_execution_tracks():

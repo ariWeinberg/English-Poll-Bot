@@ -94,6 +94,7 @@ Settings includes provider diagnostics for the active WhatsApp connector, so you
 - Text-level WhatsApp group roster sync with coverage exclusions
 - Poll-level participation coverage with non-responder lists
 - Separate landing, login, executive BI dashboard, learner intervention dashboard, and texts pages
+- Poll review state and notes for generated questions
 
 ## Webhooks
 

@@ -98,6 +98,8 @@ export type Poll = {
   chat_id: string;
   generated_from_text: string;
   status: string;
+  review_status: "draft" | "approved" | "needs_edit" | "disabled" | "archived" | string;
+  review_notes: string;
   scheduled_slot?: string | null;
   sent_at?: string | null;
   summary_sent_at?: string | null;

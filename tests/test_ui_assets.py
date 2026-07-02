@@ -45,6 +45,8 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "retracted vote from" in src_bundle
     assert "Change window minutes" in src_bundle
     assert "Auto-lock minutes" in src_bundle
+    assert "Review state" in src_bundle
+    assert "Review notes" in src_bundle
     assert "Poll Pool" in src_bundle
     assert "All statuses" in src_bundle
     assert "Clear filters" in src_bundle

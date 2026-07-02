@@ -314,6 +314,7 @@ export function PollModal({
       scheduled_slot: form.scheduled_slot || null,
       sent_at: form.sent_at || null,
       summary_sent_at: form.summary_sent_at || null,
+      review_notes: form.review_notes || "",
       greenapi_message_id: form.greenapi_message_id || null,
       pool_rank: form.pool_rank == null ? null : Number(form.pool_rank),
       change_window_seconds: form.change_window_seconds == null ? null : Number(form.change_window_seconds),
@@ -356,6 +357,16 @@ export function PollModal({
         </div>
         <TextInput label="Correct option" value={form.correct_option} onChange={(value) => setForm({ ...form, correct_option: value })} />
         <TextInput label="Status" value={form.status} onChange={(value) => setForm({ ...form, status: value })} />
+        <label>
+          Review status
+          <select value={form.review_status} onChange={(event) => setForm({ ...form, review_status: event.target.value })}>
+            <option value="draft">Draft</option>
+            <option value="approved">Approved</option>
+            <option value="needs_edit">Needs edit</option>
+            <option value="disabled">Disabled</option>
+            <option value="archived">Archived</option>
+          </select>
+        </label>
         <TextInput label="Chat ID" value={form.chat_id} onChange={(value) => setForm({ ...form, chat_id: value })} />
         <TextInput label="Scheduled slot" value={form.scheduled_slot || ""} onChange={(value) => setForm({ ...form, scheduled_slot: value })} />
         <div className="time-grid">
@@ -364,6 +375,7 @@ export function PollModal({
         </div>
         <label className="checkbox-row"><input type="checkbox" checked={form.manual_lock} onChange={(event) => setForm({ ...form, manual_lock: event.target.checked })} /><span>Lock poll manually</span></label>
         <label>Explanation<textarea rows={4} value={form.explanation} onChange={(event) => setForm({ ...form, explanation: event.target.value })} /></label>
+        <label>Review notes<textarea rows={3} value={form.review_notes} onChange={(event) => setForm({ ...form, review_notes: event.target.value })} /></label>
         <label>Generated from text<textarea rows={5} value={form.generated_from_text} onChange={(event) => setForm({ ...form, generated_from_text: event.target.value })} /></label>
         <div className="modal-actions">
           <button className="button button-ghost" type="button" onClick={onClose}>Cancel</button>
