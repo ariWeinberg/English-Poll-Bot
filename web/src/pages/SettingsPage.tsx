@@ -3,9 +3,16 @@ import { FilePenLine } from "lucide-react";
 import { DetailRow } from "../components/common";
 import type { Tenant } from "../types";
 
+function formatWebhookActivity(value?: string | null) {
+  if (!value) return "No webhook activity yet";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+
 export function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () => void }) {
   const connector = tenant.whatsapp_connector;
   const connectorConfig = connector?.config || {};
+  const diagnostics = connector?.diagnostics;
   const isWaha = connector?.provider === "waha";
   const readiness = [
     { label: "Connector provider", ready: Boolean(connector?.provider) },
@@ -13,6 +20,16 @@ export function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () =>
     { label: isWaha ? "WAHA session" : "GreenAPI instance", ready: Boolean(isWaha ? connectorConfig.session : connectorConfig.id_instance) },
     { label: isWaha ? "WAHA API key" : "GreenAPI token", ready: Boolean(isWaha ? connectorConfig.api_key : connectorConfig.api_token_instance) },
     { label: "Gemini API key", ready: Boolean(tenant.gemini_api_key) },
+  ];
+  const activityRows = [
+    { label: "Last webhook", value: formatWebhookActivity(diagnostics?.last_webhook_at) },
+    { label: "Latest decision", value: diagnostics?.last_webhook_status || "No webhook activity yet" },
+    { label: "Latest reason", value: diagnostics?.last_webhook_reason || "No webhook activity yet" },
+    { label: "Webhook volume", value: diagnostics ? `${diagnostics.webhooks_last_24h || 0} in 24h` : "No webhook activity yet" },
+    {
+      label: "Accepted / ignored / errored",
+      value: diagnostics ? `${diagnostics.accepted_last_24h || 0} / ${diagnostics.ignored_last_24h || 0} / ${diagnostics.errored_last_24h || 0}` : "No webhook activity yet",
+    },
   ];
 
   return (
@@ -62,6 +79,20 @@ export function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () =>
               <div className="result-row" key={item.label}>
                 <span>{item.label}</span>
                 <span className={item.ready ? "pill success" : "pill"}>{item.ready ? "Configured" : "Missing"}</span>
+              </div>
+            ))}
+          </div>
+          <div className="section-header" style={{ marginTop: "1.25rem" }}>
+            <div>
+              <p className="section-kicker">Activity</p>
+              <h3>Recent provider events</h3>
+            </div>
+          </div>
+          <div className="stack">
+            {activityRows.map((item) => (
+              <div className="result-row" key={item.label}>
+                <span>{item.label}</span>
+                <span>{item.value}</span>
               </div>
             ))}
           </div>

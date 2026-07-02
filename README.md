@@ -80,6 +80,7 @@ The checked-in Compose config leaves `SCHEDULER_DEBUG_ENABLED` off by default. T
 
 `GET /api/v1/health` returns basic worker heartbeat data, including the last scheduler tick and the last recorded worker error summary when available.
 `GET /api/v1/readiness` is the stronger release check. It requires the database to be reachable and the scheduler worker to have written a recent successful heartbeat before it reports ready.
+Settings includes provider diagnostics for the active WhatsApp connector, so you can see the latest webhook status and recent activity without opening the database.
 
 ## What You Can Configure
 

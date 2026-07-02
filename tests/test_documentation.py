@@ -29,6 +29,7 @@ def test_readme_lists_canonical_quality_commands():
     assert "docker compose config --quiet" in readme
     assert "POST /api/v1/docs/session" in readme
     assert "/api/v1/readiness" in readme
+    assert "provider diagnostics" in readme.lower()
     assert "LOG_REQUEST_BODY_ENABLED" in readme
     assert "/doc" in readme
 
@@ -45,6 +46,7 @@ def test_runbook_documents_operations_surfaces():
     assert "accepted" in runbook
     assert "ignored" in runbook
     assert "error" in runbook
+    assert "provider diagnostics" in runbook.lower()
 
 
 def test_roadmap_document_captures_the_execution_tracks():

@@ -2,6 +2,19 @@ export type WhatsAppConnector = {
   provider: "greenapi" | "waha";
   config: Record<string, string>;
   is_active?: boolean;
+  diagnostics?: {
+    provider: "greenapi" | "waha" | string;
+    last_webhook_at?: string | null;
+    last_webhook_status?: string | null;
+    last_webhook_reason?: string | null;
+    last_webhook_type?: string | null;
+    last_webhook_message_type?: string | null;
+    last_webhook_message_id?: string | null;
+    webhooks_last_24h?: number;
+    accepted_last_24h?: number;
+    ignored_last_24h?: number;
+    errored_last_24h?: number;
+  };
 };
 
 export type Tenant = {

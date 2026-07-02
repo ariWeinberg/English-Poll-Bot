@@ -30,6 +30,7 @@ Each automatic slot produces a persisted attempt record. Poll sends keep their `
 
 `GET /api/v1/health` exposes the latest worker heartbeat payload from the database, including `last_tick_at`, `last_success_at`, `polls_sent`, `summaries_sent`, and the last worker error summary when present.
 `GET /api/v1/readiness` performs a stronger platform check. It validates the database connection and requires a recent successful scheduler heartbeat before reporting the platform ready for release verification.
+The Settings page shows provider diagnostics for the active WhatsApp connector, including the latest webhook status and recent webhook volume, so operators can tell whether the provider is actually receiving traffic.
 
 For short-term troubleshooting, set `SCHEDULER_DEBUG_ENABLED=true` on the `scheduler` service. This emits high-volume structured logs for row payloads, runtime config derivation, timezone conversion, rule matching, due-count math, send calls, failures, and heartbeat writes. Turn it back off by removing or setting that one environment flag to `false`.
 
