@@ -1382,12 +1382,17 @@ def test_learners_summary_returns_kpis_segments_and_ranked_slices():
     assert body["total_counted_votes"] == 5
     assert body["correct_rate"] == 80.0
     assert body["ignored_changes_total"] == 1
+    assert body["low_confidence_count"] == 3
     assert body["needs_attention_count"] == 3
     assert body["inactive_count"] == 2
     assert body["engaged_count"] == 1
     assert [item["voter_wid"] for item in body["top_missed"]] == ["333@c.us", "444@c.us", "222@c.us", "111@c.us"]
     assert [item["voter_wid"] for item in body["lowest_response"]] == ["333@c.us", "444@c.us", "222@c.us", "111@c.us"]
     assert [item["voter_wid"] for item in body["most_active"]] == ["111@c.us", "222@c.us", "333@c.us", "444@c.us"]
+    assert body["top_missed"][0]["focus_area"] == "Assigned polls but no responses yet"
+    assert body["top_missed"][0]["data_confidence"] == "low"
+    assert body["lowest_response"][2]["focus_area"] == "Review ignored change attempts"
+    assert body["most_active"][0]["data_confidence"] == "medium"
 
 
 def test_learners_segment_filter_matches_backend_definitions():
@@ -1425,6 +1430,8 @@ def test_learner_detail_returns_recent_history_with_accepted_and_ignored_state()
     assert body["learner"]["responded_polls_count"] == 3
     assert body["learner"]["missed_polls_count"] == 0
     assert body["learner"]["response_rate"] == 100.0
+    assert body["learner"]["focus_area"] == "Review ignored change attempts"
+    assert body["learner"]["data_confidence"] == "medium"
     assert [item["poll_id"] for item in body["history"]] == [
         poll_ids["poll_2"],
         poll_ids["poll_2"],
@@ -1465,6 +1472,8 @@ def test_learner_detail_includes_recent_missed_polls():
     assert body["learner"]["responded_polls_count"] == 0
     assert body["learner"]["missed_polls_count"] == 2
     assert body["learner"]["response_rate"] == 0.0
+    assert body["learner"]["focus_area"] == "Assigned polls but no responses yet"
+    assert body["learner"]["data_confidence"] == "low"
     assert body["history"] == []
     assert [item["poll_id"] for item in body["missed_polls"]] == [poll_ids["poll_2"], poll_ids["poll_1"]]
     assert body["missed_polls"][0]["recipient_snapshot_source"] == "live_sync"

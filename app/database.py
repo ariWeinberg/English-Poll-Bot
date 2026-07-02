@@ -321,6 +321,47 @@ def _learner_select_sql() -> str:
     """
 
 
+def _learner_focus_area(row: DbRow) -> str:
+    assigned = int(row.get("assigned_polls_count") or 0)
+    responded = int(row.get("responded_polls_count") or 0)
+    missed = int(row.get("missed_polls_count") or 0)
+    total_counted = int(row.get("total_counted_votes") or 0)
+    correct_rate = float(row.get("correct_rate") or 0)
+    ignored_changes = int(row.get("ignored_changes_count") or 0)
+
+    if assigned == 0:
+        return "No assigned polls in scope"
+    if responded == 0:
+        return "Assigned polls but no responses yet"
+    if missed > 0 and float(row.get("response_rate") or 0) < 50:
+        return "Needs follow-up after missed polls"
+    if total_counted < 3:
+        return "Low sample size"
+    if correct_rate < 60:
+        return "Accuracy below target"
+    if ignored_changes > 0:
+        return "Review ignored change attempts"
+    return "Stable engagement"
+
+
+def _learner_data_confidence(row: DbRow) -> str:
+    total_counted = int(row.get("total_counted_votes") or 0)
+    if total_counted < 3:
+        return "low"
+    if total_counted < 10:
+        return "medium"
+    return "high"
+
+
+def _decorate_learner_row(row: DbRow | None) -> DbRow | None:
+    if row is None:
+        return None
+    decorated = dict(row)
+    decorated["focus_area"] = _learner_focus_area(decorated)
+    decorated["data_confidence"] = _learner_data_confidence(decorated)
+    return decorated
+
+
 def _learner_segment_condition(segment: str) -> str:
     if segment == "needs_attention":
         return "assigned_polls_count > 0 AND (missed_polls_count > 0 OR response_rate < 50)"
@@ -3481,6 +3522,7 @@ def list_learners_page(
         """,
         [*learner_params, page_size, offset],
     ).fetchall()
+    items = [_decorate_learner_row(item) for item in items]
     return paginated_response(items, int(total), page, page_size)
 
 
@@ -3509,7 +3551,7 @@ def get_learner_summary(
         """,
         learner_params,
     ).fetchone()
-    return row
+    return _decorate_learner_row(row)
 
 
 def get_learners_summary(
@@ -3548,6 +3590,9 @@ def get_learners_summary(
             END AS correct_rate,
             COALESCE(SUM(ignored_changes_count), 0)::INT AS ignored_changes_total,
             COUNT(*) FILTER (
+                WHERE total_counted_votes < 3
+            )::INT AS low_confidence_count,
+            COUNT(*) FILTER (
                 WHERE {_learner_segment_condition("needs_attention")}
             )::INT AS needs_attention_count,
             COUNT(*) FILTER (
@@ -3562,16 +3607,19 @@ def get_learners_summary(
     ).fetchone()
 
     def load_ranked(order_sql: str, where_filter: str = "1 = 1") -> list[DbRow]:
-        return conn.execute(
-            f"""
-            {aggregate_cte}
-            {_learner_select_sql()}
-            WHERE {where_filter}
-            ORDER BY {order_sql}
-            LIMIT 5
-            """,
-            params,
-        ).fetchall()
+        return [
+            _decorate_learner_row(row)
+            for row in conn.execute(
+                f"""
+                {aggregate_cte}
+                {_learner_select_sql()}
+                WHERE {where_filter}
+                ORDER BY {order_sql}
+                LIMIT 5
+                """,
+                params,
+            ).fetchall()
+        ]
 
     return {
         **dict(totals),

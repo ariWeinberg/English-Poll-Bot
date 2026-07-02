@@ -27,6 +27,7 @@ Route handlers should stay thin. New business rules belong in service functions.
 - `web/src/App.tsx` currently owns the main dashboard shell, route state, API types, and views.
 - The authenticated `/dashboard` route renders the executive BI overview, including time-scoped poll stats, delivery-health summaries, and drill-through links into learners and poll/text detail views.
 - The authenticated `/learners` route renders the learner intervention dashboard and uses tenant-scoped learner summary, ranked risk slices, segment filters, and missed-response endpoints.
+- The learner dashboard also renders derived focus-area and data-confidence markers so operators can distinguish sparse data from actionable risk.
 - The authenticated `/settings` route renders workspace configuration plus connector diagnostics, including recent webhook activity and provider status.
 - The authenticated text and poll detail routes render roster sync controls, schedule-rule summaries, and poll coverage summaries on top of the existing delivery views.
 - The authenticated poll detail and edit flows render review state and review notes so teachers can approve, disable, archive, or request edits on generated questions.

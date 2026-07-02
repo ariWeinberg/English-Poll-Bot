@@ -20,6 +20,8 @@ class LearnerSummary(BaseModel):
     response_rate: float
     first_activity: str | None = None
     latest_activity: str | None = None
+    focus_area: str
+    data_confidence: str
 
 
 class LearnerSummaryResponse(BaseModel):
@@ -31,6 +33,7 @@ class LearnerSummaryResponse(BaseModel):
     total_counted_votes: int
     correct_rate: float
     ignored_changes_total: int
+    low_confidence_count: int
     needs_attention_count: int
     inactive_count: int
     engaged_count: int

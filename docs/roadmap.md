@@ -200,6 +200,7 @@ Turn poll responses and engagement behavior into actionable insight for teachers
 ### Existing State
 
 - Learner summaries, learner detail, and analytics filters already exist.
+- The learner dashboard now surfaces a derived focus area and data-confidence marker so operators can see why a learner is being surfaced for follow-up.
 - Poll analytics already use a production-safe timestamp fallback.
 
 ### Gaps to Close
