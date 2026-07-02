@@ -69,6 +69,8 @@ export function WebhooksPage({
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [retryingId, setRetryingId] = useState<number | null>(null);
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   const listPath = useMemo(() => buildWebhookListPath(filters, page), [filters, page]);
 
@@ -93,7 +95,20 @@ export function WebhooksPage({
     return () => {
       cancelled = true;
     };
-  }, [listPath, tenant.id]);
+  }, [listPath, tenant.id, refreshNonce]);
+
+  async function retryWebhook(webhookId: number) {
+    setRetryingId(webhookId);
+    setError("");
+    try {
+      await api<{ ok: boolean; retried: boolean }>(`/webhooks/${webhookId}/retry`, { method: "POST" });
+      setRefreshNonce((current) => current + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to retry webhook");
+    } finally {
+      setRetryingId(null);
+    }
+  }
 
   return (
     <section className="resource-page">
@@ -169,6 +184,11 @@ export function WebhooksPage({
                   <span>{event.decision_reason || "No decision reason"}</span>
                   <span>{event.provider_message_id || event.greenapi_message_id || "No message ID"}</span>
                 </div>
+                <div className="meta-row">
+                  <span>Retries {event.retry_count || 0}</span>
+                  <span>{event.last_retry_at ? `Last retry ${formatWhen(event.last_retry_at)}` : "No retry yet"}</span>
+                </div>
+                {event.last_retry_error && <div className="alert warning">{event.last_retry_error}</div>}
                 <div className="card-actions">
                   {event.poll_id ? (
                     <button className="button button-ghost" onClick={() => onOpenPoll(event.poll_id || 0)}>
@@ -176,6 +196,11 @@ export function WebhooksPage({
                     </button>
                   ) : (
                     <span className="pill">No linked poll</span>
+                  )}
+                  {event.decision_status !== "accepted" && (
+                    <button className="button button-ghost" onClick={() => retryWebhook(event.id)} disabled={retryingId === event.id}>
+                      {retryingId === event.id ? "Retrying..." : "Retry"}
+                    </button>
                   )}
                   {event.error && <span className="pill danger">{event.error}</span>}
                 </div>

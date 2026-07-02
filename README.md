@@ -113,6 +113,7 @@ For WAHA, configure the session webhook to deliver poll-vote events to `/webhook
 
 Operational guidance for scheduler behavior, webhook diagnostics, logging, and release checks lives in `docs/runbook.md` and is summarized in the authenticated `/doc` app page.
 The year-long delivery plan and its micro-commit sequencing live in `docs/roadmap.md`.
+Webhook inbox rows can be retried from the UI when processing fails or the payload needs a second pass after a code fix.
 
 ## Test
 

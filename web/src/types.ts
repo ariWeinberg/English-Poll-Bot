@@ -346,6 +346,9 @@ export type WebhookEvent = {
   payload_json: string;
   received_at: string;
   processed_at?: string | null;
+  retry_count: number;
+  last_retry_at?: string | null;
+  last_retry_error?: string | null;
   error?: string | null;
 };
 

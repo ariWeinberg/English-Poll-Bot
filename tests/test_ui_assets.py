@@ -54,6 +54,8 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Accepted" in src_bundle
     assert "Ignored" in src_bundle
     assert "Error" in src_bundle
+    assert "Retry" in src_bundle
+    assert "Retries" in src_bundle
     assert 'status: "sent"' in src_bundle
     assert '"/doc"' in src_bundle
     assert '"/webhooks"' in src_bundle

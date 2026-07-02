@@ -30,6 +30,7 @@ Route handlers should stay thin. New business rules belong in service functions.
 - The authenticated `/settings` route renders workspace configuration plus connector diagnostics, including recent webhook activity and provider status.
 - The authenticated text and poll detail routes render roster sync controls, schedule-rule summaries, and poll coverage summaries on top of the existing delivery views.
 - The authenticated `/webhooks` route renders the persisted webhook inbox with tenant-scoped filters, provider-neutral message IDs, and inline raw-payload inspection.
+- The webhook inbox also exposes retry actions for errored or ignored rows, with retry counters stored on the webhook record itself.
 - The authenticated `/doc` route renders operational guidance and opens Swagger through `POST /api/v1/docs/session`.
 - `web/src/main.tsx` only mounts React.
 - `web/src/styles.css` owns global styling and page-specific class rules.

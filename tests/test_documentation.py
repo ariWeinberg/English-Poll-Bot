@@ -46,6 +46,7 @@ def test_runbook_documents_operations_surfaces():
     assert "accepted" in runbook
     assert "ignored" in runbook
     assert "error" in runbook
+    assert "retried" in runbook.lower()
     assert "provider diagnostics" in runbook.lower()
 
 
