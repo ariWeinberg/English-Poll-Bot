@@ -43,3 +43,22 @@ def test_runbook_documents_operations_surfaces():
     assert "accepted" in runbook
     assert "ignored" in runbook
     assert "error" in runbook
+
+
+def test_roadmap_document_captures_the_execution_tracks():
+    roadmap = (ROOT / "docs" / "roadmap.md").read_text(encoding="utf-8")
+
+    required_sections = [
+        "Security and Production Hardening",
+        "Provider Reliability Lab",
+        "Webhook and Scheduler Operations",
+        "Question Quality System",
+        "Learning Intelligence",
+        "Curriculum and Content Model",
+        "Teacher Workflow Productization",
+        "Scale Architecture",
+        "Pilot Readiness and Expansion",
+        "Micro-Commit Shape",
+    ]
+    for section in required_sections:
+        assert section in roadmap
