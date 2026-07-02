@@ -62,6 +62,11 @@ export function formatPercent(value: number, digits = 1) {
   return `${value.toFixed(digits)}%`;
 }
 
+export function formatConfidence(value?: string | null) {
+  if (!value) return "Unknown";
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
 export function formatSnapshotSource(value?: string | null) {
   if (value === "live_sync") return "Live sync";
   if (value === "cached_roster") return "Cached roster";

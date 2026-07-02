@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { EmptyState, StatBlock } from "../components/common";
 import { api } from "../lib/api";
-import { describeIgnoredReason, formatActivity, formatSnapshotSource, formatWhen, learnerQueryString } from "../lib/format";
+import { describeIgnoredReason, formatActivity, formatConfidence, formatSnapshotSource, formatWhen, learnerQueryString } from "../lib/format";
 import type { LearnerDetail, LearnerFilters, Tenant, Text } from "../types";
 
 export function LearnerDetailPage({
@@ -83,6 +83,8 @@ export function LearnerDetailPage({
           <StatBlock label="Accuracy" value={`${detail.learner.correct_rate.toFixed(1)}%`} />
           <StatBlock label="Accepted changes" value={detail.learner.accepted_changes_count} />
           <StatBlock label="Ignored changes" value={detail.learner.ignored_changes_count} />
+          <StatBlock label="Focus area" value={detail.learner.focus_area} />
+          <StatBlock label="Confidence" value={formatConfidence(detail.learner.data_confidence)} />
           <StatBlock label="First activity" value={formatActivity(detail.learner.first_activity)} />
           <StatBlock label="Latest activity" value={formatActivity(detail.learner.latest_activity)} />
         </div>

@@ -4,7 +4,7 @@ import { AlertTriangle, CheckCircle2, Clock3, Users } from "lucide-react";
 import { EmptyState, TextInput } from "../components/common";
 import { api } from "../lib/api";
 import { dateRangeForPreset, matchingRangePreset, type AnalyticsRangePreset } from "../lib/analytics";
-import { formatActivity, formatPercent, learnerQueryString } from "../lib/format";
+import { formatActivity, formatConfidence, formatPercent, learnerQueryString } from "../lib/format";
 import type { LearnerFilters, LearnerSummary, LearnerSummaryResponse, Page, Tenant, Text } from "../types";
 
 const segmentMeta = {
@@ -74,7 +74,7 @@ export function LearnersPage({
     return () => {
       cancelled = true;
     };
-  }, [tenant.id, filters.dateFrom, filters.dateTo, filters.textId]);
+  }, [tenant.id, filters.search, filters.segment, filters.dateFrom, filters.dateTo, filters.textId]);
 
   function applyPreset(preset: AnalyticsRangePreset) {
     const range = dateRangeForPreset(preset);
@@ -152,6 +152,7 @@ export function LearnersPage({
         <MetricCard label="Response rate" value={formatPercent(summary?.response_rate ?? 0)} detail="Responses divided by assigned polls" icon={<CheckCircle2 size={18} />} />
         <MetricCard label="Accuracy" value={formatPercent(summary?.correct_rate ?? 0)} detail="Correct answers across counted votes" icon={<CheckCircle2 size={18} />} />
         <MetricCard label="Ignored changes" value={summary?.ignored_changes_total ?? 0} detail="Late or blocked answer changes" icon={<AlertTriangle size={18} />} />
+        <MetricCard label="Low confidence" value={summary?.low_confidence_count ?? 0} detail="Learners with fewer than 3 counted votes" icon={<AlertTriangle size={18} />} />
       </section>
 
       <div className="segment-grid">
@@ -197,7 +198,7 @@ export function LearnersPage({
               emptyTitle="No missed learners"
               emptyBody="No learner missed an assigned poll in the current filter range."
               valueFor={(learner) => `${learner.missed_polls_count} missed`}
-              metaFor={(learner) => `${formatPercent(learner.response_rate)} response`}
+              metaFor={(learner) => `${formatPercent(learner.response_rate)} response · ${learner.focus_area}`}
               onOpenLearner={onOpenLearner}
             />
           )}
@@ -218,7 +219,7 @@ export function LearnersPage({
               emptyTitle="No low-response learners"
               emptyBody="Every assigned learner has stayed responsive in the current filter range."
               valueFor={(learner) => formatPercent(learner.response_rate)}
-              metaFor={(learner) => `${learner.assigned_polls_count} assigned · ${learner.missed_polls_count} missed`}
+              metaFor={(learner) => `${learner.assigned_polls_count} assigned · ${learner.missed_polls_count} missed · ${learner.focus_area}`}
               onOpenLearner={onOpenLearner}
             />
           )}
@@ -255,6 +256,8 @@ export function LearnersPage({
                   <th>Total answers</th>
                   <th>Accuracy</th>
                   <th>Ignored changes</th>
+                  <th>Focus area</th>
+                  <th>Confidence</th>
                   <th>Latest activity</th>
                 </tr>
               </thead>
@@ -276,6 +279,8 @@ export function LearnersPage({
                     <td>{item.total_counted_votes}</td>
                     <td>{formatPercent(item.correct_rate)}</td>
                     <td>{item.ignored_changes_count}</td>
+                    <td>{item.focus_area}</td>
+                    <td>{formatConfidence(item.data_confidence)}</td>
                     <td>{formatActivity(item.latest_activity)}</td>
                   </tr>
                 ))}

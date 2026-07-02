@@ -184,6 +184,8 @@ export type LearnerSummary = {
   response_rate: number;
   first_activity?: string | null;
   latest_activity?: string | null;
+  focus_area: string;
+  data_confidence: string;
 };
 
 export type LearnerSummaryResponse = {
@@ -195,6 +197,7 @@ export type LearnerSummaryResponse = {
   total_counted_votes: number;
   correct_rate: number;
   ignored_changes_total: number;
+  low_confidence_count: number;
   needs_attention_count: number;
   inactive_count: number;
   engaged_count: number;
