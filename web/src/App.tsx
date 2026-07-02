@@ -28,7 +28,7 @@ import { EmptyState, TextInput } from "./components/common";
 import { PollModal, PreviewModal, ScheduleRuleModal, SettingsModal, TextModal } from "./components/modals";
 import { api, downloadCsv, getToken, setToken } from "./lib/api";
 import { dateRangeForPreset, type AnalyticsRangePreset } from "./lib/analytics";
-import { chatPolicyLabel, excerpt, formatPercent, formatWhen, minutesLabel, scheduleSummary } from "./lib/format";
+import { chatPolicyLabel, excerpt, formatPercent, formatReviewStatus, formatWhen, minutesLabel, scheduleSummary } from "./lib/format";
 import { navigateTo, parseRoute } from "./lib/routes";
 import { DocPage } from "./pages/DocPage";
 import { LearnerDetailPage } from "./pages/LearnerDetailPage";
@@ -49,6 +49,7 @@ import {
   type Poll,
   type PollFilters,
   type PollPool,
+  type PollQualitySummary,
   type PollStats,
   type PollCoverage,
   type Route,
@@ -65,6 +66,7 @@ import {
 
 const defaultPollFilters: PollFilters = {
   status: "sent",
+  reviewStatus: "",
   textId: "",
   dateFrom: "",
   dateTo: "",
@@ -81,10 +83,20 @@ const defaultLearnerFilters = (): LearnerFilters => ({
 function buildPollListPath(tenantId: number, filters: PollFilters) {
   const params = new URLSearchParams({ tenant_id: String(tenantId), page_size: "100" });
   if (filters.status) params.set("status", filters.status);
+  if (filters.reviewStatus) params.set("review_status", filters.reviewStatus);
   if (filters.textId) params.set("text_id", filters.textId);
   if (filters.dateFrom) params.set("sent_from", filters.dateFrom);
   if (filters.dateTo) params.set("sent_to", filters.dateTo);
   return `/polls?${params.toString()}`;
+}
+
+function buildPollQualitySummaryPath(tenantId: number, filters: PollFilters) {
+  const params = new URLSearchParams({ tenant_id: String(tenantId) });
+  if (filters.status) params.set("status", filters.status);
+  if (filters.textId) params.set("text_id", filters.textId);
+  if (filters.dateFrom) params.set("sent_from", filters.dateFrom);
+  if (filters.dateTo) params.set("sent_to", filters.dateTo);
+  return `/polls/quality-summary?${params.toString()}`;
 }
 
 export function App() {
@@ -285,6 +297,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
   const [polls, setPolls] = useState<Poll[]>([]);
   const [pollList, setPollList] = useState<Poll[]>([]);
   const [pollStats, setPollStats] = useState<PollStats[]>([]);
+  const [pollQualitySummary, setPollQualitySummary] = useState<PollQualitySummary | null>(null);
   const [voteEvents, setVoteEvents] = useState<VoteEvent[]>([]);
   const [currentVoteStatus, setCurrentVoteStatus] = useState<VoteStatus[]>([]);
   const [currentPoll, setCurrentPoll] = useState<Poll | null>(null);
@@ -340,6 +353,16 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
     }
   }
 
+  async function refreshPollQualitySummary() {
+    if (!tenant || route.name !== "polls") return;
+    try {
+      const result = await api<PollQualitySummary>(buildPollQualitySummaryPath(tenant.id, pollFilters));
+      setPollQualitySummary(result);
+    } catch (err) {
+      handleError(err instanceof Error ? err.message : "Failed to load poll quality summary");
+    }
+  }
+
   useEffect(() => {
     void loadData();
   }, [route.name, route.name === "text-detail" || route.name === "poll-detail" ? route.id : null]);
@@ -358,6 +381,21 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
       cancelled = true;
     };
   }, [tenant?.id, route.name, pollFilters]);
+
+  useEffect(() => {
+    if (!tenant || route.name !== "polls") return;
+    let cancelled = false;
+    api<PollQualitySummary>(buildPollQualitySummaryPath(tenant.id, pollFilters))
+      .then((result) => {
+        if (!cancelled) setPollQualitySummary(result);
+      })
+      .catch((err) => {
+        if (!cancelled) handleError(err instanceof Error ? err.message : "Failed to load poll quality summary");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tenant?.id, route.name, pollFilters.status, pollFilters.textId, pollFilters.dateFrom, pollFilters.dateTo]);
 
   useEffect(() => {
     setMobileNavOpen(false);
@@ -400,6 +438,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
   function handleSuccess(message: string) {
     setToast({ kind: "success", message });
     void loadData();
+    void refreshPollQualitySummary();
   }
 
   function handleError(message: string) {
@@ -641,6 +680,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
               polls={pollList}
               texts={texts}
               pollStats={pollStats}
+              qualitySummary={pollQualitySummary}
               filters={pollFilters}
               onFiltersChange={setPollFilters}
               onOpen={(poll) => navigateTo({ name: "poll-detail", id: poll.id })}
@@ -1375,6 +1415,7 @@ function PollsPage({
   polls,
   texts,
   pollStats,
+  qualitySummary,
   filters,
   onFiltersChange,
   onOpen,
@@ -1385,6 +1426,7 @@ function PollsPage({
   polls: Poll[];
   texts: Text[];
   pollStats: PollStats[];
+  qualitySummary: PollQualitySummary | null;
   filters: PollFilters;
   onFiltersChange: React.Dispatch<React.SetStateAction<PollFilters>>;
   onOpen: (poll: Poll) => void;
@@ -1412,6 +1454,13 @@ function PollsPage({
           <Plus size={16} /> New poll
         </button>
       </div>
+      <section className="metric-grid poll-quality-grid">
+        <MetricCard label="Review required" value={qualitySummary?.review_required_count ?? 0} detail="Draft and needs-edit polls in scope" icon={<AlertTriangle size={18} />} />
+        <MetricCard label="Approved" value={qualitySummary?.approved_count ?? 0} detail="Ready for delivery without more edits" icon={<CheckCircle2 size={18} />} />
+        <MetricCard label="Needs edit" value={qualitySummary?.needs_edit_count ?? 0} detail="Questions that should be revised before reuse" icon={<AlertTriangle size={18} />} />
+        <MetricCard label="Low accuracy" value={qualitySummary?.low_accuracy_count ?? 0} detail="Sent polls with accuracy below 60%" icon={<AlertTriangle size={18} />} />
+        <MetricCard label="Unanswered" value={qualitySummary?.unanswered_count ?? 0} detail="Sent polls with no counted votes yet" icon={<AlertTriangle size={18} />} />
+      </section>
       <div className="toolbar learner-toolbar">
         <TextInput
           label="Search"
@@ -1426,6 +1475,22 @@ function PollsPage({
             <option value="sent">Sent</option>
             <option value="queued">Queued</option>
             <option value="draft">Draft</option>
+          </select>
+        </label>
+        <label>
+          Review state
+          <select
+            value={filters.reviewStatus}
+            onChange={(event) =>
+              onFiltersChange((current) => ({ ...current, reviewStatus: event.target.value as PollFilters["reviewStatus"] }))
+            }
+          >
+            <option value="">All review states</option>
+            <option value="draft">Draft</option>
+            <option value="needs_edit">Needs edit</option>
+            <option value="approved">Approved</option>
+            <option value="disabled">Disabled</option>
+            <option value="archived">Archived</option>
           </select>
         </label>
         <label>
@@ -1456,6 +1521,30 @@ function PollsPage({
         </button>
       </div>
       <div className="resource-grid">
+        {qualitySummary && qualitySummary.weakest_polls.length > 0 && (
+          <section className="surface quality-queue">
+            <div className="section-header">
+              <div>
+                <p className="section-kicker">Question quality</p>
+                <h3>Weakest questions</h3>
+              </div>
+              <span className="pill">{qualitySummary.total_polls} in scope</span>
+            </div>
+            <div className="stack">
+              {qualitySummary.weakest_polls.map((item) => (
+                <article className="insight-row quality-item" key={item.poll.id}>
+                  <div>
+                    <strong>{item.poll.question}</strong>
+                    <p className="subtle">
+                      {formatReviewStatus(item.poll.review_status)} · {item.total} votes · {item.poll.status}
+                    </p>
+                  </div>
+                  <span className={item.correct_rate < 60 ? "pill danger" : "pill"}>{item.correct_rate.toFixed(1)}%</span>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
         {filtered.map((poll) => {
           const stats = statsById.get(poll.id);
           const sourceText = textById.get(poll.text_id);
@@ -1465,6 +1554,7 @@ function PollsPage({
                 <div className="resource-topline">
                   <span className="resource-id">#{poll.id}</span>
                   <span className={poll.status === "queued" ? "pill success" : "pill"}>{poll.status}</span>
+                  <span className={poll.review_status === "approved" ? "pill success" : poll.review_status === "needs_edit" ? "pill danger" : "pill"}>{formatReviewStatus(poll.review_status)}</span>
                 </div>
                 <h3>{poll.question}</h3>
                 <p>{sourceText ? excerpt(sourceText.body, 120) : "No linked text loaded."}</p>

@@ -132,6 +132,19 @@ export type PollStats = {
   correct_rate: number;
 };
 
+export type PollQualitySummary = {
+  total_polls: number;
+  draft_count: number;
+  approved_count: number;
+  needs_edit_count: number;
+  disabled_count: number;
+  archived_count: number;
+  review_required_count: number;
+  unanswered_count: number;
+  low_accuracy_count: number;
+  weakest_polls: PollStats[];
+};
+
 export type VoteEvent = {
   id: number;
   poll_id: number;
@@ -330,6 +343,7 @@ export type LearnerFilters = {
 
 export type PollFilters = {
   status: "" | "draft" | "queued" | "sent";
+  reviewStatus: "" | "draft" | "approved" | "needs_edit" | "disabled" | "archived";
   textId: string;
   dateFrom: string;
   dateTo: string;

@@ -67,6 +67,14 @@ export function formatConfidence(value?: string | null) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+export function formatReviewStatus(value?: string | null) {
+  if (!value) return "Draft";
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 export function formatSnapshotSource(value?: string | null) {
   if (value === "live_sync") return "Live sync";
   if (value === "cached_roster") return "Cached roster";

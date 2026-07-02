@@ -1,7 +1,7 @@
 import React from "react";
 import { ArrowLeft, Pencil, Trash2 } from "lucide-react";
 import { EmptyState, StatBlock } from "../components/common";
-import { describeIgnoredReason, describeVoteEvent, formatSnapshotSource, formatVoteContact, formatWhen, minutesLabel } from "../lib/format";
+import { describeIgnoredReason, describeVoteEvent, formatReviewStatus, formatSnapshotSource, formatVoteContact, formatWhen, minutesLabel } from "../lib/format";
 import type { Poll, PollCoverage, PollStats, VoteEvent, VoteStatus } from "../types";
 
 export function PollDetailPage({
@@ -71,7 +71,7 @@ export function PollDetailPage({
             <StatBlock label="Total votes" value={stats?.total || 0} />
             <StatBlock label="Correct rate" value={`${stats?.correct_rate.toFixed(1) || "0.0"}%`} />
             <StatBlock label="Status" value={poll.status} />
-            <StatBlock label="Review state" value={poll.review_status} />
+            <StatBlock label="Review state" value={formatReviewStatus(poll.review_status)} />
             <StatBlock label="Vote changes" value={minutesLabel(poll.change_window_seconds)} />
             <StatBlock label="Poll lock" value={poll.manual_lock ? "Locked" : "Open"} />
             <StatBlock label="Auto-lock" value={minutesLabel(poll.auto_lock_seconds)} />
