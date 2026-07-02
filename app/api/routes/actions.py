@@ -14,9 +14,12 @@ from app.database import (
     create_incoming_webhook,
     db_session,
     get_app_config_json,
+    get_tenant,
     get_incoming_webhook,
     now_iso,
     get_text,
+    list_polls,
+    list_texts,
     update_incoming_webhook,
 )
 from app.greenapi import GreenAPIError
@@ -146,6 +149,76 @@ def _build_readiness_payload(
     return payload, status_code
 
 
+def _build_pilot_readiness_payload(
+    *,
+    connector_ready: bool,
+    gemini_ready: bool,
+    enabled_text_count: int,
+    active_poll_rule_count: int,
+    sent_poll_count: int,
+    scheduler_ok: bool,
+    observed_at: str,
+) -> tuple[dict[str, Any], int]:
+    items = [
+        {
+            "label": "Connector configured",
+            "ready": connector_ready and gemini_ready,
+            "detail": "WhatsApp connector and Gemini settings are ready." if connector_ready and gemini_ready else "Finish connector or Gemini setup in Workspace Settings.",
+        },
+        {
+            "label": "Live content available",
+            "ready": enabled_text_count > 0,
+            "detail": (
+                f"{enabled_text_count} enabled text{'s' if enabled_text_count != 1 else ''} are ready to schedule."
+                if enabled_text_count > 0
+                else "Add and enable at least one text before launch."
+            ),
+        },
+        {
+            "label": "Poll rules assigned",
+            "ready": active_poll_rule_count > 0,
+            "detail": (
+                f"{active_poll_rule_count} active poll rule{'s' if active_poll_rule_count != 1 else ''} are attached to enabled texts."
+                if active_poll_rule_count > 0
+                else "Assign or enable a poll schedule rule before launch."
+            ),
+        },
+        {
+            "label": "Delivery history present",
+            "ready": sent_poll_count > 0,
+            "detail": (
+                f"{sent_poll_count} sent poll{'s' if sent_poll_count != 1 else ''} show the delivery path is working."
+                if sent_poll_count > 0
+                else "Send at least one poll so pilot monitoring has a baseline."
+            ),
+        },
+        {
+            "label": "Platform readiness",
+            "ready": scheduler_ok,
+            "detail": "Database and scheduler readiness checks are fresh." if scheduler_ok else "Resolve the release readiness check before starting a pilot.",
+        },
+    ]
+    warnings = [
+        warning
+        for warning in (
+            None if connector_ready and gemini_ready else "Workspace integration is incomplete",
+            None if enabled_text_count > 0 else "No enabled texts are available",
+            None if active_poll_rule_count > 0 else "No active poll rules are attached",
+            None if sent_poll_count > 0 else "No sent polls exist yet",
+            None if scheduler_ok else "Release readiness check is not passing",
+        )
+        if warning
+    ]
+    ok = all(item["ready"] for item in items)
+    payload = {
+        "ok": ok,
+        "generated_at": observed_at,
+        "items": items,
+        "warnings": warnings,
+    }
+    return payload, 200 if ok else 503
+
+
 @router.get("/api/v1/readiness")
 async def readiness():
     try:
@@ -166,6 +239,40 @@ async def readiness():
         scheduler_status=scheduler_status,
     )
     return JSONResponse(status_code=status_code, content=payload.model_dump())
+
+
+@router.get("/api/v1/pilot-readiness")
+async def pilot_readiness(user: dict[str, Any] = Depends(current_user)):
+    observed_at = datetime.now(timezone.utc).isoformat()
+    with db_session(settings.database_url) as conn:
+        tenant = get_tenant(conn, int(user["id"]))
+        if tenant is None:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        texts = list_texts(conn, tenant_id=int(user["id"]))
+        sent_polls = list_polls(conn, limit=10000, tenant_id=int(user["id"]), status="sent")
+        poll_rule_count = sum(
+            1
+            for text in texts
+            for rule in text.get("schedule_rules", [])
+            if rule.get("enabled") and rule.get("delivery_type") == "poll"
+        )
+        scheduler_status = get_app_config_json(conn, key=SCHEDULER_STATUS_KEY)
+    readiness_payload, _ = _build_readiness_payload(
+        database_ok=True,
+        database_error=None,
+        scheduler_status=scheduler_status,
+        now_utc=datetime.now(timezone.utc),
+    )
+    payload, status_code = _build_pilot_readiness_payload(
+        connector_ready=bool(tenant.get("whatsapp_connector", {}).get("provider")),
+        gemini_ready=bool(str(tenant.get("gemini_api_key") or "").strip()),
+        enabled_text_count=sum(1 for text in texts if text.get("enabled")),
+        active_poll_rule_count=poll_rule_count,
+        sent_poll_count=len(sent_polls),
+        scheduler_ok=readiness_payload.ok,
+        observed_at=observed_at,
+    )
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 @router.post("/api/v1/questions/preview")

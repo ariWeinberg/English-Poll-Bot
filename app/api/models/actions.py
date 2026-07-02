@@ -31,3 +31,16 @@ class ReadinessResponse(BaseModel):
     database: ReadinessDetail
     scheduler: ReadinessDetail
     warnings: list[str] = Field(default_factory=list)
+
+
+class PilotReadinessItem(BaseModel):
+    label: str
+    ready: bool
+    detail: str
+
+
+class PilotReadinessResponse(BaseModel):
+    ok: bool
+    generated_at: str
+    items: list[PilotReadinessItem]
+    warnings: list[str] = Field(default_factory=list)

@@ -254,6 +254,24 @@ def test_default_admin_login_works_after_password_hash_migration():
     assert response.status_code == 200
 
 
+def test_pilot_readiness_returns_launch_checklist():
+    reset_db()
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.get("/api/v1/pilot-readiness", headers=headers)
+
+    assert response.status_code in {200, 503}
+    body = response.json()
+    assert [item["label"] for item in body["items"]] == [
+        "Connector configured",
+        "Live content available",
+        "Poll rules assigned",
+        "Delivery history present",
+        "Platform readiness",
+    ]
+    assert len(body["warnings"]) >= 1
+
+
 def test_inactive_tenant_login_is_rejected():
     database_url = reset_db()
     with db_session(database_url) as conn:
