@@ -1,4 +1,4 @@
-from app.database import _learner_aggregate_cte
+from app.database import _learner_aggregate_cte, get_whatsapp_connector_diagnostics
 from app.db_runtime import normalize_database_url
 from app.services import runtime_config_from_row
 
@@ -48,3 +48,52 @@ def test_runtime_config_accepts_scheduler_rows_with_waha_connector():
     assert runtime.whatsapp_provider == "waha"
     assert runtime.whatsapp_ready is True
     assert runtime.gemini_ready is True
+
+
+class _FakeResult:
+    def __init__(self, row):
+        self._row = row
+
+    def fetchone(self):
+        return self._row
+
+
+class _FakeConnectorConnection:
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, sql, params):
+        self.calls.append((sql, params))
+        if "ORDER BY received_at DESC" in sql:
+            return _FakeResult(
+                {
+                    "received_at": "2026-07-02T09:00:00+00:00",
+                    "decision_status": "accepted",
+                    "decision_reason": "handled",
+                    "type_webhook": "pollMessageWebhook",
+                    "message_type": "vote",
+                    "provider_message_id": "abc-123",
+                }
+            )
+        return _FakeResult(
+            {
+                "total": 3,
+                "accepted": 1,
+                "ignored": 1,
+                "errored": 1,
+            }
+        )
+
+
+def test_connector_diagnostics_include_recent_webhook_activity():
+    conn = _FakeConnectorConnection()
+
+    diagnostics = get_whatsapp_connector_diagnostics(conn, tenant_id=1, provider="waha")
+
+    assert diagnostics["provider"] == "waha"
+    assert diagnostics["last_webhook_at"] == "2026-07-02T09:00:00+00:00"
+    assert diagnostics["last_webhook_status"] == "accepted"
+    assert diagnostics["webhooks_last_24h"] == 3
+    assert diagnostics["accepted_last_24h"] == 1
+    assert diagnostics["ignored_last_24h"] == 1
+    assert diagnostics["errored_last_24h"] == 1

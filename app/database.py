@@ -1569,6 +1569,62 @@ def get_active_whatsapp_connector(conn: psycopg.Connection[DbRow], *, tenant_id:
     return row
 
 
+def get_whatsapp_connector_diagnostics(
+    conn: psycopg.Connection[DbRow], *, tenant_id: int, provider: str
+) -> DbRow:
+    provider_name = provider.strip().lower() or "greenapi"
+    recent_since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    latest = conn.execute(
+        """
+        SELECT received_at, decision_status, decision_reason, type_webhook, message_type, provider_message_id
+        FROM incoming_webhooks
+        WHERE tenant_id = %s AND provider = %s
+        ORDER BY received_at DESC, id DESC
+        LIMIT 1
+        """,
+        (tenant_id, provider_name),
+    ).fetchone()
+    recent_counts = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE decision_status = 'accepted') AS accepted,
+            COUNT(*) FILTER (WHERE decision_status = 'ignored') AS ignored,
+            COUNT(*) FILTER (WHERE decision_status = 'error') AS errored
+        FROM incoming_webhooks
+        WHERE tenant_id = %s AND provider = %s AND received_at >= %s
+        """,
+        (tenant_id, provider_name, recent_since),
+    ).fetchone()
+    if latest is None:
+        return {
+            "provider": provider_name,
+            "last_webhook_at": None,
+            "last_webhook_status": None,
+            "last_webhook_reason": None,
+            "last_webhook_type": None,
+            "last_webhook_message_type": None,
+            "last_webhook_message_id": None,
+            "webhooks_last_24h": int(recent_counts["total"]),
+            "accepted_last_24h": int(recent_counts["accepted"]),
+            "ignored_last_24h": int(recent_counts["ignored"]),
+            "errored_last_24h": int(recent_counts["errored"]),
+        }
+    return {
+        "provider": provider_name,
+        "last_webhook_at": latest["received_at"],
+        "last_webhook_status": latest["decision_status"],
+        "last_webhook_reason": latest["decision_reason"],
+        "last_webhook_type": latest["type_webhook"],
+        "last_webhook_message_type": latest["message_type"],
+        "last_webhook_message_id": latest["provider_message_id"],
+        "webhooks_last_24h": int(recent_counts["total"]),
+        "accepted_last_24h": int(recent_counts["accepted"]),
+        "ignored_last_24h": int(recent_counts["ignored"]),
+        "errored_last_24h": int(recent_counts["errored"]),
+    }
+
+
 def upsert_active_whatsapp_connector(
     conn: psycopg.Connection[DbRow],
     *,
@@ -1636,6 +1692,11 @@ def _attach_whatsapp_connector_for_tenant(
         "provider": connector.get("provider") or "greenapi",
         "config": config,
         "is_active": bool(connector.get("is_active", True)),
+        "diagnostics": get_whatsapp_connector_diagnostics(
+            conn,
+            tenant_id=tenant_id,
+            provider=str(connector.get("provider") or "greenapi"),
+        ),
     }
     row["whatsapp_provider"] = str(row["whatsapp_connector"]["provider"])
     row["greenapi_api_url"] = str(config.get("api_url") or row.get("greenapi_api_url") or "").strip().rstrip("/")
