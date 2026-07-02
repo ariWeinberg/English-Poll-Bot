@@ -265,6 +265,7 @@ Turn backend capabilities into coherent teacher workflows that can be used durin
 
 - Settings, texts, polls, learners, webhooks, and the executive dashboard already expose most operational primitives.
 - The dashboard now includes a teacher workflow checklist and a next-step shortcut derived from workspace state.
+- The settings page now exposes a pilot-readiness checklist built from live workspace, content, and scheduler state.
 
 ### Gaps to Close
 

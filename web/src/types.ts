@@ -251,6 +251,19 @@ export type LearnerDetail = {
   missed_polls: LearnerMissedPollItem[];
 };
 
+export type PilotReadinessItem = {
+  label: string;
+  ready: boolean;
+  detail: string;
+};
+
+export type PilotReadinessResponse = {
+  ok: boolean;
+  generated_at: string;
+  items: PilotReadinessItem[];
+  warnings: string[];
+};
+
 export type RosterMember = {
   voter_wid: string;
   display_name: string;

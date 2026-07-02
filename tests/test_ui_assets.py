@@ -32,6 +32,9 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Teacher Workflow" in src_bundle
     assert "Setup checklist" in src_bundle
     assert "Finish settings" in src_bundle
+    assert "Pilot readiness" in src_bundle
+    assert "Launch checklist" in src_bundle
+    assert "Pilot ready" in src_bundle
     assert "Weakest questions" in src_bundle
     assert "Review required" in src_bundle
     assert "All review states" in src_bundle

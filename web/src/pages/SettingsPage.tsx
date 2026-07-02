@@ -1,7 +1,8 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { FilePenLine } from "lucide-react";
-import { DetailRow } from "../components/common";
-import type { Tenant } from "../types";
+import { DetailRow, EmptyState } from "../components/common";
+import { api } from "../lib/api";
+import type { PilotReadinessResponse, Tenant } from "../types";
 
 function formatWebhookActivity(value?: string | null) {
   if (!value) return "No webhook activity yet";
@@ -10,6 +11,9 @@ function formatWebhookActivity(value?: string | null) {
 }
 
 export function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () => void }) {
+  const [pilotReadiness, setPilotReadiness] = useState<PilotReadinessResponse | null>(null);
+  const [pilotReadinessError, setPilotReadinessError] = useState("");
+  const [pilotReadinessLoading, setPilotReadinessLoading] = useState(true);
   const connector = tenant.whatsapp_connector;
   const connectorConfig = connector?.config || {};
   const diagnostics = connector?.diagnostics;
@@ -31,6 +35,25 @@ export function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () =>
       value: diagnostics ? `${diagnostics.accepted_last_24h || 0} / ${diagnostics.ignored_last_24h || 0} / ${diagnostics.errored_last_24h || 0}` : "No webhook activity yet",
     },
   ];
+
+  useEffect(() => {
+    let cancelled = false;
+    setPilotReadinessLoading(true);
+    setPilotReadinessError("");
+    api<PilotReadinessResponse>("/pilot-readiness")
+      .then((result) => {
+        if (!cancelled) setPilotReadiness(result);
+      })
+      .catch((err) => {
+        if (!cancelled) setPilotReadinessError(err instanceof Error ? err.message : "Failed to load pilot readiness");
+      })
+      .finally(() => {
+        if (!cancelled) setPilotReadinessLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tenant.id]);
 
   return (
     <section className="detail-page">
@@ -96,6 +119,33 @@ export function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () =>
               </div>
             ))}
           </div>
+          <div className="section-header" style={{ marginTop: "1.25rem" }}>
+            <div>
+              <p className="section-kicker">Pilot readiness</p>
+              <h3>Launch checklist</h3>
+            </div>
+          </div>
+          {pilotReadinessLoading ? (
+            <EmptyState title="Loading pilot readiness" body="Checking workspace setup, content, rules, and platform readiness." />
+          ) : pilotReadinessError ? (
+            <div className="alert error">{pilotReadinessError}</div>
+          ) : (
+            <div className="stack">
+              {pilotReadiness?.items.map((item) => (
+                <div className="result-row" key={item.label}>
+                  <div>
+                    <strong>{item.label}</strong>
+                    <p className="subtle">{item.detail}</p>
+                  </div>
+                  <span className={item.ready ? "pill success" : "pill"}>{item.ready ? "Ready" : "Pending"}</span>
+                </div>
+              ))}
+              {pilotReadiness && pilotReadiness.warnings.length > 0 && (
+                <div className="subtle">{pilotReadiness.warnings.join(" · ")}</div>
+              )}
+              {pilotReadiness?.ok && <span className="pill success">Pilot ready</span>}
+            </div>
+          )}
         </aside>
       </div>
     </section>
