@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { FilePenLine } from "lucide-react";
+import { Download, FilePenLine } from "lucide-react";
 import { DetailRow, EmptyState } from "../components/common";
-import { api } from "../lib/api";
-import type { PilotReadinessResponse, Tenant } from "../types";
+import { api, downloadPilotReport } from "../lib/api";
+import type { PilotReportResponse, Tenant } from "../types";
 
 function formatWebhookActivity(value?: string | null) {
   if (!value) return "No webhook activity yet";
@@ -11,9 +11,11 @@ function formatWebhookActivity(value?: string | null) {
 }
 
 export function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () => void }) {
-  const [pilotReadiness, setPilotReadiness] = useState<PilotReadinessResponse | null>(null);
-  const [pilotReadinessError, setPilotReadinessError] = useState("");
-  const [pilotReadinessLoading, setPilotReadinessLoading] = useState(true);
+  const [pilotReport, setPilotReport] = useState<PilotReportResponse | null>(null);
+  const [pilotReportLoadError, setPilotReportLoadError] = useState("");
+  const [pilotReportDownloadError, setPilotReportDownloadError] = useState("");
+  const [pilotReportLoading, setPilotReportLoading] = useState(true);
+  const [reportDownloading, setReportDownloading] = useState(false);
   const connector = tenant.whatsapp_connector;
   const connectorConfig = connector?.config || {};
   const diagnostics = connector?.diagnostics;
@@ -38,22 +40,35 @@ export function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () =>
 
   useEffect(() => {
     let cancelled = false;
-    setPilotReadinessLoading(true);
-    setPilotReadinessError("");
-    api<PilotReadinessResponse>("/pilot-readiness")
+    setPilotReportLoading(true);
+    setPilotReportLoadError("");
+    setPilotReportDownloadError("");
+    api<PilotReportResponse>("/pilot-report.json")
       .then((result) => {
-        if (!cancelled) setPilotReadiness(result);
+        if (!cancelled) setPilotReport(result);
       })
       .catch((err) => {
-        if (!cancelled) setPilotReadinessError(err instanceof Error ? err.message : "Failed to load pilot readiness");
+        if (!cancelled) setPilotReportLoadError(err instanceof Error ? err.message : "Failed to load pilot report");
       })
       .finally(() => {
-        if (!cancelled) setPilotReadinessLoading(false);
+        if (!cancelled) setPilotReportLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, [tenant.id]);
+
+  async function handleDownloadPilotReport() {
+    setReportDownloading(true);
+    setPilotReportDownloadError("");
+    try {
+      await downloadPilotReport();
+    } catch (err) {
+      setPilotReportDownloadError(err instanceof Error ? err.message : "Failed to download pilot report");
+    } finally {
+      setReportDownloading(false);
+    }
+  }
 
   return (
     <section className="detail-page">
@@ -124,14 +139,18 @@ export function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () =>
               <p className="section-kicker">Pilot readiness</p>
               <h3>Launch checklist</h3>
             </div>
+            <button className="button button-secondary" onClick={() => void handleDownloadPilotReport()} disabled={reportDownloading || pilotReportLoading}>
+              <Download size={16} /> {reportDownloading ? "Preparing" : "Download report"}
+            </button>
           </div>
-          {pilotReadinessLoading ? (
-            <EmptyState title="Loading pilot readiness" body="Checking workspace setup, content, rules, and platform readiness." />
-          ) : pilotReadinessError ? (
-            <div className="alert error">{pilotReadinessError}</div>
+          {pilotReportLoading ? (
+            <EmptyState title="Loading pilot readiness" body="Checking workspace setup, content, rules, quality, and platform readiness." />
+          ) : pilotReportLoadError ? (
+            <div className="alert error">{pilotReportLoadError}</div>
           ) : (
             <div className="stack">
-              {pilotReadiness?.items.map((item) => (
+              {pilotReportDownloadError && <div className="alert error">{pilotReportDownloadError}</div>}
+              {pilotReport?.readiness.items.map((item) => (
                 <div className="result-row" key={item.label}>
                   <div>
                     <strong>{item.label}</strong>
@@ -140,10 +159,36 @@ export function SettingsPage({ tenant, onEdit }: { tenant: Tenant; onEdit: () =>
                   <span className={item.ready ? "pill success" : "pill"}>{item.ready ? "Ready" : "Pending"}</span>
                 </div>
               ))}
-              {pilotReadiness && pilotReadiness.warnings.length > 0 && (
-                <div className="subtle">{pilotReadiness.warnings.join(" · ")}</div>
+              {pilotReport && (
+                <>
+                  <div className="section-header" style={{ marginTop: "1rem" }}>
+                    <div>
+                      <p className="section-kicker">Report summary</p>
+                      <h3>Export metrics</h3>
+                    </div>
+                  </div>
+                  <div className="stack">
+                    <div className="result-row">
+                      <span>Enabled texts</span>
+                      <span>{pilotReport.metrics.enabled_text_count} / {pilotReport.metrics.text_count}</span>
+                    </div>
+                    <div className="result-row">
+                      <span>Poll rules assigned</span>
+                      <span>{pilotReport.metrics.active_poll_rule_count}</span>
+                    </div>
+                    <div className="result-row">
+                      <span>Sent polls</span>
+                      <span>{pilotReport.metrics.sent_poll_count}</span>
+                    </div>
+                    <div className="result-row">
+                      <span>Review-required polls</span>
+                      <span>{pilotReport.metrics.review_required_count}</span>
+                    </div>
+                  </div>
+                </>
               )}
-              {pilotReadiness?.ok && <span className="pill success">Pilot ready</span>}
+              {pilotReport && pilotReport.warnings.length > 0 && <div className="subtle">{pilotReport.warnings.join(" · ")}</div>}
+              {pilotReport?.readiness.ok && <span className="pill success">Pilot ready</span>}
             </div>
           )}
         </aside>

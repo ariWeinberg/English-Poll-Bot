@@ -35,6 +35,9 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Pilot readiness" in src_bundle
     assert "Launch checklist" in src_bundle
     assert "Pilot ready" in src_bundle
+    assert "Pilot report" in src_bundle
+    assert "Download report" in src_bundle
+    assert "Export metrics" in src_bundle
     assert "Weakest questions" in src_bundle
     assert "Review required" in src_bundle
     assert "All review states" in src_bundle
@@ -78,6 +81,7 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Open Swagger" in src_bundle
     assert "/docs/session" in src_bundle
     assert "/api/v1/readiness" in src_bundle
+    assert "/pilot-report.json" in src_bundle
     assert "LOG_REQUEST_BODY_ENABLED" in src_bundle
     assert "Readiness" in src_bundle
     assert "Recent provider events" in src_bundle

@@ -264,6 +264,43 @@ export type PilotReadinessResponse = {
   warnings: string[];
 };
 
+export type PilotReportResponse = {
+  generated_at: string;
+  tenant: {
+    id: number;
+    name: string;
+    username: string;
+    timezone: string;
+    scheduler_enabled: boolean;
+    summary_enabled: boolean;
+    whatsapp_provider: string;
+    connector_configured: boolean;
+    gemini_configured: boolean;
+  };
+  metrics: {
+    text_count: number;
+    enabled_text_count: number;
+    active_poll_rule_count: number;
+    sent_poll_count: number;
+    total_poll_count: number;
+    review_required_count: number;
+    unanswered_count: number;
+    low_accuracy_count: number;
+  };
+  readiness: PilotReadinessResponse;
+  quality: {
+    draft_count: number;
+    approved_count: number;
+    needs_edit_count: number;
+    disabled_count: number;
+    archived_count: number;
+    review_required_count: number;
+    unanswered_count: number;
+    low_accuracy_count: number;
+  };
+  warnings: string[];
+};
+
 export type RosterMember = {
   voter_wid: string;
   display_name: string;

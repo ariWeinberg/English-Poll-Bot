@@ -59,17 +59,29 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   return response.json() as Promise<T>;
 }
 
-export async function downloadCsv() {
+async function downloadAttachment(path: string, filename: string, errorMessage: string) {
   const headers = new Headers();
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(`${API_BASE}/polls/export.csv`, { headers });
-  if (!response.ok) throw new Error("CSV export failed");
+  const response = await fetch(`${API_BASE}${path}`, { headers });
+  if (response.status === 401) {
+    setToken(null);
+    window.dispatchEvent(new Event("auth-expired"));
+  }
+  if (!response.ok) throw new Error(errorMessage);
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = "poll-stats.csv";
+  link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+export async function downloadCsv() {
+  return downloadAttachment("/polls/export.csv", "poll-stats.csv", "CSV export failed");
+}
+
+export async function downloadPilotReport() {
+  return downloadAttachment("/pilot-report.json", "pilot-report.json", "Pilot report export failed");
 }
