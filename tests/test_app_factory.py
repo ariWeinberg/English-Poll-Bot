@@ -47,6 +47,7 @@ def test_create_app_registers_expected_routes():
         "/api/v1/poll-vote-events/{event_id}",
         "/api/v1/questions/preview",
         "/api/v1/summaries/send-now",
+        "/api/v1/pilot-report.json",
         "/webhooks/greenapi/{tenant_id}",
     }
 

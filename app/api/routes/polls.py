@@ -235,7 +235,9 @@ async def update_poll_pool_rank(poll_id: int, payload: PollRankPayload, _: dict[
         if poll is None:
             raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Poll not found")
         if str(poll["status"]) != "queued":
-            raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="Only queued polls can be reordered")
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST, detail="Only queued polls can be reordered"
+            )
         reordered = reorder_queued_poll(conn, poll_id=poll_id, pool_rank=payload.pool_rank)
     return serialize_poll(reordered)
 

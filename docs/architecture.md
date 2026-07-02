@@ -30,7 +30,7 @@ Route handlers should stay thin. New business rules belong in service functions.
 - The authenticated `/learners` route renders the learner intervention dashboard and uses tenant-scoped learner summary, ranked risk slices, segment filters, and missed-response endpoints.
 - The learner dashboard also renders derived focus-area and data-confidence markers so operators can distinguish sparse data from actionable risk.
 - The authenticated `/settings` route renders workspace configuration plus connector diagnostics, including recent webhook activity and provider status.
-- The authenticated `/settings` route also renders a pilot-readiness checklist so launch blockers are visible alongside connector state.
+- The authenticated `/settings` route also renders a pilot-readiness checklist and a downloadable pilot report so launch blockers and review artifacts stay visible alongside connector state.
 - The authenticated text and poll detail routes render roster sync controls, schedule-rule summaries, and poll coverage summaries on top of the existing delivery views.
 - The authenticated poll detail and edit flows render review state and review notes so teachers can approve, disable, archive, or request edits on generated questions.
 - The authenticated `/polls` route also exposes review-state filters and a quality summary so weak or review-required questions are visible before teachers drill into a detail page.

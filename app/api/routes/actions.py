@@ -20,6 +20,7 @@ from app.database import (
     get_text,
     list_polls,
     list_texts,
+    poll_quality_summary,
     update_incoming_webhook,
 )
 from app.greenapi import GreenAPIError
@@ -163,7 +164,9 @@ def _build_pilot_readiness_payload(
         {
             "label": "Connector configured",
             "ready": connector_ready and gemini_ready,
-            "detail": "WhatsApp connector and Gemini settings are ready." if connector_ready and gemini_ready else "Finish connector or Gemini setup in Workspace Settings.",
+            "detail": "WhatsApp connector and Gemini settings are ready."
+            if connector_ready and gemini_ready
+            else "Finish connector or Gemini setup in Workspace Settings.",
         },
         {
             "label": "Live content available",
@@ -195,7 +198,9 @@ def _build_pilot_readiness_payload(
         {
             "label": "Platform readiness",
             "ready": scheduler_ok,
-            "detail": "Database and scheduler readiness checks are fresh." if scheduler_ok else "Resolve the release readiness check before starting a pilot.",
+            "detail": "Database and scheduler readiness checks are fresh."
+            if scheduler_ok
+            else "Resolve the release readiness check before starting a pilot.",
         },
     ]
     warnings = [
@@ -264,7 +269,7 @@ async def pilot_readiness(user: dict[str, Any] = Depends(current_user)):
         now_utc=datetime.now(timezone.utc),
     )
     payload, status_code = _build_pilot_readiness_payload(
-        connector_ready=bool(tenant.get("whatsapp_connector", {}).get("provider")),
+        connector_ready=bool((tenant.get("whatsapp_connector") or {}).get("provider")),
         gemini_ready=bool(str(tenant.get("gemini_api_key") or "").strip()),
         enabled_text_count=sum(1 for text in texts if text.get("enabled")),
         active_poll_rule_count=poll_rule_count,
@@ -273,6 +278,88 @@ async def pilot_readiness(user: dict[str, Any] = Depends(current_user)):
         observed_at=observed_at,
     )
     return JSONResponse(status_code=status_code, content=payload)
+
+
+@router.get("/api/v1/pilot-report.json")
+async def pilot_report(user: dict[str, Any] = Depends(current_user)):
+    observed_at = datetime.now(timezone.utc).isoformat()
+    with db_session(settings.database_url) as conn:
+        tenant = get_tenant(conn, int(user["id"]))
+        if tenant is None:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        texts = list_texts(conn, tenant_id=int(user["id"]))
+        sent_polls = list_polls(conn, limit=10000, tenant_id=int(user["id"]), status="sent")
+        poll_rule_count = sum(
+            1
+            for text in texts
+            for rule in text.get("schedule_rules", [])
+            if rule.get("enabled") and rule.get("delivery_type") == "poll"
+        )
+        readiness_status = get_app_config_json(conn, key=SCHEDULER_STATUS_KEY)
+        quality_summary = poll_quality_summary(conn, tenant_id=int(user["id"]))
+
+    readiness_payload, _ = _build_readiness_payload(
+        database_ok=True,
+        database_error=None,
+        scheduler_status=readiness_status,
+        now_utc=datetime.now(timezone.utc),
+    )
+    pilot_readiness_payload, _ = _build_pilot_readiness_payload(
+        connector_ready=bool((tenant.get("whatsapp_connector") or {}).get("provider")),
+        gemini_ready=bool(str(tenant.get("gemini_api_key") or "").strip()),
+        enabled_text_count=sum(1 for text in texts if text.get("enabled")),
+        active_poll_rule_count=poll_rule_count,
+        sent_poll_count=len(sent_polls),
+        scheduler_ok=readiness_payload.ok,
+        observed_at=observed_at,
+    )
+    warnings = list(pilot_readiness_payload["warnings"])
+    if int(quality_summary["review_required_count"]) > 0:
+        warnings.append(f"Question review is required for {int(quality_summary['review_required_count'])} polls")
+    if int(quality_summary["low_accuracy_count"]) > 0:
+        warnings.append(f"{int(quality_summary['low_accuracy_count'])} polls are showing low accuracy")
+
+    payload = {
+        "generated_at": observed_at,
+        "tenant": {
+            "id": int(tenant["id"]),
+            "name": str(tenant["name"]),
+            "username": str(tenant["username"]),
+            "timezone": str(tenant["timezone"]),
+            "scheduler_enabled": bool(tenant["scheduler_enabled"]),
+            "summary_enabled": bool(tenant["summary_enabled"]),
+            "whatsapp_provider": str(tenant.get("whatsapp_provider") or ""),
+            "connector_configured": bool((tenant.get("whatsapp_connector") or {}).get("provider")),
+            "gemini_configured": bool(str(tenant.get("gemini_api_key") or "").strip()),
+        },
+        "metrics": {
+            "text_count": len(texts),
+            "enabled_text_count": sum(1 for text in texts if text.get("enabled")),
+            "active_poll_rule_count": poll_rule_count,
+            "sent_poll_count": len(sent_polls),
+            "total_poll_count": int(quality_summary["total_polls"]),
+            "review_required_count": int(quality_summary["review_required_count"]),
+            "unanswered_count": int(quality_summary["unanswered_count"]),
+            "low_accuracy_count": int(quality_summary["low_accuracy_count"]),
+        },
+        "readiness": pilot_readiness_payload,
+        "quality": {
+            "draft_count": int(quality_summary["draft_count"]),
+            "approved_count": int(quality_summary["approved_count"]),
+            "needs_edit_count": int(quality_summary["needs_edit_count"]),
+            "disabled_count": int(quality_summary["disabled_count"]),
+            "archived_count": int(quality_summary["archived_count"]),
+            "review_required_count": int(quality_summary["review_required_count"]),
+            "unanswered_count": int(quality_summary["unanswered_count"]),
+            "low_accuracy_count": int(quality_summary["low_accuracy_count"]),
+        },
+        "warnings": warnings,
+    }
+    return JSONResponse(
+        status_code=200,
+        content=payload,
+        headers={"Content-Disposition": 'attachment; filename="pilot-report.json"'},
+    )
 
 
 @router.post("/api/v1/questions/preview")
@@ -450,7 +537,9 @@ async def _process_provider_webhook(
     retry: bool,
 ):
     with db_session(settings.database_url) as conn:
-        current_retry_count = int((get_incoming_webhook(conn, tenant_id=tenant_id, webhook_id=webhook_id) or {}).get("retry_count", 0))
+        current_retry_count = int(
+            (get_incoming_webhook(conn, tenant_id=tenant_id, webhook_id=webhook_id) or {}).get("retry_count", 0)
+        )
     try:
         if provider == "waha":
             decision = await handle_waha_webhook_async(

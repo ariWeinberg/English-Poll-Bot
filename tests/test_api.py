@@ -272,6 +272,21 @@ def test_pilot_readiness_returns_launch_checklist():
     assert len(body["warnings"]) >= 1
 
 
+def test_pilot_report_returns_export_payload():
+    reset_db()
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.get("/api/v1/pilot-report.json", headers=headers)
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"] == 'attachment; filename="pilot-report.json"'
+    body = response.json()
+    assert body["tenant"]["username"] == "admin"
+    assert body["metrics"]["text_count"] >= 1
+    assert body["readiness"]["items"][0]["label"] == "Connector configured"
+    assert "warnings" in body
+
+
 def test_inactive_tenant_login_is_rejected():
     database_url = reset_db()
     with db_session(database_url) as conn:
@@ -683,7 +698,14 @@ def test_poll_quality_summary_and_review_filter_returns_quality_queue():
             END
             WHERE id IN (%s, %s, %s)
             """,
-            (poll_ids["poll_1"], poll_ids["poll_2"], poll_ids["poll_3"], poll_ids["poll_1"], poll_ids["poll_2"], poll_ids["poll_3"]),
+            (
+                poll_ids["poll_1"],
+                poll_ids["poll_2"],
+                poll_ids["poll_3"],
+                poll_ids["poll_1"],
+                poll_ids["poll_2"],
+                poll_ids["poll_3"],
+            ),
         )
 
     with TestClient(app) as client:
@@ -699,7 +721,11 @@ def test_poll_quality_summary_and_review_filter_returns_quality_queue():
     assert body["needs_edit_count"] == 1
     assert body["review_required_count"] == 2
     assert body["low_accuracy_count"] == 1
-    assert [item["poll"]["id"] for item in body["weakest_polls"]] == [poll_ids["poll_1"], poll_ids["poll_2"], poll_ids["poll_3"]]
+    assert [item["poll"]["id"] for item in body["weakest_polls"]] == [
+        poll_ids["poll_1"],
+        poll_ids["poll_2"],
+        poll_ids["poll_3"],
+    ]
 
     assert filtered.status_code == 200
     filtered_body = filtered.json()
@@ -1064,7 +1090,9 @@ def test_webhook_retry_reprocesses_errored_event(monkeypatch):
         assert response.status_code == 500
 
         with db_session(database_url) as conn:
-            row = conn.execute("SELECT id, decision_status, retry_count FROM incoming_webhooks ORDER BY id DESC LIMIT 1").fetchone()
+            row = conn.execute(
+                "SELECT id, decision_status, retry_count FROM incoming_webhooks ORDER BY id DESC LIMIT 1"
+            ).fetchone()
         webhook_id = int(row["id"])
         assert row["decision_status"] == "error"
         assert int(row["retry_count"]) == 0

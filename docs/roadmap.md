@@ -265,7 +265,7 @@ Turn backend capabilities into coherent teacher workflows that can be used durin
 
 - Settings, texts, polls, learners, webhooks, and the executive dashboard already expose most operational primitives.
 - The dashboard now includes a teacher workflow checklist and a next-step shortcut derived from workspace state.
-- The settings page now exposes a pilot-readiness checklist built from live workspace, content, and scheduler state.
+- The settings page now exposes a pilot-readiness checklist and downloadable pilot report built from live workspace, content, scheduler, and quality state.
 
 ### Gaps to Close
 
@@ -339,7 +339,7 @@ Package the platform, operations, support, and reporting needed to run controlle
 
 - Pilot configuration fields
 - Readiness checklist UI and APIs
-- Weekly and end-of-pilot report exports
+- Weekly and end-of-pilot report exports from the settings page and operator surfaces
 - Structured feedback capture
 
 ### Acceptance Checks

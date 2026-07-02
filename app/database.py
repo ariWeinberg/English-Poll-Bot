@@ -1624,9 +1624,7 @@ def get_active_whatsapp_connector(conn: psycopg.Connection[DbRow], *, tenant_id:
     return row
 
 
-def get_whatsapp_connector_diagnostics(
-    conn: psycopg.Connection[DbRow], *, tenant_id: int, provider: str
-) -> DbRow:
+def get_whatsapp_connector_diagnostics(conn: psycopg.Connection[DbRow], *, tenant_id: int, provider: str) -> DbRow:
     provider_name = provider.strip().lower() or "greenapi"
     recent_since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     latest = conn.execute(
