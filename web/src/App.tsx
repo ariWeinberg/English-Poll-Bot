@@ -614,6 +614,7 @@ function AuthenticatedApp({ route, onLogout }: { route: Route; onLogout: () => v
               onOpenPoll={(poll) => navigateTo({ name: "poll-detail", id: poll.id })}
               onNewText={() => setTextModal({ mode: "create" })}
               onNewPoll={() => setPollModal({ mode: "create" })}
+              onOpenSettings={() => navigateTo({ name: "settings" })}
             />
           )}
           {route.name === "learners" && (
@@ -901,6 +902,7 @@ function DashboardPage({
   onOpenPoll,
   onNewText,
   onNewPoll,
+  onOpenSettings,
 }: {
   tenant: Tenant;
   texts: Text[];
@@ -910,6 +912,7 @@ function DashboardPage({
   onOpenPoll: (poll: Poll) => void;
   onNewText: () => void;
   onNewPoll: () => void;
+  onOpenSettings: () => void;
 }) {
   const [rangePreset, setRangePreset] = useState<AnalyticsRangePreset>("7d");
   const [stats, setStats] = useState<PollStats[]>([]);
@@ -917,9 +920,45 @@ function DashboardPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const range = useMemo(() => dateRangeForPreset(rangePreset), [rangePreset]);
+  const connectorConfig = tenant.whatsapp_connector?.config || {};
+  const connectorReady =
+    tenant.whatsapp_provider === "waha"
+      ? Boolean(connectorConfig.base_url && connectorConfig.session)
+      : Boolean(connectorConfig.api_url && connectorConfig.id_instance && connectorConfig.api_token_instance);
   const sentPolls = polls.filter((poll) => poll.status === "sent").length;
   const queuedPolls = polls.filter((poll) => poll.status === "queued").length;
   const enabledTexts = texts.filter((text) => text.enabled).length;
+  const textsWithPollRules = texts.filter(
+    (text) => text.enabled && text.schedule_rules.some((rule) => rule.enabled && rule.delivery_type === "poll"),
+  ).length;
+  const hasWeakPolls = polls.some((poll) => poll.review_status === "needs_edit" || poll.review_status === "draft");
+  const workflowSteps = [
+    {
+      label: "Configure workspace",
+      done: connectorReady && Boolean(tenant.gemini_api_key),
+      detail: connectorReady ? "WhatsApp and Gemini credentials are present." : "Open settings to finish connector or model setup.",
+    },
+    {
+      label: "Add live content",
+      done: enabledTexts > 0,
+      detail: `${enabledTexts} enabled text${enabledTexts === 1 ? "" : "s"} available for delivery.`,
+    },
+    {
+      label: "Assign delivery rules",
+      done: textsWithPollRules > 0,
+      detail: `${textsWithPollRules} text${textsWithPollRules === 1 ? "" : "s"} have active poll rules.`,
+    },
+    {
+      label: "Send through the pool",
+      done: sentPolls > 0 || queuedPolls > 0,
+      detail: `${sentPolls} sent and ${queuedPolls} queued poll${sentPolls + queuedPolls === 1 ? "" : "s"} in circulation.`,
+    },
+    {
+      label: "Review weak content",
+      done: !hasWeakPolls,
+      detail: hasWeakPolls ? "Some polls still need review before the content set is stable." : "No obvious poll review work is pending.",
+    },
+  ];
 
   useEffect(() => {
     let cancelled = false;
@@ -957,6 +996,22 @@ function DashboardPage({
   const riskyTexts = [...textPerformance].sort((left, right) => left.responseRate - right.responseRate || right.sentPolls - left.sentPolls).slice(0, 4);
   const topPolls = [...stats].sort((left, right) => right.total - left.total || right.correct_rate - left.correct_rate).slice(0, 4);
   const weakPolls = [...stats].sort((left, right) => left.correct_rate - right.correct_rate || left.total - right.total).slice(0, 4);
+  const firstText = texts[0] || texts.find((text) => text.enabled) || null;
+  const firstPoll = polls[0] || null;
+  const nextWorkflowAction =
+    !connectorReady || !tenant.gemini_api_key
+      ? { label: "Finish settings", action: onOpenSettings }
+      : enabledTexts === 0
+        ? { label: "Create a text", action: onNewText }
+        : textsWithPollRules === 0 && firstText
+          ? { label: "Open a text", action: () => onOpenText(firstText) }
+          : sentPolls + queuedPolls === 0
+            ? { label: "Create a poll", action: onNewPoll }
+            : hasWeakPolls && firstPoll
+              ? { label: "Review polls", action: () => onOpenPoll(weakPolls[0]?.poll || firstPoll) }
+              : learnerSummary?.needs_attention_count
+                ? { label: "Review learners", action: () => onOpenLearners({ ...range, segment: "needs_attention" }) }
+                : null;
   const recentActivity = polls
     .filter((poll) => poll.sent_at)
     .sort((left, right) => (right.sent_at || "").localeCompare(left.sent_at || ""))
@@ -1040,6 +1095,28 @@ function DashboardPage({
 
         <section className="surface side-surface">
           <div className="section-header">
+            <div>
+              <p className="section-kicker">Teacher Workflow</p>
+              <h3>Setup checklist</h3>
+            </div>
+            {nextWorkflowAction && (
+              <button className="button button-secondary" onClick={nextWorkflowAction.action}>
+                <Settings size={16} /> {nextWorkflowAction.label}
+              </button>
+            )}
+          </div>
+          <div className="stack">
+            {workflowSteps.map((item) => (
+              <div className="result-row" key={item.label}>
+                <div>
+                  <strong>{item.label}</strong>
+                  <p className="subtle">{item.detail}</p>
+                </div>
+                <span className={item.done ? "pill success" : "pill"}>{item.done ? "Ready" : "Pending"}</span>
+              </div>
+            ))}
+          </div>
+          <div className="section-header" style={{ marginTop: "1.25rem" }}>
             <div>
               <p className="section-kicker">Delivery Health</p>
               <h3>Queue and send activity</h3>

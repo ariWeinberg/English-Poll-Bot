@@ -29,6 +29,9 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Focus area" in src_bundle
     assert "Confidence" in src_bundle
     assert "Low confidence" in src_bundle
+    assert "Teacher Workflow" in src_bundle
+    assert "Setup checklist" in src_bundle
+    assert "Finish settings" in src_bundle
     assert "Weakest questions" in src_bundle
     assert "Review required" in src_bundle
     assert "All review states" in src_bundle

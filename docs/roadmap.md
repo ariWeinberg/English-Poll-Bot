@@ -263,7 +263,8 @@ Turn backend capabilities into coherent teacher workflows that can be used durin
 
 ### Existing State
 
-- Settings, texts, polls, learners, and webhooks already expose most operational primitives.
+- Settings, texts, polls, learners, webhooks, and the executive dashboard already expose most operational primitives.
+- The dashboard now includes a teacher workflow checklist and a next-step shortcut derived from workspace state.
 
 ### Gaps to Close
 
