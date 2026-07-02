@@ -79,6 +79,7 @@ Logs include request IDs, request lifecycle events, scheduler decisions, webhook
 The checked-in Compose config leaves `SCHEDULER_DEBUG_ENABLED` off by default. Turn it on temporarily only when you need dense scheduling traces from the dedicated worker.
 
 `GET /api/v1/health` returns basic worker heartbeat data, including the last scheduler tick and the last recorded worker error summary when available.
+`GET /api/v1/readiness` is the stronger release check. It requires the database to be reachable and the scheduler worker to have written a recent successful heartbeat before it reports ready.
 
 ## What You Can Configure
 

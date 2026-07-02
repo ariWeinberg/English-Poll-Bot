@@ -28,6 +28,7 @@ def test_readme_lists_canonical_quality_commands():
     assert "npm run typecheck" in readme
     assert "docker compose config --quiet" in readme
     assert "POST /api/v1/docs/session" in readme
+    assert "/api/v1/readiness" in readme
     assert "LOG_REQUEST_BODY_ENABLED" in readme
     assert "/doc" in readme
 
@@ -36,6 +37,7 @@ def test_runbook_documents_operations_surfaces():
     runbook = (ROOT / "docs" / "runbook.md").read_text(encoding="utf-8")
 
     assert "/api/v1/docs/session" in runbook
+    assert "/api/v1/readiness" in runbook
     assert "LOG_FILE" in runbook
     assert "scheduler" in runbook.lower()
     assert "/webhooks/greenapi/{tenant_id}" in runbook

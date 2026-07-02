@@ -58,6 +58,12 @@ TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/english_bot pyte
 
 Public FastAPI docs are disabled at `/docs` and `/openapi.json`. Authenticated users call `POST /api/v1/docs/session` with the existing bearer token to receive a short-lived docs token. Swagger UI is served from `/api/v1/docs?token=...`, and OpenAPI JSON is served from `/api/v1/openapi.json?token=...`.
 
+## Health And Readiness
+
+`GET /api/v1/health` is the liveness-style probe. It exposes the latest scheduler heartbeat payload from the database without forcing a hard readiness decision.
+
+`GET /api/v1/readiness` is the stronger release-check endpoint. It requires a reachable database and a recent successful scheduler heartbeat before it reports ready, so deploy smoke tests can distinguish "the API process is alive" from "the full platform is operational."
+
 ## Logging
 
 The API configures local JSON and human-readable logs through:

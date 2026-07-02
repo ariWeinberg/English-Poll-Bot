@@ -60,7 +60,9 @@ def test_react_ui_and_nginx_proxy_are_configured():
     assert "Operations Docs" in src_bundle
     assert "Open Swagger" in src_bundle
     assert "/docs/session" in src_bundle
+    assert "/api/v1/readiness" in src_bundle
     assert "LOG_REQUEST_BODY_ENABLED" in src_bundle
+    assert "Readiness" in src_bundle
     assert "Delivery tracks" in src_bundle
     assert "docs/roadmap.md" in src_bundle
     assert "Refill pool" in src_bundle

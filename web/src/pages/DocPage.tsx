@@ -59,6 +59,7 @@ export function DocPage({ onOpenSwagger }: { onOpenSwagger: () => void }) {
           <div className="doc-list">
             <DocItem title="Configuration" body="Set tenant credentials in Workspace Settings and keep production secrets out of source." />
             <DocItem title="Scheduler" body="Tenant and text toggles must both be enabled before timed polls or summaries are sent." />
+            <DocItem title="Readiness" body="Use /api/v1/health for liveness and /api/v1/readiness for release checks that require a fresh scheduler heartbeat." />
             <DocItem title="Webhooks" body="GreenAPI callbacks post to /webhooks/greenapi/{tenant_id}; every request is stored in the Webhook Inbox with accepted, ignored, or error status." />
             <DocItem title="API docs" body="Swagger and OpenAPI are disabled publicly. Use this page to mint a short-lived docs session." />
           </div>

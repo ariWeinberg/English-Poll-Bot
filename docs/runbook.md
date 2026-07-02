@@ -29,6 +29,7 @@ In local development, `uvicorn app.main:app --reload --port 8000` is not enough 
 Each automatic slot produces a persisted attempt record. Poll sends keep their `scheduled_slot` on the poll row as `rule:<id>:poll:<HH:MM>`, and failed attempts are recorded separately so missed slots are diagnosable.
 
 `GET /api/v1/health` exposes the latest worker heartbeat payload from the database, including `last_tick_at`, `last_success_at`, `polls_sent`, `summaries_sent`, and the last worker error summary when present.
+`GET /api/v1/readiness` performs a stronger platform check. It validates the database connection and requires a recent successful scheduler heartbeat before reporting the platform ready for release verification.
 
 For short-term troubleshooting, set `SCHEDULER_DEBUG_ENABLED=true` on the `scheduler` service. This emits high-volume structured logs for row payloads, runtime config derivation, timezone conversion, rule matching, due-count math, send calls, failures, and heartbeat writes. Turn it back off by removing or setting that one environment flag to `false`.
 
@@ -75,6 +76,7 @@ TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/english_bot pyte
 
 - `401` from `/api/v1/docs` or `/api/v1/openapi.json`: mint a new docs session from `/doc`; tokens are short-lived and signed.
 - Polls are not sending: confirm the `scheduler` service is running, then inspect `GET /api/v1/health`, tenant GreenAPI settings, text enabled state, scheduler enabled state, assigned rules, and the tenant timezone.
+- Release smoke passes on `/api/v1/health` but fails on `/api/v1/readiness`: wait for a successful scheduler heartbeat, then inspect the scheduler worker logs and the heartbeat payload in `GET /api/v1/health`.
 - Webhook events are missing: confirm the GreenAPI webhook URL includes the tenant ID and that `pollMessageWebhook` is enabled, then inspect the `/webhooks` page for ignored or error rows.
 - Summaries are missing: confirm summaries are enabled and polls have unsummarized sent status.
 - Deploy fails while bringing up `ui`: the UI container now has its own `/` healthcheck and no longer blocks on API health during `docker compose up`; rely on the post-deploy smoke test to wait for both `/` and `/api/v1/health`.
