@@ -14,9 +14,10 @@ from app.database import (
     create_incoming_webhook,
     db_session,
     get_app_config_json,
+    get_incoming_webhook,
     now_iso,
-    update_incoming_webhook,
     get_text,
+    update_incoming_webhook,
 )
 from app.greenapi import GreenAPIError
 from app.scheduler import SCHEDULER_STATUS_KEY
@@ -217,6 +218,54 @@ async def waha_webhook(tenant_id: int, request: Request):
     return await _provider_webhook(tenant_id=tenant_id, provider="waha", request=request)
 
 
+@router.post("/api/v1/webhooks/{webhook_id}/retry")
+async def retry_webhook(webhook_id: int, user: dict[str, Any] = Depends(current_user)):
+    with db_session(settings.database_url) as conn:
+        row = get_incoming_webhook(conn, tenant_id=int(user["id"]), webhook_id=webhook_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Webhook event not found")
+    if row.get("decision_status") == "accepted":
+        raise HTTPException(status_code=409, detail="Accepted webhooks cannot be retried")
+    current_retry_count = int(row.get("retry_count") or 0)
+
+    raw_payload = str(row.get("payload_json") or "")
+    try:
+        parsed_payload = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        with db_session(settings.database_url) as conn:
+            update_incoming_webhook(
+                conn,
+                webhook_id=webhook_id,
+                retry_count=current_retry_count + 1,
+                last_retry_at=now_iso(),
+                last_retry_error=f"Invalid JSON: {exc.msg}",
+                error=f"Invalid JSON: {exc.msg}",
+            )
+        raise HTTPException(status_code=400, detail="Stored webhook payload is invalid JSON") from exc
+    if not isinstance(parsed_payload, dict):
+        with db_session(settings.database_url) as conn:
+            update_incoming_webhook(
+                conn,
+                webhook_id=webhook_id,
+                retry_count=current_retry_count + 1,
+                last_retry_at=now_iso(),
+                last_retry_error="Webhook payload must be a JSON object",
+                error="Webhook payload must be a JSON object",
+            )
+        raise HTTPException(status_code=400, detail="Stored webhook payload must be a JSON object")
+
+    metadata = extract_whatsapp_webhook_metadata(parsed_payload, provider=str(row.get("provider") or "greenapi"))
+    await _process_provider_webhook(
+        webhook_id=webhook_id,
+        tenant_id=int(user["id"]),
+        provider=str(row.get("provider") or "greenapi"),
+        parsed_payload=parsed_payload,
+        metadata=metadata,
+        retry=True,
+    )
+    return {"ok": True, "retried": True}
+
+
 async def _provider_webhook(*, tenant_id: int, provider: str, request: Request):
     raw_body = (await request.body()).decode("utf-8")
     endpoint_path = f"/webhooks/{provider}/{tenant_id}"
@@ -273,6 +322,28 @@ async def _provider_webhook(*, tenant_id: int, provider: str, request: Request):
             greenapi_message_id=metadata["greenapi_message_id"],
             provider_metadata=metadata["provider_metadata"],
         )
+    await _process_provider_webhook(
+        webhook_id=webhook_id,
+        tenant_id=tenant_id,
+        provider=provider,
+        parsed_payload=parsed_payload,
+        metadata=metadata,
+        retry=False,
+    )
+    return {"ok": True, "handled": True}
+
+
+async def _process_provider_webhook(
+    *,
+    webhook_id: int,
+    tenant_id: int,
+    provider: str,
+    parsed_payload: dict[str, Any],
+    metadata: dict[str, Any],
+    retry: bool,
+):
+    with db_session(settings.database_url) as conn:
+        current_retry_count = int((get_incoming_webhook(conn, tenant_id=tenant_id, webhook_id=webhook_id) or {}).get("retry_count", 0))
     try:
         if provider == "waha":
             decision = await handle_waha_webhook_async(
@@ -300,6 +371,9 @@ async def _provider_webhook(*, tenant_id: int, provider: str, request: Request):
                 decision_status="error",
                 decision_reason=error_summary,
                 processed_at=now_iso(),
+                retry_count=current_retry_count + (1 if retry else 0),
+                last_retry_at=now_iso() if retry else None,
+                last_retry_error=error_summary if retry else None,
                 error=error_summary,
             )
         raise
@@ -317,6 +391,9 @@ async def _provider_webhook(*, tenant_id: int, provider: str, request: Request):
             decision_status=decision.status,
             decision_reason=decision.reason,
             processed_at=now_iso(),
+            retry_count=current_retry_count + (1 if retry else 0),
+            last_retry_at=now_iso() if retry else None,
+            last_retry_error=None if retry else None,
             error=decision.error,
         )
     return {"ok": True, "handled": decision.handled}

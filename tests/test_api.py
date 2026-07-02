@@ -8,7 +8,7 @@ from app.config import settings
 from app.database import create_poll, db_session, init_db, upsert_contact_profile
 from app.greenapi import GreenAPIError
 from app.main import app
-from app.services import TextNotFoundError
+from app.services import TextNotFoundError, WebhookDecision
 from app.waha import WAHAError
 
 
@@ -908,6 +908,72 @@ def test_webhook_inbox_records_processing_exception(monkeypatch):
     assert row["decision_reason"] == "webhook exploded"
     assert row["error"] == "webhook exploded"
     assert row["greenapi_message_id"] == "broken-message-id"
+
+
+def test_webhook_retry_reprocesses_errored_event(monkeypatch):
+    database_url = reset_db()
+
+    async def broken_handler(*, database_url: str, payload: dict[str, object], tenant_id: int | None = None):
+        del database_url, payload, tenant_id
+        raise RuntimeError("webhook exploded")
+
+    async def recovered_handler(*, database_url: str, payload: dict[str, object], tenant_id: int | None = None):
+        del database_url, payload, tenant_id
+        return WebhookDecision(
+            handled=True,
+            status="accepted",
+            reason="handled",
+            provider="greenapi",
+            type_webhook="incomingMessageReceived",
+            message_type="pollUpdateMessage",
+            provider_message_id="broken-message-id",
+            greenapi_message_id="broken-message-id",
+            provider_metadata={"source": "retry"},
+            poll_id=None,
+            error=None,
+        )
+
+    monkeypatch.setattr("app.api.routes.actions.handle_greenapi_webhook_async", broken_handler)
+
+    payload = {
+        "typeWebhook": "incomingMessageReceived",
+        "messageData": {
+            "typeMessage": "pollUpdateMessage",
+            "pollMessageData": {
+                "stanzaId": "broken-message-id",
+                "votes": [{"optionName": "A", "optionVoters": ["111@c.us"]}],
+            },
+        },
+    }
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/webhooks/greenapi/1", json=payload)
+        assert response.status_code == 500
+
+        with db_session(database_url) as conn:
+            row = conn.execute("SELECT id, decision_status, retry_count FROM incoming_webhooks ORDER BY id DESC LIMIT 1").fetchone()
+        webhook_id = int(row["id"])
+        assert row["decision_status"] == "error"
+        assert int(row["retry_count"]) == 0
+
+        monkeypatch.setattr("app.api.routes.actions.handle_greenapi_webhook_async", recovered_handler)
+        headers = auth_headers(client)
+        retry = client.post(f"/api/v1/webhooks/{webhook_id}/retry", headers=headers)
+
+    assert retry.status_code == 200
+    assert retry.json() == {"ok": True, "retried": True}
+
+    with db_session(database_url) as conn:
+        row = conn.execute(
+            "SELECT decision_status, decision_reason, retry_count, last_retry_at, last_retry_error, error FROM incoming_webhooks WHERE id = %s",
+            (webhook_id,),
+        ).fetchone()
+    assert row["decision_status"] == "accepted"
+    assert row["decision_reason"] == "handled"
+    assert int(row["retry_count"]) == 1
+    assert row["last_retry_at"] is not None
+    assert row["last_retry_error"] is None
+    assert row["error"] is None
 
 
 def test_webhook_inbox_list_and_detail_are_tenant_scoped_and_filterable():

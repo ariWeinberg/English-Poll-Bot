@@ -21,6 +21,9 @@ class WebhookEvent(BaseModel):
     payload_json: str
     received_at: str
     processed_at: str | None = None
+    retry_count: int = 0
+    last_retry_at: str | None = None
+    last_retry_error: str | None = None
     error: str | None = None
 
 

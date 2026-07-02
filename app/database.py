@@ -665,6 +665,9 @@ def init_db(database_url: str) -> None:
                 payload_json TEXT NOT NULL,
                 received_at TEXT NOT NULL,
                 processed_at TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                last_retry_at TEXT,
+                last_retry_error TEXT,
                 error TEXT
             );
 
@@ -800,6 +803,9 @@ def init_db(database_url: str) -> None:
             ALTER TABLE poll_vote_events ADD COLUMN IF NOT EXISTS ignored_reason TEXT;
             ALTER TABLE incoming_webhooks ADD COLUMN IF NOT EXISTS provider_message_id TEXT;
             ALTER TABLE incoming_webhooks ADD COLUMN IF NOT EXISTS provider_metadata_json TEXT NOT NULL DEFAULT '{}';
+            ALTER TABLE incoming_webhooks ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE incoming_webhooks ADD COLUMN IF NOT EXISTS last_retry_at TEXT;
+            ALTER TABLE incoming_webhooks ADD COLUMN IF NOT EXISTS last_retry_error TEXT;
 
             UPDATE poll_votes SET first_accepted_at = updated_at WHERE first_accepted_at IS NULL;
             ALTER TABLE poll_votes ALTER COLUMN first_accepted_at SET NOT NULL;
@@ -2655,6 +2661,9 @@ def create_incoming_webhook(
     decision_status: str | None = None,
     decision_reason: str | None = None,
     error: str | None = None,
+    retry_count: int = 0,
+    last_retry_at: str | None = None,
+    last_retry_error: str | None = None,
     received_at: str | None = None,
     processed_at: str | None = None,
 ) -> int:
@@ -2663,9 +2672,10 @@ def create_incoming_webhook(
         """
         INSERT INTO incoming_webhooks (
             tenant_id, provider, endpoint_path, type_webhook, message_type, provider_message_id, greenapi_message_id,
-            provider_metadata_json, poll_id, decision_status, decision_reason, payload_json, received_at, processed_at, error
+            provider_metadata_json, poll_id, decision_status, decision_reason, payload_json, received_at, processed_at,
+            retry_count, last_retry_at, last_retry_error, error
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -2683,6 +2693,9 @@ def create_incoming_webhook(
             payload_json,
             timestamp,
             processed_at,
+            retry_count,
+            last_retry_at,
+            last_retry_error[:500] if last_retry_error else None,
             error[:500] if error else None,
         ),
     ).fetchone()
@@ -2702,6 +2715,9 @@ def update_incoming_webhook(
     decision_status: str | None = None,
     decision_reason: str | None = None,
     processed_at: str | None = None,
+    retry_count: int | None = None,
+    last_retry_at: str | None = None,
+    last_retry_error: str | None = None,
     error: str | None = None,
 ) -> None:
     conn.execute(
@@ -2716,6 +2732,9 @@ def update_incoming_webhook(
             decision_status = %s,
             decision_reason = %s,
             processed_at = %s,
+            retry_count = COALESCE(%s, retry_count),
+            last_retry_at = COALESCE(%s, last_retry_at),
+            last_retry_error = %s,
             error = %s
         WHERE id = %s
         """,
@@ -2729,6 +2748,9 @@ def update_incoming_webhook(
             decision_status.strip() if decision_status else None,
             decision_reason.strip() if decision_reason else None,
             processed_at,
+            retry_count,
+            last_retry_at,
+            last_retry_error[:500] if last_retry_error else None,
             error[:500] if error else None,
             webhook_id,
         ),
